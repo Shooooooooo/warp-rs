@@ -1,0 +1,455 @@
+//! Getting pixels onto a terminal, and putting the terminal back afterward.
+//!
+//! Terminal cells are about twice as tall as they are wide, which would squash
+//! a starfield into an ellipse. The fix is the upper half block, `▀`: set its
+//! foreground to the top pixel and its background to the bottom one and a cell
+//! becomes two stacked, roughly square pixels. That doubles vertical resolution
+//! and keeps the field circular.
+//!
+//! Only cells that actually changed are re-emitted, and colour codes are only
+//! re-sent when they differ from the last cell written.
+
+use crossterm::{
+    cursor,
+    style::{Color, Print, SetBackgroundColor, SetForegroundColor},
+    terminal, QueueableCommand,
+};
+use std::io::{self, Write};
+
+/// Upper half block: foreground paints the top pixel, background the bottom.
+const HALF_BLOCK: char = '\u{2580}';
+/// Brightness ramp for terminals that cannot do colour at all.
+const ASCII_RAMP: &[u8] = b" .,:;-=+*oO#%@";
+
+/// How much colour the terminal can be trusted with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    /// 24-bit colour. What the renderer is designed for.
+    Truecolor,
+    /// The xterm 256-colour palette; noticeably banded but recognisable.
+    Ansi256,
+    /// No colour: a brightness ramp of ASCII characters.
+    Ascii,
+}
+
+impl ColorMode {
+    /// Work out what the terminal can do from the environment.
+    pub fn detect() -> Self {
+        if let Ok(v) = std::env::var("COLORTERM") {
+            if v.contains("truecolor") || v.contains("24bit") {
+                return ColorMode::Truecolor;
+            }
+        }
+        match std::env::var("TERM") {
+            Err(_) => ColorMode::Ascii,
+            Ok(term) if term.is_empty() || term == "dumb" => ColorMode::Ascii,
+            // Anything else modern enough to have a TERM entry does 256.
+            Ok(_) => ColorMode::Ansi256,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cell {
+    ch: char,
+    /// `None` means the terminal's own default colour.
+    fg: Option<(u8, u8, u8)>,
+    bg: Option<(u8, u8, u8)>,
+}
+
+impl Cell {
+    const BLANK: Cell = Cell { ch: ' ', fg: None, bg: None };
+}
+
+/// A double-buffered grid of terminal cells.
+pub struct Screen {
+    cols: usize,
+    rows: usize,
+    mode: ColorMode,
+    /// What the terminal is currently showing.
+    front: Vec<Cell>,
+    /// What we want it to show.
+    back: Vec<Cell>,
+    dirty: bool,
+}
+
+impl Screen {
+    pub fn new(cols: usize, rows: usize, mode: ColorMode) -> Self {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        Self {
+            cols,
+            rows,
+            mode,
+            front: vec![Cell::BLANK; cols * rows],
+            back: vec![Cell::BLANK; cols * rows],
+            dirty: true,
+        }
+    }
+
+    pub fn dims(&self) -> (usize, usize) {
+        (self.cols, self.rows)
+    }
+
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        if (cols, rows) == (self.cols, self.rows) {
+            return;
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.front = vec![Cell::BLANK; cols * rows];
+        self.back = vec![Cell::BLANK; cols * rows];
+        self.dirty = true;
+    }
+
+    /// Forget what the terminal is showing, so the next flush repaints
+    /// everything. Needed after anything else has written to the screen.
+    pub fn force_redraw(&mut self) {
+        self.front.fill(Cell::BLANK);
+        self.dirty = true;
+    }
+
+    /// Fold a `cols × 2·rows` pixel buffer into cells.
+    pub fn compose(&mut self, pixels: &[[u8; 3]]) {
+        debug_assert_eq!(pixels.len(), self.cols * self.rows * 2);
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let top = pixels[(row * 2) * self.cols + col];
+                let bottom = pixels[(row * 2 + 1) * self.cols + col];
+                self.back[row * self.cols + col] = self.pixel_pair(top, bottom);
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn pixel_pair(&self, top: [u8; 3], bottom: [u8; 3]) -> Cell {
+        match self.mode {
+            ColorMode::Truecolor => Cell {
+                ch: HALF_BLOCK,
+                fg: Some((top[0], top[1], top[2])),
+                bg: Some((bottom[0], bottom[1], bottom[2])),
+            },
+            ColorMode::Ansi256 => Cell {
+                ch: HALF_BLOCK,
+                fg: Some(quantize_256(top)),
+                bg: Some(quantize_256(bottom)),
+            },
+            ColorMode::Ascii => {
+                // With no colour to work with, the two pixels have to collapse
+                // into a single glyph, so average them and pick by brightness.
+                let level = (luma(top) + luma(bottom)) * 0.5;
+                let idx = (level * (ASCII_RAMP.len() - 1) as f32).round() as usize;
+                Cell {
+                    ch: ASCII_RAMP[idx.min(ASCII_RAMP.len() - 1)] as char,
+                    fg: None,
+                    bg: None,
+                }
+            }
+        }
+    }
+
+    /// Stamp text over the composed frame. Anything off the edge is dropped.
+    pub fn overlay(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8)) {
+        if row >= self.rows {
+            return;
+        }
+        let fg = match self.mode {
+            ColorMode::Truecolor => Some(fg),
+            ColorMode::Ansi256 => Some(quantize_256([fg.0, fg.1, fg.2])),
+            ColorMode::Ascii => None,
+        };
+        for (i, ch) in text.chars().enumerate() {
+            let Some(c) = col.checked_add(i).filter(|c| *c < self.cols) else {
+                break;
+            };
+            // Keep the starfield showing through the gaps in the panel text.
+            if ch == ' ' {
+                continue;
+            }
+            let cell = &mut self.back[row * self.cols + c];
+            cell.ch = ch;
+            cell.fg = fg;
+            // Drop a shadow behind the glyph rather than a solid panel: the
+            // field still glows through, but text stays readable even when a
+            // streak happens to be blazing directly behind it.
+            cell.bg = cell.bg.map(|(r, g, b)| (r / 4, g / 4, b / 4));
+        }
+        self.dirty = true;
+    }
+
+    /// Push the differences to the terminal. One write, one flush.
+    pub fn flush(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if !self.dirty {
+            return Ok(());
+        }
+        let mut last_fg: Option<Option<(u8, u8, u8)>> = None;
+        let mut last_bg: Option<Option<(u8, u8, u8)>> = None;
+        // Where the terminal's cursor sits, if we know it.
+        let mut cursor_at: Option<(usize, usize)> = None;
+
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let idx = row * self.cols + col;
+                let cell = self.back[idx];
+                if cell == self.front[idx] {
+                    continue;
+                }
+
+                if cursor_at != Some((col, row)) {
+                    out.queue(cursor::MoveTo(col as u16, row as u16))?;
+                }
+                if last_fg != Some(cell.fg) {
+                    out.queue(SetForegroundColor(to_color(cell.fg)))?;
+                    last_fg = Some(cell.fg);
+                }
+                if last_bg != Some(cell.bg) {
+                    out.queue(SetBackgroundColor(to_color(cell.bg)))?;
+                    last_bg = Some(cell.bg);
+                }
+                out.queue(Print(cell.ch))?;
+
+                self.front[idx] = cell;
+                cursor_at = Some((col + 1, row));
+            }
+        }
+
+        out.flush()?;
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Render the frame as plain text plus ANSI colour, for piping somewhere
+    /// that is not an interactive terminal.
+    pub fn write_plain(&self, out: &mut impl Write) -> io::Result<()> {
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let cell = self.back[row * self.cols + col];
+                out.queue(SetForegroundColor(to_color(cell.fg)))?;
+                out.queue(SetBackgroundColor(to_color(cell.bg)))?;
+                out.queue(Print(cell.ch))?;
+            }
+            out.queue(SetForegroundColor(Color::Reset))?;
+            out.queue(SetBackgroundColor(Color::Reset))?;
+            out.queue(Print('\n'))?;
+        }
+        out.flush()
+    }
+}
+
+fn to_color(rgb: Option<(u8, u8, u8)>) -> Color {
+    match rgb {
+        Some((r, g, b)) => Color::Rgb { r, g, b },
+        None => Color::Reset,
+    }
+}
+
+fn luma(rgb: [u8; 3]) -> f32 {
+    (0.2126 * rgb[0] as f32 + 0.7152 * rgb[1] as f32 + 0.0722 * rgb[2] as f32) / 255.0
+}
+
+/// Snap a colour to the nearest xterm-256 palette entry, then hand back that
+/// entry's RGB. Emitting the RGB rather than the index means one code path in
+/// the writer; the point is that the *values* are restricted to the palette,
+/// so a 256-colour terminal renders them exactly.
+fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
+    const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+    let nearest_cube = |v: u8| {
+        CUBE.iter()
+            .copied()
+            .min_by_key(|c| (*c as i32 - v as i32).abs())
+            .unwrap()
+    };
+    let cube = [nearest_cube(rgb[0]), nearest_cube(rgb[1]), nearest_cube(rgb[2])];
+
+    // The 24-step grey ramp is finer than the cube's grey diagonal, so near-grey
+    // colours come out visibly better if we let it compete.
+    let avg = (rgb[0] as u32 + rgb[1] as u32 + rgb[2] as u32) / 3;
+    let step = ((avg as i32 - 8) as f32 / 10.0).round().clamp(0.0, 23.0) as i32;
+    let grey = (8 + step * 10) as u8;
+    let grey = [grey, grey, grey];
+
+    let dist = |a: [u8; 3]| -> i32 {
+        (0..3)
+            .map(|i| {
+                let d = a[i] as i32 - rgb[i] as i32;
+                d * d
+            })
+            .sum()
+    };
+
+    let best = if dist(grey) < dist(cube) { grey } else { cube };
+    (best[0], best[1], best[2])
+}
+
+/// Puts the terminal into raw, full-screen mode and — crucially — puts it back
+/// on the way out, including when the way out is a panic.
+pub struct RawGuard;
+
+impl RawGuard {
+    pub fn new() -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        let mut out = io::stdout();
+        out.queue(terminal::EnterAlternateScreen)?;
+        out.queue(cursor::Hide)?;
+        out.flush()?;
+
+        // A panic mid-render would otherwise leave the user with an invisible
+        // cursor in raw mode, unable to read the panic message they need.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore();
+            previous(info);
+        }));
+
+        Ok(Self)
+    }
+}
+
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        restore();
+    }
+}
+
+/// Undo everything `RawGuard::new` did. Safe to call more than once.
+pub fn restore() {
+    let mut out = io::stdout();
+    let _ = out.queue(SetForegroundColor(Color::Reset));
+    let _ = out.queue(SetBackgroundColor(Color::Reset));
+    let _ = out.queue(cursor::Show);
+    let _ = out.queue(terminal::LeaveAlternateScreen);
+    let _ = out.flush();
+    let _ = terminal::disable_raw_mode();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixels(cols: usize, rows: usize, fill: [u8; 3]) -> Vec<[u8; 3]> {
+        vec![fill; cols * rows * 2]
+    }
+
+    #[test]
+    fn a_frame_composes_into_half_blocks() {
+        let mut screen = Screen::new(4, 2, ColorMode::Truecolor);
+        let mut px = pixels(4, 2, [0, 0, 0]);
+        px[0] = [255, 0, 0]; // top-left top pixel
+        px[4] = [0, 0, 255]; // top-left bottom pixel (row 1)
+        screen.compose(&px);
+        let cell = screen.back[0];
+        assert_eq!(cell.ch, HALF_BLOCK);
+        assert_eq!(cell.fg, Some((255, 0, 0)));
+        assert_eq!(cell.bg, Some((0, 0, 255)));
+    }
+
+    #[test]
+    fn only_changed_cells_are_written() {
+        let mut screen = Screen::new(8, 4, ColorMode::Truecolor);
+        let px = pixels(8, 4, [10, 20, 30]);
+        screen.compose(&px);
+        let mut first = Vec::new();
+        screen.flush(&mut first).unwrap();
+        assert!(!first.is_empty());
+
+        // Composing the identical frame should produce no output at all.
+        screen.compose(&px);
+        let mut second = Vec::new();
+        screen.flush(&mut second).unwrap();
+        assert!(second.is_empty(), "an unchanged frame should cost nothing");
+
+        // ...until we invalidate what we think the terminal is showing.
+        screen.force_redraw();
+        screen.compose(&px);
+        let mut third = Vec::new();
+        screen.flush(&mut third).unwrap();
+        assert!(!third.is_empty());
+    }
+
+    #[test]
+    fn overlay_text_survives_into_the_flushed_frame() {
+        let mut screen = Screen::new(20, 3, ColorMode::Truecolor);
+        screen.compose(&pixels(20, 3, [0, 0, 0]));
+        screen.overlay(2, 1, "WARP 9", (255, 255, 255));
+        let cell = |col: usize| screen.back[20 + col].ch; // row 1 of a 20-wide grid
+        assert_eq!(cell(2), 'W');
+        assert_eq!(cell(7), '9');
+        // The space in "WARP 9" is left alone so stars show through.
+        assert_eq!(cell(6), HALF_BLOCK);
+    }
+
+    #[test]
+    fn overlay_clips_instead_of_panicking() {
+        let mut screen = Screen::new(10, 2, ColorMode::Truecolor);
+        screen.compose(&pixels(10, 2, [0, 0, 0]));
+        screen.overlay(8, 0, "far too long to fit", (255, 255, 255));
+        screen.overlay(0, 99, "off the bottom", (255, 255, 255));
+        screen.overlay(usize::MAX - 1, 0, "overflowing column", (255, 255, 255));
+    }
+
+    #[test]
+    fn ascii_mode_uses_the_ramp_and_no_colour() {
+        let mut screen = Screen::new(2, 1, ColorMode::Ascii);
+        let mut px = pixels(2, 1, [0, 0, 0]);
+        px[1] = [255, 255, 255];
+        px[3] = [255, 255, 255];
+        screen.compose(&px);
+        assert_eq!(screen.back[0].ch, ' ');
+        assert_eq!(screen.back[1].ch, '@');
+        assert!(screen.back[1].fg.is_none() && screen.back[1].bg.is_none());
+    }
+
+    #[test]
+    fn quantized_colours_are_palette_members_and_stay_close() {
+        const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+        let is_member = |c: (u8, u8, u8)| {
+            let cube_ok = [c.0, c.1, c.2].iter().all(|v| CUBE.contains(v));
+            let grey_ok = c.0 == c.1 && c.1 == c.2 && (c.0 as i32 - 8) % 10 == 0;
+            cube_ok || grey_ok
+        };
+        for r in (0..=255).step_by(17) {
+            for g in (0..=255).step_by(17) {
+                for b in (0..=255).step_by(17) {
+                    let q = quantize_256([r, g, b]);
+                    assert!(is_member(q), "{q:?} is not in the 256 palette");
+                    let err = (q.0 as i32 - r as i32).abs().max(
+                        (q.1 as i32 - g as i32).abs().max((q.2 as i32 - b as i32).abs()),
+                    );
+                    // The palette's widest gap is 0..95, so the worst honest
+                    // per-channel error is 48. Anything past that is a bug.
+                    assert!(err <= 48, "quantizing {r},{g},{b} drifted to {q:?}");
+                }
+            }
+        }
+        // Pure black and white must survive exactly.
+        assert_eq!(quantize_256([0, 0, 0]), (0, 0, 0));
+        assert_eq!(quantize_256([255, 255, 255]), (255, 255, 255));
+    }
+
+    #[test]
+    fn resizing_reallocates_and_forces_a_repaint() {
+        let mut screen = Screen::new(8, 4, ColorMode::Truecolor);
+        screen.compose(&pixels(8, 4, [1, 2, 3]));
+        screen.flush(&mut Vec::new()).unwrap();
+        screen.resize(20, 6);
+        assert_eq!(screen.dims(), (20, 6));
+        assert_eq!(screen.back.len(), 120);
+        screen.compose(&pixels(20, 6, [1, 2, 3]));
+        let mut out = Vec::new();
+        screen.flush(&mut out).unwrap();
+        assert!(!out.is_empty(), "a resize must repaint from scratch");
+        screen.resize(0, 0);
+        assert_eq!(screen.dims(), (1, 1));
+    }
+
+    #[test]
+    fn plain_output_covers_every_row() {
+        let mut screen = Screen::new(6, 3, ColorMode::Ascii);
+        screen.compose(&pixels(6, 3, [200, 200, 200]));
+        let mut out = Vec::new();
+        screen.write_plain(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 3);
+    }
+}

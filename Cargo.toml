@@ -1,0 +1,26 @@
+[package]
+name = "warp-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Fly a starship through the universe at warp in your terminal"
+license = "MIT"
+repository = "https://github.com/shooooooooo/warp-rs"
+
+[[bin]]
+name = "warp"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+rand = "0.10"
+png = { version = "0.18", optional = true }
+
+[features]
+default = []
+snapshot = ["dep:png"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
