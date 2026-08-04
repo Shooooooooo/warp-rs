@@ -49,6 +49,22 @@ impl ColorMode {
     }
 }
 
+/// A cell's foreground and background, either of which may be the terminal's
+/// own default rather than a colour we chose.
+#[cfg(test)]
+type CellColors = (Option<(u8, u8, u8)>, Option<(u8, u8, u8)>);
+
+/// How an overlaid glyph treats the frame behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backdrop {
+    /// Dim what is behind the glyph so text stays legible over a bright
+    /// streak. For instrument readouts, where legibility wins.
+    Shadow,
+    /// Never darken anything: keep the background pixel, and lighten the glyph
+    /// against the pixel it replaces.
+    Lighten,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cell {
     ch: char,
@@ -148,12 +164,24 @@ impl Screen {
         }
     }
 
-    /// Stamp text over the composed frame. Anything off the edge is dropped.
+    /// Stamp instrument text over the composed frame, shadowed so it stays
+    /// readable. Anything off the edge is dropped.
     pub fn overlay(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8)) {
+        self.stamp(col, row, text, fg, Backdrop::Shadow);
+    }
+
+    /// Stamp a mark that must never darken the frame behind it — for glyphs
+    /// that belong in the scene rather than on the glass.
+    pub fn overlay_mark(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8)) {
+        self.stamp(col, row, text, fg, Backdrop::Lighten);
+    }
+
+    fn stamp(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8), how: Backdrop) {
         if row >= self.rows {
             return;
         }
-        let fg = match self.mode {
+        let mode = self.mode;
+        let mark = match mode {
             ColorMode::Truecolor => Some(fg),
             ColorMode::Ansi256 => Some(quantize_256([fg.0, fg.1, fg.2])),
             ColorMode::Ascii => None,
@@ -168,14 +196,31 @@ impl Screen {
             }
             let cell = &mut self.back[row * self.cols + c];
             cell.ch = ch;
-            cell.fg = fg;
-            // Drop a shadow behind the glyph rather than a solid panel: the
-            // field still glows through, but text stays readable even when a
-            // streak happens to be blazing directly behind it.
-            cell.bg = cell.bg.map(|(r, g, b)| (r / 4, g / 4, b / 4));
+            match how {
+                Backdrop::Shadow => {
+                    cell.fg = mark;
+                    // Drop a shadow behind the glyph rather than a solid panel:
+                    // the field still glows through, but text stays readable
+                    // even when a streak happens to be blazing directly behind.
+                    cell.bg = cell.bg.map(|(r, g, b)| (r / 4, g / 4, b / 4));
+                }
+                Backdrop::Lighten => {
+                    // `compose` already ran, so the cell's own colours *are*
+                    // the two pixels underneath: fg the top, bg the bottom.
+                    // Taking the brighter of the two per channel means the
+                    // mark only ever adds light, and the background is left
+                    // exactly as the starfield drew it.
+                    cell.fg = match (cell.fg, mark) {
+                        (Some(under), Some(m)) => Some(lighten(under, m, mode)),
+                        // Ascii mode carries no colour to blend.
+                        _ => mark,
+                    };
+                }
+            }
         }
         self.dirty = true;
     }
+
 
     /// Push the differences to the terminal. One write, one flush.
     pub fn flush(&mut self, out: &mut impl Write) -> io::Result<()> {
@@ -218,6 +263,13 @@ impl Screen {
         Ok(())
     }
 
+    /// A cell's foreground and background, for tests outside this module.
+    #[cfg(test)]
+    pub fn cell_colors(&self, col: usize, row: usize) -> CellColors {
+        let cell = self.back[row * self.cols + col];
+        (cell.fg, cell.bg)
+    }
+
     /// Render the frame as plain text plus ANSI colour, for piping somewhere
     /// that is not an interactive terminal.
     pub fn write_plain(&self, out: &mut impl Write) -> io::Result<()> {
@@ -240,6 +292,18 @@ fn to_color(rgb: Option<(u8, u8, u8)>) -> Color {
     match rgb {
         Some((r, g, b)) => Color::Rgb { r, g, b },
         None => Color::Reset,
+    }
+}
+
+/// The brighter of two colours, channel by channel.
+fn lighten(under: (u8, u8, u8), mark: (u8, u8, u8), mode: ColorMode) -> (u8, u8, u8) {
+    let lit = (under.0.max(mark.0), under.1.max(mark.1), under.2.max(mark.2));
+    match mode {
+        // A per-channel max of two palette entries need not itself be one: the
+        // 24-step grey ramp and the 6×6×6 cube share no values, so mixing them
+        // can land between both. Snap the result back onto the palette.
+        ColorMode::Ansi256 => quantize_256([lit.0, lit.1, lit.2]),
+        _ => lit,
     }
 }
 
@@ -377,6 +441,74 @@ mod tests {
         assert_eq!(cell(7), '9');
         // The space in "WARP 9" is left alone so stars show through.
         assert_eq!(cell(6), HALF_BLOCK);
+    }
+
+    #[test]
+    fn overlay_shadows_what_is_behind_it() {
+        // The panel's shadow is deliberate — it is what keeps a readout
+        // legible when a streak is blazing directly behind it.
+        let mut screen = Screen::new(8, 2, ColorMode::Truecolor);
+        screen.compose(&pixels(8, 2, [200, 200, 200]));
+        screen.overlay(0, 0, "X", (255, 255, 255));
+        let (fg, bg) = screen.cell_colors(0, 0);
+        assert_eq!(fg, Some((255, 255, 255)));
+        assert_eq!(bg, Some((50, 50, 50)), "the backdrop should be dimmed");
+    }
+
+    #[test]
+    fn a_mark_never_darkens_the_frame_behind_it() {
+        // Regression: the reticle used the panel's shadow, so it punched dark
+        // holes in the tunnel glare it sits inside of.
+        let mut screen = Screen::new(8, 2, ColorMode::Truecolor);
+        let bright = [240, 250, 255];
+        screen.compose(&pixels(8, 2, bright));
+        screen.overlay_mark(3, 0, "\u{250C}", (58, 92, 118));
+
+        let (fg, bg) = screen.cell_colors(3, 0);
+        let (fg, bg) = (fg.unwrap(), bg.unwrap());
+        assert_eq!(bg, (240, 250, 255), "the background must be left alone");
+        for (lit, under) in [(fg.0, bright[0]), (fg.1, bright[1]), (fg.2, bright[2])] {
+            assert!(lit >= under, "the mark dimmed a channel: {lit} < {under}");
+        }
+    }
+
+    #[test]
+    fn a_mark_is_still_visible_against_empty_space() {
+        // Never darkening must not mean never showing up.
+        let mut screen = Screen::new(8, 2, ColorMode::Truecolor);
+        screen.compose(&pixels(8, 2, [0, 0, 0]));
+        screen.overlay_mark(3, 0, "\u{250C}", (58, 92, 118));
+        let (fg, bg) = screen.cell_colors(3, 0);
+        assert_eq!(fg, Some((58, 92, 118)), "over black the mark keeps its own colour");
+        assert_eq!(bg, Some((0, 0, 0)));
+        assert_eq!(screen.back[3].ch, '\u{250C}');
+    }
+
+    #[test]
+    fn a_lightened_mark_stays_on_the_256_palette() {
+        // Per-channel max can land between the grey ramp and the colour cube,
+        // so the blend has to be snapped back onto the palette.
+        const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+        for level in [0, 18, 40, 90, 128, 200, 255] {
+            let mut screen = Screen::new(4, 1, ColorMode::Ansi256);
+            screen.compose(&pixels(4, 1, [level, level, level]));
+            screen.overlay_mark(1, 0, "\u{250C}", (58, 92, 118));
+            let (fg, _) = screen.cell_colors(1, 0);
+            let c = fg.unwrap();
+            let on_cube = [c.0, c.1, c.2].iter().all(|v| CUBE.contains(v));
+            let on_grey = c.0 == c.1 && c.1 == c.2 && (c.0 as i32 - 8) % 10 == 0;
+            assert!(on_cube || on_grey, "{c:?} is not a 256-palette colour");
+        }
+    }
+
+    #[test]
+    fn a_mark_in_ascii_mode_just_sets_the_glyph() {
+        let mut screen = Screen::new(4, 1, ColorMode::Ascii);
+        screen.compose(&pixels(4, 1, [255, 255, 255]));
+        screen.overlay_mark(1, 0, "\u{250C}", (58, 92, 118));
+        let (fg, bg) = screen.cell_colors(1, 0);
+        assert_eq!((fg, bg), (None, None), "ascii mode carries no colour to blend");
+        assert_eq!(screen.back[1].ch, '\u{250C}');
     }
 
     #[test]

@@ -65,7 +65,11 @@ fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize) {
         (cx - dx, cy + dy, '\u{2514}'),
         (cx + dx, cy + dy, '\u{2518}'),
     ] {
-        screen.overlay(x, y, &ch.to_string(), RULE);
+        // A mark, not a readout: it sits in the scene, so it lightens what is
+        // behind it instead of casting the panel's shadow. These brackets land
+        // inside the tunnel glare, where a shadow would read as four dark
+        // notches punched into the brightest part of the frame.
+        screen.overlay_mark(x, y, &ch.to_string(), RULE);
     }
 }
 
@@ -260,6 +264,42 @@ mod tests {
         let text = "\u{27E8} WARP \u{27E9}";
         assert_eq!(truncate(text, 3).chars().count(), 3);
         assert_eq!(truncate(text, 999), text);
+    }
+
+    #[test]
+    fn the_reticle_never_darkens_the_frame_behind_it() {
+        // Regression: the reticle went through the panel's text path, so it
+        // shadowed its own cells — and it sits inside the tunnel glare, so at
+        // warp it punched four dark notches into the brightest part of the
+        // view. Over a uniformly lit frame no reticle cell may come out
+        // dimmer than what was composed.
+        let (cols, rows) = (120usize, 34usize);
+        let lit = [200u8, 210, 230];
+        let mut screen = Screen::new(cols, rows, ColorMode::Truecolor);
+        screen.compose(&vec![lit; cols * rows * 2]);
+
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        ship.toggle_warp();
+        for _ in 0..900 {
+            ship.update(1.0 / 60.0);
+        }
+        draw(&mut screen, &readout(&ship));
+
+        let (cx, cy) = (cols / 2, rows / 2);
+        for (x, y) in [
+            (cx - 9, cy - 3),
+            (cx + 9, cy - 3),
+            (cx - 9, cy + 3),
+            (cx + 9, cy + 3),
+        ] {
+            let (fg, bg) = screen.cell_colors(x, y);
+            let (fg, bg) = (fg.expect("truecolor cell"), bg.expect("truecolor cell"));
+            assert_eq!(bg, (lit[0], lit[1], lit[2]), "reticle at ({x},{y}) dimmed its backdrop");
+            for (got, under) in [(fg.0, lit[0]), (fg.1, lit[1]), (fg.2, lit[2])] {
+                assert!(got >= under, "reticle at ({x},{y}) dimmed a channel: {got} < {under}");
+            }
+        }
     }
 
     #[test]
