@@ -1,0 +1,693 @@
+//! warp-rs — fly a starship through the universe at warp, in your terminal.
+
+mod canvas;
+mod hud;
+mod render;
+mod ship;
+mod starfield;
+mod term;
+
+#[cfg(feature = "snapshot")]
+mod snapshot;
+
+use clap::{Parser, ValueEnum};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{terminal, QueueableCommand};
+use hud::Readout;
+use render::Renderer;
+use ship::Ship;
+use starfield::StarField;
+use std::io::{self, BufWriter, Write};
+use std::time::{Duration, Instant};
+use term::{ColorMode, RawGuard};
+
+/// Physics runs on a fixed step so the flight model behaves the same whether
+/// the terminal can keep up or not.
+const SIM_STEP: f32 = 1.0 / 120.0;
+/// A stalled process must not fast-forward the universe on the next frame.
+const MAX_FRAME_DT: f32 = 0.25;
+/// Stars per subpixel when the count is chosen automatically.
+const AUTO_DENSITY: f32 = 0.05;
+const AUTO_MIN_STARS: usize = 300;
+const AUTO_MAX_STARS: usize = 20_000;
+/// Fallback canvas size when there is no terminal to measure.
+const FALLBACK_SIZE: (u16, u16) = (160, 48);
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "warp",
+    version,
+    about = "Fly a starship through the universe at warp, in your terminal"
+)]
+struct Args {
+    /// How many stars to keep in flight. 0 suits the count to the terminal.
+    #[arg(long, default_value_t = 0)]
+    stars: usize,
+
+    /// Frame rate cap.
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
+    fps: u32,
+
+    /// Fly on autopilot for this many seconds, then exit. Needs no keyboard.
+    #[arg(long, num_args = 0..=1, default_missing_value = "45", value_name = "SECS")]
+    demo: Option<f32>,
+
+    /// Print frames to stdout instead of taking over the terminal.
+    #[arg(long)]
+    headless: bool,
+
+    /// Frames to print in headless mode.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    frames: u32,
+
+    /// Colour depth. Auto-detected from COLORTERM and TERM by default.
+    #[arg(long, value_enum, default_value_t = ColorArg::Auto)]
+    color: ColorArg,
+
+    /// Seed for the sky. Omit for a different one every run.
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Force a size, e.g. 200x50. Defaults to the terminal's.
+    #[arg(long, value_name = "COLSxROWS", value_parser = parse_size)]
+    size: Option<(u16, u16)>,
+
+    /// Throttle to start at, 0..=1.
+    #[arg(long, default_value_t = 0.18, value_parser = unit_interval)]
+    throttle: f32,
+
+    /// Start with the warp drive already lit.
+    #[arg(long)]
+    engage: bool,
+
+    /// Tonemap exposure. Higher is brighter.
+    #[arg(long, default_value_t = 1.9, value_parser = positive)]
+    exposure: f32,
+
+    /// Write a PNG of one frame and exit. The instrument panel is not drawn.
+    #[cfg(feature = "snapshot")]
+    #[arg(long, value_name = "FILE")]
+    snapshot: Option<std::path::PathBuf>,
+
+    /// Frames to simulate before taking the snapshot.
+    #[cfg(feature = "snapshot")]
+    #[arg(long, default_value_t = 300, value_name = "N")]
+    warmup: u32,
+
+    /// Magnification of the snapshot image.
+    #[cfg(feature = "snapshot")]
+    #[arg(long, default_value_t = 3, value_name = "N")]
+    scale: usize,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ColorArg {
+    Auto,
+    Truecolor,
+    #[value(name = "256")]
+    Ansi256,
+    Ascii,
+}
+
+impl ColorArg {
+    fn resolve(self) -> ColorMode {
+        match self {
+            ColorArg::Auto => ColorMode::detect(),
+            ColorArg::Truecolor => ColorMode::Truecolor,
+            ColorArg::Ansi256 => ColorMode::Ansi256,
+            ColorArg::Ascii => ColorMode::Ascii,
+        }
+    }
+}
+
+fn parse_size(text: &str) -> Result<(u16, u16), String> {
+    let (w, h) = text
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("expected COLSxROWS, got `{text}`"))?;
+    let parse = |s: &str, what: &str| {
+        s.trim()
+            .parse::<u16>()
+            .map_err(|_| format!("`{s}` is not a valid number of {what}"))
+            .and_then(|v| if v == 0 { Err(format!("{what} must not be zero")) } else { Ok(v) })
+    };
+    Ok((parse(w, "columns")?, parse(h, "rows")?))
+}
+
+fn unit_interval(text: &str) -> Result<f32, String> {
+    let v: f32 = text.parse().map_err(|_| format!("`{text}` is not a number"))?;
+    if (0.0..=1.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!("expected a value between 0 and 1, got {v}"))
+    }
+}
+
+fn positive(text: &str) -> Result<f32, String> {
+    let v: f32 = text.parse().map_err(|_| format!("`{text}` is not a number"))?;
+    if v > 0.0 && v.is_finite() {
+        Ok(v)
+    } else {
+        Err(format!("expected a positive number, got {v}"))
+    }
+}
+
+fn main() {
+    let args = Args::parse();
+    if let Err(err) = run(&args) {
+        // The guard has already put the terminal back by the time this prints.
+        eprintln!("warp: {err}");
+        std::process::exit(1);
+    }
+}
+
+fn run(args: &Args) -> io::Result<()> {
+    #[cfg(feature = "snapshot")]
+    if let Some(path) = &args.snapshot {
+        return run_snapshot(args, path);
+    }
+    if args.headless {
+        run_headless(args)
+    } else {
+        run_interactive(args)
+    }
+}
+
+/// The shape of a flight: everything except where the frames end up.
+struct Flight {
+    ship: Ship,
+    field: StarField,
+    renderer: Renderer,
+    autopilot: Autopilot,
+    time: f32,
+    accumulator: f32,
+}
+
+impl Flight {
+    fn new(args: &Args, cols: usize, rows: usize) -> Self {
+        let mut ship = Ship::new();
+        ship.throttle = args.throttle;
+        if args.engage {
+            ship.toggle_warp();
+        }
+
+        let renderer = Renderer::new(cols, rows, args.color.resolve(), args.exposure);
+        let cam = renderer.camera(&ship, 0.0);
+        let field = StarField::new(star_count(args, &renderer), seed(args), &cam);
+
+        Self { ship, field, renderer, autopilot: Autopilot::default(), time: 0.0, accumulator: 0.0 }
+    }
+
+    /// Advance by `dt` of wall time, in fixed physics steps.
+    fn advance(&mut self, dt: f32) {
+        self.time += dt;
+        self.accumulator += dt;
+        while self.accumulator >= SIM_STEP {
+            self.ship.update(SIM_STEP);
+            let cam = self.renderer.camera(&self.ship, self.time);
+            self.field.update(
+                SIM_STEP,
+                self.ship.speed,
+                self.ship.yaw_rate,
+                self.ship.pitch_rate,
+                &cam,
+            );
+            self.accumulator -= SIM_STEP;
+        }
+    }
+
+    fn draw(&mut self, fps: f32, paused: bool) {
+        let cam = self.renderer.camera(&self.ship, self.time);
+        let readout = Readout { ship: &self.ship, fps, stars: self.field.len(), paused };
+        self.renderer.render(&self.field, &self.ship, &cam, self.time, &readout);
+    }
+
+    fn resize(&mut self, args: &Args, cols: usize, rows: usize) {
+        self.renderer.resize(cols, rows);
+        let cam = self.renderer.camera(&self.ship, self.time);
+        self.field.retarget(&cam);
+        if args.stars == 0 {
+            self.field.resize_pool(star_count(args, &self.renderer));
+        }
+    }
+}
+
+fn star_count(args: &Args, renderer: &Renderer) -> usize {
+    if args.stars > 0 {
+        return args.stars;
+    }
+    let (w, h) = renderer.canvas_dims();
+    (((w * h) as f32 * AUTO_DENSITY) as usize).clamp(AUTO_MIN_STARS, AUTO_MAX_STARS)
+}
+
+fn seed(args: &Args) -> u64 {
+    args.seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x5EED)
+    })
+}
+
+/// Flies the ship when nobody is at the stick: a repeating run-up to warp,
+/// a long cruise with a lazy weave, and a drop back to impulse.
+#[derive(Default)]
+struct Autopilot {
+    phase: usize,
+}
+
+impl Autopilot {
+    /// Length of one full run-up-and-drop-out cycle, in seconds.
+    const CYCLE: f32 = 46.0;
+
+    fn update(&mut self, ship: &mut Ship, elapsed: f32) {
+        let t = elapsed % Self::CYCLE;
+        let phase = match t {
+            t if t < 6.0 => 0,  // sublight, easing the throttle up
+            t if t < 32.0 => 1, // at warp
+            t if t < 40.0 => 2, // dropping out
+            _ => 3,             // coasting before the next run
+        };
+
+        if phase != self.phase {
+            match phase {
+                1 => {
+                    ship.throttle = 0.55;
+                    if !ship.warp_engaged {
+                        ship.toggle_warp();
+                    }
+                }
+                2 => {
+                    if ship.warp_engaged {
+                        ship.toggle_warp();
+                    }
+                }
+                _ => {}
+            }
+            self.phase = phase;
+        }
+
+        match phase {
+            0 => ship.throttle = (0.15 + t * 0.10).min(0.80),
+            1 => {
+                ship.throttle = (0.55 + (t - 6.0) * 0.025).min(1.0);
+                // A slow weave, so the view is never quite static.
+                ship.nudge_yaw((elapsed * 0.31).sin() * 0.003);
+                ship.nudge_pitch((elapsed * 0.19).cos() * 0.002);
+            }
+            2 => ship.throttle = (ship.throttle - 0.004).max(0.25),
+            _ => ship.throttle = (ship.throttle - 0.002).max(0.15),
+        }
+    }
+}
+
+/// What a keypress asked for.
+enum Action {
+    Continue,
+    Quit,
+}
+
+fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool) -> Action {
+    // Releases only arrive from terminals speaking the kitty protocol; ignoring
+    // them keeps a single press from counting twice.
+    if key.kind == KeyEventKind::Release {
+        return Action::Continue;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('c' | 'd') if ctrl => return Action::Quit,
+        KeyCode::Char('q' | 'Q') | KeyCode::Esc => return Action::Quit,
+
+        KeyCode::Up | KeyCode::Char('w' | 'W') => flight.ship.nudge_throttle(1.0),
+        KeyCode::Down | KeyCode::Char('s' | 'S') => flight.ship.nudge_throttle(-1.0),
+        KeyCode::Left | KeyCode::Char('a' | 'A') => flight.ship.nudge_yaw(-1.0),
+        KeyCode::Right | KeyCode::Char('d' | 'D') => flight.ship.nudge_yaw(1.0),
+        KeyCode::Char('i' | 'I') => flight.ship.nudge_pitch(-1.0),
+        KeyCode::Char('k' | 'K') => flight.ship.nudge_pitch(1.0),
+
+        KeyCode::Char(' ') => {
+            flight.ship.toggle_warp();
+        }
+        KeyCode::Char('p' | 'P') => *paused = !*paused,
+        KeyCode::Char('r' | 'R') => {
+            flight.ship.reset();
+            flight.ship.throttle = args.throttle;
+            *paused = false;
+        }
+        KeyCode::Char('+' | '=') => {
+            let n = (flight.field.len() as f32 * 1.25) as usize;
+            flight.field.resize_pool(n.min(AUTO_MAX_STARS));
+        }
+        KeyCode::Char('-' | '_') => {
+            let n = (flight.field.len() as f32 * 0.8) as usize;
+            flight.field.resize_pool(n.max(64));
+        }
+        _ => {}
+    }
+    Action::Continue
+}
+
+fn run_interactive(args: &Args) -> io::Result<()> {
+    let (cols, rows) = args.size.map(Ok).unwrap_or_else(terminal::size)?;
+    let _guard = RawGuard::new()?;
+    let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
+    out.queue(terminal::Clear(terminal::ClearType::All))?;
+
+    let mut flight = Flight::new(args, cols as usize, rows as usize);
+    let mut paused = false;
+    let mut fps = args.fps as f32;
+    let frame_budget = Duration::from_secs_f32(1.0 / args.fps as f32);
+    let start = Instant::now();
+    let mut last = start;
+
+    'flying: loop {
+        let frame_start = Instant::now();
+
+        while event::poll(Duration::ZERO)? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if let Action::Quit = handle_key(key, &mut flight, args, &mut paused) {
+                        break 'flying;
+                    }
+                }
+                Event::Resize(cols, rows) => {
+                    flight.resize(args, cols as usize, rows as usize);
+                    out.queue(terminal::Clear(terminal::ClearType::All))?;
+                    flight.renderer.screen().force_redraw();
+                }
+                _ => {}
+            }
+        }
+
+        let elapsed = start.elapsed().as_secs_f32();
+        if let Some(limit) = args.demo {
+            if elapsed >= limit {
+                break 'flying;
+            }
+            flight.autopilot.update(&mut flight.ship, elapsed);
+        }
+
+        let dt = (frame_start - last).as_secs_f32().clamp(0.0, MAX_FRAME_DT);
+        last = frame_start;
+        // Smoothed so the readout is legible rather than flickering.
+        fps += (1.0 / dt.max(1e-4) - fps) * 0.08;
+
+        if !paused {
+            flight.advance(dt);
+        }
+        flight.draw(fps, paused);
+        flight.renderer.present(&mut out)?;
+
+        if let Some(remaining) = frame_budget.checked_sub(frame_start.elapsed()) {
+            std::thread::sleep(remaining);
+        }
+    }
+
+    Ok(())
+}
+
+/// Render frames to stdout with a fixed timestep. No raw mode, no alternate
+/// screen — the same seed always produces the same bytes.
+fn run_headless(args: &Args) -> io::Result<()> {
+    let (cols, rows) = resolved_size(args);
+    let mut flight = Flight::new(args, cols as usize, rows as usize);
+    let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
+    let dt = 1.0 / args.fps as f32;
+
+    for frame in 0..args.frames {
+        if args.demo.is_some() {
+            flight.autopilot.update(&mut flight.ship, frame as f32 * dt);
+        }
+        flight.advance(dt);
+        flight.draw(args.fps as f32, false);
+        flight.renderer.present_plain(&mut out)?;
+    }
+    out.flush()
+}
+
+#[cfg(feature = "snapshot")]
+fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
+    let (cols, rows) = args.size.unwrap_or((240, 68));
+    let mut flight = Flight::new(args, cols as usize, rows as usize);
+    let dt = 1.0 / args.fps as f32;
+
+    for frame in 0..args.warmup {
+        if args.demo.is_some() {
+            flight.autopilot.update(&mut flight.ship, frame as f32 * dt);
+        }
+        flight.advance(dt);
+    }
+    flight.draw(args.fps as f32, false);
+
+    let (w, h) = flight.renderer.canvas_dims();
+    snapshot::write_png(path, flight.renderer.pixels(), w, h, args.scale)?;
+    eprintln!(
+        "wrote {} ({}x{} px) at velocity {:.1} c",
+        path.display(),
+        w * args.scale.max(1),
+        h * args.scale.max(1),
+        flight.ship.velocity_c()
+    );
+    Ok(())
+}
+
+/// The size to render at: whatever was asked for, else the terminal's, else a
+/// sensible default for a process with no terminal at all.
+fn resolved_size(args: &Args) -> (u16, u16) {
+    args.size
+        .or_else(|| terminal::size().ok())
+        .filter(|(c, r)| *c > 0 && *r > 0)
+        .unwrap_or(FALLBACK_SIZE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args_for(extra: &[&str]) -> Args {
+        let mut argv = vec!["warp"];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).expect("arguments should parse")
+    }
+
+    #[test]
+    fn defaults_are_sane() {
+        let args = args_for(&[]);
+        assert_eq!(args.fps, 60);
+        assert_eq!(args.stars, 0);
+        assert!(args.demo.is_none() && !args.headless && !args.engage);
+    }
+
+    #[test]
+    fn demo_takes_an_optional_duration() {
+        assert_eq!(args_for(&["--demo"]).demo, Some(45.0));
+        assert_eq!(args_for(&["--demo", "12.5"]).demo, Some(12.5));
+    }
+
+    #[test]
+    fn sizes_parse_and_bad_ones_are_rejected() {
+        assert_eq!(parse_size("200x50").unwrap(), (200, 50));
+        assert_eq!(parse_size(" 80 X 24 ").unwrap(), (80, 24));
+        for bad in ["", "200", "x50", "200x", "0x50", "200x0", "-4x9", "axb"] {
+            assert!(parse_size(bad).is_err(), "`{bad}` should not parse");
+        }
+    }
+
+    #[test]
+    fn numeric_arguments_are_range_checked() {
+        assert!(Args::try_parse_from(["warp", "--throttle", "1.5"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--throttle", "-0.1"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--exposure", "0"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--fps", "0"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--fps", "999"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--throttle", "0.5"]).is_ok());
+    }
+
+    #[test]
+    fn color_modes_resolve() {
+        assert_eq!(args_for(&["--color", "256"]).color.resolve(), ColorMode::Ansi256);
+        assert_eq!(args_for(&["--color", "ascii"]).color.resolve(), ColorMode::Ascii);
+        assert_eq!(
+            args_for(&["--color", "truecolor"]).color.resolve(),
+            ColorMode::Truecolor
+        );
+    }
+
+    #[test]
+    fn the_automatic_star_count_scales_with_the_canvas() {
+        let args = args_for(&[]);
+        let small = Renderer::new(40, 12, ColorMode::Truecolor, 1.0);
+        let large = Renderer::new(300, 90, ColorMode::Truecolor, 1.0);
+        let (a, b) = (star_count(&args, &small), star_count(&args, &large));
+        assert!(a >= AUTO_MIN_STARS && b <= AUTO_MAX_STARS);
+        assert!(b > a, "a bigger window should hold more stars: {a} vs {b}");
+
+        let explicit = args_for(&["--stars", "1234"]);
+        assert_eq!(star_count(&explicit, &large), 1234);
+    }
+
+    #[test]
+    fn seeds_are_honoured_and_otherwise_invented() {
+        assert_eq!(seed(&args_for(&["--seed", "99"])), 99);
+        let a = seed(&args_for(&[]));
+        assert_ne!(a, 0, "a time-derived seed should not be degenerate");
+    }
+
+    #[test]
+    fn the_same_seed_produces_the_same_flight() {
+        let render = || {
+            let args = args_for(&["--seed", "7", "--stars", "500", "--size", "40x12"]);
+            let mut flight = Flight::new(&args, 40, 12);
+            let mut out = Vec::new();
+            for _ in 0..30 {
+                flight.advance(1.0 / 60.0);
+                flight.draw(60.0, false);
+                flight.renderer.present_plain(&mut out).unwrap();
+            }
+            out
+        };
+        assert_eq!(render(), render(), "a seeded flight must be reproducible");
+    }
+
+    #[test]
+    fn different_seeds_produce_different_skies() {
+        let render = |seed: &str| {
+            let args = args_for(&["--seed", seed, "--stars", "500", "--size", "40x12"]);
+            let mut flight = Flight::new(&args, 40, 12);
+            let mut out = Vec::new();
+            for _ in 0..30 {
+                flight.advance(1.0 / 60.0);
+                flight.draw(60.0, false);
+                flight.renderer.present_plain(&mut out).unwrap();
+            }
+            out
+        };
+        assert_ne!(render("1"), render("2"));
+    }
+
+    #[test]
+    fn the_autopilot_completes_a_cycle_without_getting_stuck() {
+        let mut ship = Ship::new();
+        let mut autopilot = Autopilot::default();
+        let dt = 1.0 / 60.0;
+        let mut peak: f32 = 0.0;
+        let mut engaged_at_some_point = false;
+
+        for frame in 0..(Autopilot::CYCLE / dt) as usize {
+            let t = frame as f32 * dt;
+            autopilot.update(&mut ship, t);
+            ship.update(dt);
+            peak = peak.max(ship.velocity_c());
+            engaged_at_some_point |= ship.warp_engaged;
+            assert!((0.0..=1.0).contains(&ship.throttle));
+        }
+        assert!(engaged_at_some_point, "the autopilot never lit the drive");
+        assert!(peak > 100.0, "the autopilot never got up to speed: {peak} c");
+        assert!(!ship.warp_engaged, "the cycle should end back at impulse");
+        assert!(ship.velocity_c() < 1.0, "it should be sublight by the end");
+    }
+
+    #[test]
+    fn keys_do_what_they_say() {
+        let args = args_for(&["--stars", "200", "--size", "40x12"]);
+        let mut flight = Flight::new(&args, 40, 12);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        let before = flight.ship.throttle;
+        handle_key(press(KeyCode::Up), &mut flight, &args, &mut paused);
+        assert!(flight.ship.throttle > before);
+        handle_key(press(KeyCode::Down), &mut flight, &args, &mut paused);
+        handle_key(press(KeyCode::Down), &mut flight, &args, &mut paused);
+        assert!(flight.ship.throttle < before);
+
+        handle_key(press(KeyCode::Char(' ')), &mut flight, &args, &mut paused);
+        assert!(flight.ship.warp_engaged);
+
+        handle_key(press(KeyCode::Left), &mut flight, &args, &mut paused);
+        assert!(flight.ship.yaw_rate < 0.0);
+        handle_key(press(KeyCode::Char('i')), &mut flight, &args, &mut paused);
+        assert!(flight.ship.pitch_rate < 0.0);
+
+        handle_key(press(KeyCode::Char('p')), &mut flight, &args, &mut paused);
+        assert!(paused);
+
+        let stars = flight.field.len();
+        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+        assert!(flight.field.len() > stars);
+        handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
+        assert!(flight.field.len() < stars * 2);
+
+        handle_key(press(KeyCode::Char('r')), &mut flight, &args, &mut paused);
+        assert!(!flight.ship.warp_engaged && !paused);
+        assert_eq!(flight.ship.throttle, args.throttle);
+    }
+
+    #[test]
+    fn quit_keys_quit() {
+        let args = args_for(&["--stars", "100", "--size", "20x8"]);
+        let mut flight = Flight::new(&args, 20, 8);
+        let mut paused = false;
+        for key in [
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ] {
+            assert!(matches!(
+                handle_key(key, &mut flight, &args, &mut paused),
+                Action::Quit
+            ));
+        }
+        // A plain 'c' is not a quit — it would be a nasty surprise if it were.
+        assert!(matches!(
+            handle_key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+                &mut flight,
+                &args,
+                &mut paused
+            ),
+            Action::Continue
+        ));
+    }
+
+    #[test]
+    fn key_releases_are_ignored() {
+        let args = args_for(&["--stars", "100", "--size", "20x8"]);
+        let mut flight = Flight::new(&args, 20, 8);
+        let mut paused = false;
+        let before = flight.ship.throttle;
+        let mut release = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        handle_key(release, &mut flight, &args, &mut paused);
+        assert_eq!(flight.ship.throttle, before);
+    }
+
+    #[test]
+    fn a_flight_survives_being_resized_underneath_it() {
+        let args = args_for(&["--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        for (cols, rows) in [(80, 24), (250, 70), (8, 3), (1, 1), (120, 40)] {
+            flight.resize(&args, cols, rows);
+            for _ in 0..20 {
+                flight.advance(1.0 / 60.0);
+                flight.draw(60.0, false);
+            }
+            flight.renderer.present(&mut Vec::new()).unwrap();
+            assert!(flight.field.len() >= 1);
+        }
+    }
+
+    #[test]
+    fn a_long_flight_stays_finite() {
+        let args = args_for(&["--seed", "3", "--stars", "800", "--size", "60x20", "--engage"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut autopilot = Autopilot::default();
+        for frame in 0..3000 {
+            autopilot.update(&mut flight.ship, frame as f32 / 60.0);
+            flight.advance(1.0 / 60.0);
+        }
+        flight.draw(60.0, false);
+        assert!(flight.ship.speed.is_finite() && flight.ship.distance_ly.is_finite());
+        assert!(flight.renderer.pixels().iter().any(|p| p.iter().any(|v| *v > 0)));
+    }
+}
+
