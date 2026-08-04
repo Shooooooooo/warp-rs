@@ -52,6 +52,11 @@ struct Args {
     #[arg(long, num_args = 0..=1, default_missing_value = "45", value_name = "SECS")]
     demo: Option<f32>,
 
+    /// Screensaver: fly on autopilot indefinitely and quit on *any* key, so it
+    /// can be dropped straight into tmux's `lock-command`.
+    #[arg(long)]
+    screensaver: bool,
+
     /// Print frames to stdout instead of taking over the terminal.
     #[arg(long)]
     headless: bool,
@@ -215,9 +220,10 @@ impl Flight {
         }
     }
 
-    fn draw(&mut self, fps: f32, paused: bool) {
+    fn draw(&mut self, fps: f32, paused: bool, hints: bool) {
         let cam = self.renderer.camera(&self.ship, self.time);
-        let readout = Readout { ship: &self.ship, fps, stars: self.field.len(), paused };
+        let readout =
+            Readout { ship: &self.ship, fps, stars: self.field.len(), paused, hints };
         self.renderer.render(&self.field, &self.ship, &cam, self.time, &readout);
     }
 
@@ -347,7 +353,9 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
 }
 
 fn run_interactive(args: &Args) -> io::Result<()> {
-    let (cols, rows) = args.size.map(Ok).unwrap_or_else(terminal::size)?;
+    // Not `terminal::size()` directly: tmux runs a `lock-command` against a
+    // tty whose window size is not set yet, so it can report zero.
+    let (cols, rows) = resolved_size(args);
     let _guard = RawGuard::new()?;
     let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
     out.queue(terminal::Clear(terminal::ClearType::All))?;
@@ -364,6 +372,13 @@ fn run_interactive(args: &Args) -> io::Result<()> {
 
         while event::poll(Duration::ZERO)? {
             match event::read()? {
+                // A screensaver dies on contact: any key at all gets you back
+                // to your terminal, not just the ones a pilot would know.
+                Event::Key(key) if args.screensaver => {
+                    if key.kind != KeyEventKind::Release {
+                        break 'flying;
+                    }
+                }
                 Event::Key(key) => {
                     if let Action::Quit = handle_key(key, &mut flight, args, &mut paused) {
                         break 'flying;
@@ -379,10 +394,14 @@ fn run_interactive(args: &Args) -> io::Result<()> {
         }
 
         let elapsed = start.elapsed().as_secs_f32();
+        // `--demo` flies itself and then stops; a screensaver flies itself
+        // until something interrupts it.
         if let Some(limit) = args.demo {
             if elapsed >= limit {
                 break 'flying;
             }
+        }
+        if args.demo.is_some() || args.screensaver {
             flight.autopilot.update(&mut flight.ship, elapsed);
         }
 
@@ -394,7 +413,7 @@ fn run_interactive(args: &Args) -> io::Result<()> {
         if !paused {
             flight.advance(dt);
         }
-        flight.draw(fps, paused);
+        flight.draw(fps, paused, !args.screensaver);
         flight.renderer.present(&mut out)?;
 
         if let Some(remaining) = frame_budget.checked_sub(frame_start.elapsed()) {
@@ -418,7 +437,7 @@ fn run_headless(args: &Args) -> io::Result<()> {
             flight.autopilot.update(&mut flight.ship, frame as f32 * dt);
         }
         flight.advance(dt);
-        flight.draw(args.fps as f32, false);
+        flight.draw(args.fps as f32, false, true);
         flight.renderer.present_plain(&mut out)?;
     }
     out.flush()
@@ -436,7 +455,7 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
         }
         flight.advance(dt);
     }
-    flight.draw(args.fps as f32, false);
+    flight.draw(args.fps as f32, false, true);
 
     let (w, h) = flight.renderer.canvas_dims();
     snapshot::write_png(path, flight.renderer.pixels(), w, h, args.scale)?;
@@ -540,7 +559,7 @@ mod tests {
             let mut out = Vec::new();
             for _ in 0..30 {
                 flight.advance(1.0 / 60.0);
-                flight.draw(60.0, false);
+                flight.draw(60.0, false, true);
                 flight.renderer.present_plain(&mut out).unwrap();
             }
             out
@@ -556,7 +575,7 @@ mod tests {
             let mut out = Vec::new();
             for _ in 0..30 {
                 flight.advance(1.0 / 60.0);
-                flight.draw(60.0, false);
+                flight.draw(60.0, false, true);
                 flight.renderer.present_plain(&mut out).unwrap();
             }
             out
@@ -623,6 +642,34 @@ mod tests {
     }
 
     #[test]
+    fn screensaver_mode_flies_itself_forever() {
+        let args = args_for(&["--screensaver"]);
+        assert!(args.screensaver);
+        assert!(args.demo.is_none(), "a screensaver has no deadline to hit");
+
+        // The autopilot has to keep going indefinitely, not stall after one
+        // cycle — a screensaver that freezes is worse than no screensaver.
+        let mut ship = Ship::new();
+        let mut autopilot = Autopilot::default();
+        let dt = 1.0 / 60.0;
+        let mut peak_per_cycle = vec![];
+        for cycle in 0..4 {
+            let mut peak: f32 = 0.0;
+            let start = cycle as f32 * Autopilot::CYCLE;
+            for frame in 0..(Autopilot::CYCLE / dt) as usize {
+                autopilot.update(&mut ship, start + frame as f32 * dt);
+                ship.update(dt);
+                peak = peak.max(ship.velocity_c());
+            }
+            peak_per_cycle.push(peak);
+        }
+        assert!(
+            peak_per_cycle.iter().all(|p| *p > 100.0),
+            "every cycle should reach warp: {peak_per_cycle:?}"
+        );
+    }
+
+    #[test]
     fn quit_keys_quit() {
         let args = args_for(&["--stars", "100", "--size", "20x8"]);
         let mut flight = Flight::new(&args, 20, 8);
@@ -669,7 +716,7 @@ mod tests {
             flight.resize(&args, cols, rows);
             for _ in 0..20 {
                 flight.advance(1.0 / 60.0);
-                flight.draw(60.0, false);
+                flight.draw(60.0, false, true);
             }
             flight.renderer.present(&mut Vec::new()).unwrap();
             assert!(flight.field.len() >= 1);
@@ -685,7 +732,7 @@ mod tests {
             autopilot.update(&mut flight.ship, frame as f32 / 60.0);
             flight.advance(1.0 / 60.0);
         }
-        flight.draw(60.0, false);
+        flight.draw(60.0, false, true);
         assert!(flight.ship.speed.is_finite() && flight.ship.distance_ly.is_finite());
         assert!(flight.renderer.pixels().iter().any(|p| p.iter().any(|v| *v > 0)));
     }

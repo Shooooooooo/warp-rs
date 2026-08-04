@@ -64,11 +64,59 @@ vanishing point, red out at the edges where they are falling behind.
 Flight time is compressed so the odometer moves: one second at the stick is one
 day underway, which is about 5 light years per second at full warp.
 
+## As a tmux screensaver
+
+`--screensaver` flies on autopilot indefinitely and quits on **any** key, which
+is exactly the contract tmux's `lock-command` wants: tmux runs the command when
+a client goes idle and unlocks when it exits.
+
+Put the binary somewhere on `PATH`:
+
+```sh
+cargo install --path .
+```
+
+Then in `~/.tmux.conf`:
+
+```tmux
+set -g lock-after-time 300              # idle seconds before it kicks in
+set -g lock-command "warp --screensaver"
+```
+
+Reload with `tmux source-file ~/.tmux.conf`. Leave a session alone for five
+minutes and the stars come out; press anything and you are back where you were.
+
+tmux binds no key to `lock-session` by default, so add one if you want to
+trigger it on demand:
+
+```tmux
+bind L lock-session
+```
+
+Note that `lock-server` is on by default, which means all sessions lock together
+on the server's idle time. `set -g lock-server off` makes it per-session.
+
+This is a screensaver, not a lock: any key dismisses it and no password is
+asked for. If you want the screen actually *locked*, chain a real locker —
+`set -g lock-command "warp --screensaver; vlock"`.
+
+### Without the lock mechanism
+
+As a popup over whatever you are working on (tmux 3.2+), where `-E` closes it
+when the command exits:
+
+```tmux
+bind W display-popup -E -w 90% -h 90% "warp --screensaver"
+```
+
+Or just as a window: `tmux new-window -n warp 'warp --screensaver'`.
+
 ## Options
 
 | Flag | |
 | --- | --- |
 | `--demo [SECS]` | Fly on autopilot, then exit. Defaults to 45 seconds. |
+| `--screensaver` | Fly on autopilot forever; any key quits. For tmux's `lock-command`. |
 | `--stars N` | Star count. `0` (default) suits it to the terminal. |
 | `--fps N` | Frame rate cap. Default 60. |
 | `--color auto\|truecolor\|256\|ascii` | Colour depth. Auto-detected by default. |

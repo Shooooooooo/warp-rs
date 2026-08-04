@@ -27,6 +27,12 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(cols: usize, rows: usize, mode: ColorMode, exposure: f32) -> Self {
+        // Clamp *before* doubling. `Canvas` and `Screen` each clamp a zero
+        // dimension up to one on their own, and if we hand them a zero they
+        // disagree about how big the pixel buffer is: the canvas becomes one
+        // row, the screen wants two. A terminal that reports zero rows — which
+        // is what tmux hands a `lock-command` — then crashes `compose`.
+        let (cols, rows) = (cols.max(1), rows.max(1));
         Self {
             // Two subpixel rows per terminal row: that is the half-block trick.
             canvas: Canvas::new(cols, rows * 2),
@@ -38,6 +44,7 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
         self.canvas.resize(cols, rows * 2);
         self.screen.resize(cols, rows);
     }
@@ -125,7 +132,7 @@ mod tests {
     use super::*;
 
     fn readout(ship: &Ship) -> Readout<'_> {
-        Readout { ship, fps: 60.0, stars: 1000, paused: false }
+        Readout { ship, fps: 60.0, stars: 1000, paused: false, hints: true }
     }
 
     #[test]
@@ -197,6 +204,40 @@ mod tests {
         let cruising = sample(false);
         let warping = sample(true);
         assert!(warping > cruising * 1.5, "cruise {cruising:.1} vs warp {warping:.1}");
+    }
+
+    #[test]
+    fn a_zero_sized_terminal_does_not_crash() {
+        // Regression: tmux runs a lock-command against a tty whose size is not
+        // established, so `terminal::size()` can hand back zero rows. Clamping
+        // after doubling left the canvas one subpixel row tall while the
+        // screen expected two, and `compose` indexed off the end.
+        for (cols, rows) in [(0, 0), (80, 0), (0, 24), (1, 0)] {
+            let mut renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
+            let (w, h) = renderer.canvas_dims();
+            let (sc, sr) = renderer.screen().dims();
+            assert_eq!(
+                (w, h),
+                (sc, sr * 2),
+                "canvas and screen disagree at {cols}x{rows}"
+            );
+
+            let mut ship = Ship::new();
+            ship.throttle = 1.0;
+            let cam = renderer.camera(&ship, 0.0);
+            let mut field = StarField::new(50, 1, &cam);
+            for _ in 0..5 {
+                ship.update(1.0 / 60.0);
+                field.update(1.0 / 60.0, ship.speed, 0.0, 0.0, &cam);
+                renderer.render(&field, &ship, &cam, 0.0, &readout(&ship));
+            }
+            renderer.present(&mut Vec::new()).unwrap();
+
+            renderer.resize(cols, rows);
+            let (w, h) = renderer.canvas_dims();
+            let (sc, sr) = renderer.screen().dims();
+            assert_eq!((w, h), (sc, sr * 2), "resize to {cols}x{rows} desynced them");
+        }
     }
 
     #[test]

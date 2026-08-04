@@ -25,6 +25,9 @@ pub struct Readout<'a> {
     pub fps: f32,
     pub stars: usize,
     pub paused: bool,
+    /// Whether to show the control hints. A screensaver quits on any key, so
+    /// listing which keys do what would be a lie.
+    pub hints: bool,
 }
 
 pub fn draw(screen: &mut Screen, r: &Readout) {
@@ -39,7 +42,9 @@ pub fn draw(screen: &mut Screen, r: &Readout) {
     draw_nav_panel(screen, r);
     draw_status_line(screen, r, cols, rows);
     draw_throttle(screen, r, rows);
-    draw_hints(screen, cols, rows);
+    if r.hints {
+        draw_hints(screen, cols, rows);
+    }
 }
 
 /// Everything the panel says, squeezed onto one line for a tiny window.
@@ -193,7 +198,7 @@ mod tests {
     use crate::term::ColorMode;
 
     fn readout(ship: &Ship) -> Readout<'_> {
-        Readout { ship, fps: 60.0, stars: 4000, paused: false }
+        Readout { ship, fps: 60.0, stars: 4000, paused: false, hints: true }
     }
 
     fn blank(cols: usize, rows: usize) -> Screen {
@@ -303,12 +308,31 @@ mod tests {
     }
 
     #[test]
+    fn control_hints_can_be_suppressed() {
+        // In screensaver mode any key quits, so advertising "SPACE warp" and
+        // friends would be telling the viewer something untrue.
+        let render = |hints: bool| {
+            let mut screen = blank(120, 34);
+            let ship = Ship::new();
+            draw(&mut screen, &Readout { ship: &ship, fps: 60.0, stars: 900, paused: false, hints });
+            let mut out = Vec::new();
+            screen.flush(&mut out).unwrap();
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        assert!(render(true).contains("pause"), "hints should be there by default");
+        let bare = render(false);
+        assert!(!bare.contains("pause"), "hints should be gone");
+        // Everything else still draws.
+        assert!(bare.contains("VELOCITY") && bare.contains("THR"));
+    }
+
+    #[test]
     fn the_status_banner_reports_the_drive_state() {
         // Over a black frame the shadow colour never changes, so each word
         // lands in the output as one contiguous run.
         let flushed = |ship: &Ship, paused: bool| {
             let mut screen = blank(120, 34);
-            draw(&mut screen, &Readout { ship, fps: 60.0, stars: 900, paused });
+            draw(&mut screen, &Readout { ship, fps: 60.0, stars: 900, paused, hints: true });
             let mut out = Vec::new();
             screen.flush(&mut out).unwrap();
             String::from_utf8_lossy(&out).into_owned()
