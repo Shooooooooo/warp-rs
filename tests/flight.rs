@@ -10,8 +10,12 @@ use warp_rs::app::Flight;
 use warp_rs::cli::Args;
 
 /// Fly `frames` frames at a fixed timestep and hand back the bytes.
+///
+/// The colour depth is pinned rather than auto-detected: `--color auto` reads
+/// `TERM`, which CI runners do not set, and the bytes these tests assert on are
+/// the truecolor ones. A caller that cares can pass its own `--color`.
 fn fly(argv: &[&str], cols: usize, rows: usize, frames: usize) -> Vec<u8> {
-    let mut full = vec!["warp"];
+    let mut full = vec!["warp", "--color", "truecolor"];
     full.extend_from_slice(argv);
     let args = Args::try_parse_from(full).expect("arguments should parse");
 

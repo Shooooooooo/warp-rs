@@ -37,10 +37,8 @@ impl Autopilot {
                         ship.toggle_warp();
                     }
                 }
-                2 => {
-                    if ship.warp_engaged {
-                        ship.toggle_warp();
-                    }
+                2 if ship.warp_engaged => {
+                    ship.toggle_warp();
                 }
                 _ => {}
             }
