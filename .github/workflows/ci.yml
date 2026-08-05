@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The renderer's whole job is to behave the same across terminals and
+  # platforms, so the test matrix is the point rather than a formality.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # Default features first: `snapshot` is optional, and the build without
+      # it is the one people actually install.
+      - run: cargo build --locked
+      - run: cargo test --locked
+      - run: cargo test --locked --all-features
+
+  lint:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ubuntu-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-clippy-
+
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  # `--headless` renders on a fixed timestep with no terminal control, so a
+  # fixed seed has to produce the same bytes every time. That is what makes it
+  # possible to tell whether a change to the renderer changed only what was
+  # meant — worth guarding, since it is easy to break without noticing.
+  headless:
+    name: headless output is reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ubuntu-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-release-
+
+      - run: cargo build --release --locked --all-features
+
+      - name: the same seed produces the same flight
+        run: |
+          fly() {
+            ./target/release/warp --headless --frames 120 --seed "$1" \
+              --size 120x36 --demo | sha256sum | cut -d' ' -f1
+          }
+          a=$(fly 1); b=$(fly 1); c=$(fly 2)
+          echo "seed 1, first run:  $a"
+          echo "seed 1, second run: $b"
+          echo "seed 2:             $c"
+          if [ "$a" != "$b" ]; then
+            echo "::error::a seeded flight is no longer reproducible"
+            exit 1
+          fi
+          if [ "$a" = "$c" ]; then
+            echo "::error::two different seeds produced the same sky"
+            exit 1
+          fi
+
+      - name: a snapshot can still be written
+        run: |
+          ./target/release/warp --snapshot frame.png --engage --throttle 1.0 \
+            --warmup 120 --scale 1 --seed 1 --size 120x36
+          test -s frame.png

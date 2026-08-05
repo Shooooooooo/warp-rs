@@ -1,1 +1,3 @@
 /target
+# Snapshots land in the working directory; the ones in docs/ are tracked.
+/*.png
