@@ -40,8 +40,9 @@ const MAGNITUDE_FLOOR: f32 = 0.14;
 pub struct SpectralClass {
     pub rgb: [f32; 3],
     pub luminosity: f32,
-    /// Relative frequency in the pool.
-    weight: f32,
+    /// Relative frequency in the pool. Visible to the crate because the
+    /// exterior view draws from the same census.
+    pub(crate) weight: f32,
 }
 
 /// Roughly the colours of the main sequence. The weights lean toward the hot
@@ -425,7 +426,11 @@ enum DepthRule {
 
 /// Blend a star's rest colour toward blue ahead and red at the periphery.
 /// `forward` is cos of the angle off the nose; `amount` is the 0..=1 strength.
-fn shift_color(rgb: [f32; 3], forward: f32, amount: f32) -> [f32; 3] {
+///
+/// Visible to the crate because the exterior view Doppler-shifts the same way,
+/// about the ship's direction of travel rather than about the vanishing point:
+/// it is the same physics seen from beside the ship instead of from inside it.
+pub(crate) fn shift_color(rgb: [f32; 3], forward: f32, amount: f32) -> [f32; 3] {
     if amount <= 0.0 {
         return rgb;
     }

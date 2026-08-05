@@ -12,11 +12,14 @@ pub mod app;
 pub mod autopilot;
 pub mod canvas;
 pub mod cli;
+pub mod exterior;
 pub mod hud;
+pub mod lens;
 pub mod render;
 pub mod ship;
 pub mod starfield;
 pub mod term;
+pub mod view;
 
 #[cfg(feature = "snapshot")]
 pub mod snapshot;

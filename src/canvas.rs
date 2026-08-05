@@ -244,6 +244,107 @@ impl Canvas {
         }
     }
 
+    /// Draw a straight segment at an even brightness, end to end.
+    ///
+    /// A streak ramps from tail to head because that is what a moving point
+    /// leaves behind. A hull edge is not moving anywhere, so it gets neither
+    /// the ramp nor the length falloff: a long spar and a short one are the
+    /// same piece of metal, and dimming the long one would read as a lighting
+    /// cue that is not there.
+    pub fn draw_line(&mut self, from: (f32, f32), to: (f32, f32), color: [f32; 3], intensity: f32) {
+        if intensity.is_nan() || intensity <= 0.0 {
+            return;
+        }
+        let Some((from, to)) = self.clip(from, to) else {
+            return;
+        };
+        let (max_x, max_y) = (self.max_x(), self.max_y());
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length < 0.75 {
+            let (x, y) = (to.0.clamp(0.0, max_x), to.1.clamp(0.0, max_y));
+            self.splat_inside(x, y, color, intensity);
+            return;
+        }
+
+        let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
+        let inv_steps = 1.0 / steps as f32;
+        for i in 0..=steps {
+            let t = i as f32 * inv_steps;
+            let x = (from.0 + dx * t).clamp(0.0, max_x);
+            let y = (from.1 + dy * t).clamp(0.0, max_y);
+            self.splat_inside(x, y, color, intensity);
+        }
+    }
+
+    /// Draw a streak that has been bent into a curve: the same light a
+    /// [`Canvas::draw_streak`] would lay down, following a polyline instead of
+    /// a straight segment.
+    ///
+    /// The ramp and the length falloff are measured over the *whole* path
+    /// rather than per segment. Doing it per segment would scallop the streak —
+    /// every joint would restart at the tail brightness — and would dim a
+    /// finely subdivided curve far more than a coarsely subdivided one, so the
+    /// picture would change with the subdivision rather than with the physics.
+    pub fn draw_path(&mut self, points: &[(f32, f32)], color: [f32; 3], intensity: f32) {
+        if intensity.is_nan() || intensity <= 0.0 || points.is_empty() {
+            return;
+        }
+        let total: f32 = points
+            .windows(2)
+            .map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1))
+            .sum();
+        // A path that went nowhere, or one with a NaN in it, is a point.
+        if !total.is_finite() || total < 0.75 {
+            let head = points[points.len() - 1];
+            self.draw_streak(&Streak {
+                from: head,
+                to: head,
+                color,
+                intensity,
+            });
+            return;
+        }
+
+        let (max_x, max_y) = (self.max_x(), self.max_y());
+        let per_sample = intensity / (1.0 + total * LENGTH_FALLOFF);
+        let inv_total = 1.0 / total;
+        let mut travelled = 0.0f32;
+        // Where the previous segment stopped, so the vertex the next one
+        // starts from is not splatted twice. Without this every joint comes
+        // out as a bright bead, and a finely subdivided curve is a dotted
+        // line rather than a smooth one.
+        let mut resume_at: Option<(f32, f32)> = None;
+
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let span = (b.0 - a.0).hypot(b.1 - a.1);
+            // Clipping moves the endpoints, so the ramp has to be evaluated
+            // against where they ended up along the *original* segment — not
+            // against the clipped one, which would stretch the ramp back out
+            // over whatever fragment survived.
+            if let Some((from, to)) = self.clip(a, b) {
+                let at = |p: (f32, f32)| (travelled + (p.0 - a.0).hypot(p.1 - a.1)) * inv_total;
+                let (t0, t1) = (at(from), at(to));
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let length = (dx * dx + dy * dy).sqrt();
+                let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
+                let inv_steps = 1.0 / steps as f32;
+                let first = usize::from(resume_at == Some(from));
+                resume_at = Some(to);
+                for i in first..=steps {
+                    let s = i as f32 * inv_steps;
+                    let t = t0 + (t1 - t0) * s;
+                    let ramp = TAIL_BRIGHTNESS + (1.0 - TAIL_BRIGHTNESS) * t;
+                    let x = (from.0 + dx * s).clamp(0.0, max_x);
+                    let y = (from.1 + dy * s).clamp(0.0, max_y);
+                    self.splat_inside(x, y, color, per_sample * ramp);
+                }
+            }
+            travelled += span;
+        }
+    }
+
     /// Clip a segment to the canvas (Liang–Barsky). Returning `None` for a
     /// fully off-screen streak is what keeps a hard turn from costing anything.
     fn clip(&self, a: (f32, f32), b: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
@@ -341,6 +442,14 @@ impl Canvas {
                 }
             }
         }
+    }
+
+    /// Total light at one subpixel, for tests outside this module that care
+    /// about where the light landed rather than what colour it came out.
+    #[cfg(test)]
+    pub fn light_at(&self, x: usize, y: usize) -> f32 {
+        let px = self.buf[y * self.width + x];
+        px[0] + px[1] + px[2]
     }
 
     /// Collapse the HDR buffer to 8-bit sRGB-ish pixels, row-major, into a
@@ -491,6 +600,128 @@ mod tests {
         let head = canvas.buf[4 * 128 + 108][0];
         let tail = canvas.buf[4 * 128 + 12][0];
         assert!(head > tail, "head {head} should outshine tail {tail}");
+    }
+
+    #[test]
+    fn a_line_is_as_bright_at_one_end_as_the_other() {
+        // The opposite of a streak, and the reason it is a separate call: a
+        // wireframe hull drawn with the streak ramp looks lit from one side.
+        let mut canvas = Canvas::new(128, 8);
+        canvas.draw_line((10.0, 4.0), (110.0, 4.0), [1.0, 1.0, 1.0], 1.0);
+        let head = canvas.buf[4 * 128 + 108][0];
+        let tail = canvas.buf[4 * 128 + 12][0];
+        assert!(
+            (head - tail).abs() < 1e-5,
+            "head {head} against tail {tail}"
+        );
+        // And it does not dim as it gets longer, the way a smear does.
+        let mut short = Canvas::new(128, 8);
+        short.draw_line((10.0, 4.0), (20.0, 4.0), [1.0, 1.0, 1.0], 1.0);
+        assert!((short.buf[4 * 128 + 15][0] - head).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_line_off_the_canvas_draws_nothing_and_stays_in_bounds() {
+        let mut canvas = Canvas::new(64, 32);
+        for pair in [
+            ((-100.0, -100.0), (-50.0, -80.0)),
+            ((f32::NAN, 0.0), (10.0, 10.0)),
+            ((1e9, 1e9), (-1e9, -1e9)),
+        ] {
+            canvas.draw_line(pair.0, pair.1, [1.0; 3], 1.0);
+        }
+        assert_eq!(canvas.buf.len(), 64 * 32);
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
+    }
+
+    #[test]
+    fn a_two_point_path_is_exactly_the_streak_it_stands_in_for() {
+        // The lensed sky falls back to a straight path whenever the drive is
+        // off, so the bent and unbent code paths have to agree pixel for pixel
+        // — not merely look alike — or engaging warp would visibly re-render
+        // the whole field rather than bending it.
+        let (a, b) = ((12.0, 20.0), (96.0, 51.0));
+        let mut straight = Canvas::new(128, 64);
+        straight.draw_streak(&Streak {
+            from: a,
+            to: b,
+            color: [0.8, 0.9, 1.0],
+            intensity: 1.3,
+        });
+        let mut path = Canvas::new(128, 64);
+        path.draw_path(&[a, b], [0.8, 0.9, 1.0], 1.3);
+        assert_eq!(straight.buf, path.buf);
+    }
+
+    #[test]
+    fn a_path_ramps_over_its_whole_length_rather_than_every_joint() {
+        // Subdividing a streak more finely must not change how it looks. If the
+        // ramp restarted at every joint the curve would come out scalloped, and
+        // the picture would depend on the subdivision instead of the physics.
+        let ends = [(8.0, 32.0), (120.0, 32.0)];
+        let mut coarse = Canvas::new(128, 64);
+        coarse.draw_path(&ends, [1.0; 3], 1.0);
+
+        let fine: Vec<(f32, f32)> = (0..=16)
+            .map(|i| {
+                let t = i as f32 / 16.0;
+                (ends[0].0 + (ends[1].0 - ends[0].0) * t, 32.0)
+            })
+            .collect();
+        let mut subdivided = Canvas::new(128, 64);
+        subdivided.draw_path(&fine, [1.0; 3], 1.0);
+
+        for (i, (a, b)) in coarse.buf.iter().zip(&subdivided.buf).enumerate() {
+            assert!(
+                (a[0] - b[0]).abs() < 0.02,
+                "subdividing changed pixel {i}: {} against {}",
+                a[0],
+                b[0]
+            );
+        }
+        // And it is still a streak: brighter at the head than at the tail.
+        let row = 32 * 128;
+        assert!(coarse.buf[row + 110][0] > coarse.buf[row + 12][0]);
+    }
+
+    #[test]
+    fn a_curved_path_bends_where_it_is_told_to() {
+        // The whole point of the primitive: light lands on the arc, not on the
+        // chord between its ends.
+        let arc: Vec<(f32, f32)> = (0..=12)
+            .map(|i| {
+                let t = i as f32 / 12.0;
+                let angle = std::f32::consts::PI * t;
+                (64.0 + 40.0 * angle.cos(), 60.0 - 40.0 * angle.sin())
+            })
+            .collect();
+        let mut canvas = Canvas::new(128, 64);
+        canvas.draw_path(&arc, [1.0; 3], 2.0);
+        // On the arc, at the top of the sweep.
+        assert!(canvas.buf[20 * 128 + 64][0] > 0.0, "the arc is missing");
+        // On the chord between the ends, which nothing should have drawn.
+        assert_eq!(canvas.buf[60 * 128 + 64][0], 0.0, "it drew the chord");
+    }
+
+    #[test]
+    fn a_path_made_of_nonsense_draws_nothing_dangerous() {
+        let mut canvas = Canvas::new(64, 32);
+        canvas.draw_path(&[], [1.0; 3], 1.0);
+        assert_eq!(total_light(&canvas), 0.0, "an empty path is not a point");
+
+        for path in [
+            vec![(10.0, 10.0)],
+            vec![(f32::NAN, 2.0), (5.0, 5.0)],
+            vec![(1e9, 1e9), (-1e9, 4.0), (2.0, 2.0)],
+            vec![(3.0, 3.0), (3.0, 3.0), (3.0, 3.0)],
+        ] {
+            canvas.draw_path(&path, [1.0; 3], 1.0);
+        }
+        for intensity in [0.0, -1.0, f32::NAN] {
+            canvas.draw_path(&[(4.0, 4.0), (40.0, 20.0)], [1.0; 3], intensity);
+        }
+        assert_eq!(canvas.buf.len(), 64 * 32, "the buffer must not have grown");
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 
     #[test]

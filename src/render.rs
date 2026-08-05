@@ -9,6 +9,7 @@ use crate::hud::{self, Readout};
 use crate::ship::Ship;
 use crate::starfield::{Camera, StarField};
 use crate::term::{ColorMode, Screen};
+use crate::view::SIDE_FOCAL;
 use std::io::{self, Write};
 
 /// Colour of the glare down the throat of the tunnel.
@@ -74,6 +75,32 @@ impl Renderer {
             cam.cy += amp * ((time * 27.7).cos() + (time * 13.1).sin() * 0.6) as f32;
         }
         cam.bank = ship.bank;
+        cam
+    }
+
+    /// Build the camera for the view from outside: parked off the ship's port
+    /// beam, looking across its track.
+    ///
+    /// The shake is spelled out again rather than shared with [`Self::camera`].
+    /// That function's arithmetic is pinned byte for byte by the reference
+    /// frames, and a helper extracted out of it is exactly the sort of
+    /// "obviously equivalent" edit that moves a float by an ulp and repaints
+    /// the whole sky.
+    pub fn exterior_camera(&self, ship: &Ship, time: f64) -> Camera {
+        let (w, h) = self.canvas.dims();
+        let mut cam = Camera::new(w, h);
+        // A longer lens than the cockpit's. It flattens the hull into a
+        // profile, which is the shot; a wide one splays it into a
+        // three-quarter view of a ship that is meant to be seen side-on.
+        cam.focal = (h as f32).max(1.0) * SIDE_FOCAL;
+        if ship.shake > 0.0 {
+            let amp = h as f32 * SHAKE_AMPLITUDE * ship.shake;
+            cam.cx += amp * ((time * 31.0).sin() + (time * 17.3).sin() * 0.6) as f32;
+            cam.cy += amp * ((time * 27.7).cos() + (time * 13.1).sin() * 0.6) as f32;
+        }
+        // `bank` stays level. Out here the horizon is the direction of travel,
+        // and a star stream that tilts into a turn reads as a skid — the lean
+        // belongs to the hull, which has one of its own.
         cam
     }
 
