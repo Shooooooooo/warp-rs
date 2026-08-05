@@ -33,7 +33,7 @@ cargo run --release -- --demo
 | `+` `-` | More or fewer stars |
 | `P` | Pause |
 | `R` | Reset |
-| `Q` / `Esc` / `Ctrl-C` | Quit |
+| `Q` / `Esc` / `Ctrl-C` / `Ctrl-D` | Quit |
 
 Throttle and steering are impulse-driven — a press nudges the ship and it eases
 back on its own — because terminals report key presses but not releases. Hold a
@@ -170,3 +170,11 @@ cargo run --release --features snapshot -- \
 The images in this README were produced that way. Note that the snapshot is the
 starfield only — the instrument panel lives in the character grid, not in the
 pixel buffer.
+
+`src/lib.rs` carries the whole thing — flight model, starfield, renderer,
+terminal — and `src/main.rs` is only the entry point, so the pieces can be
+driven from `tests/` or from another program.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

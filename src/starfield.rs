@@ -162,6 +162,13 @@ impl StarField {
         self.stars.len()
     }
 
+    /// Always false in practice — `resize_pool` keeps at least one star, and a
+    /// field is never constructed empty by anything that draws. Here because a
+    /// pool with a length is expected to answer this too.
+    pub fn is_empty(&self) -> bool {
+        self.stars.is_empty()
+    }
+
     /// Adapt to a new canvas size. Existing stars keep their world positions;
     /// only the spawn cone changes.
     pub fn retarget(&mut self, cam: &Camera) {

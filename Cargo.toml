@@ -5,6 +5,14 @@ edition = "2021"
 description = "Fly a starship through the universe at warp in your terminal"
 license = "MIT"
 repository = "https://github.com/shooooooooo/warp-rs"
+readme = "README.md"
+keywords = ["terminal", "starfield", "screensaver", "tui", "warp"]
+categories = ["command-line-utilities", "visualization"]
+# The floor the dependency tree already imposes. Not currently exercised by CI,
+# so treat it as a claim about the dependencies rather than a tested guarantee.
+rust-version = "1.85"
+# Screenshots and CI config are for the repository, not for the published crate.
+exclude = ["docs/", ".github/"]
 
 [[bin]]
 name = "warp"

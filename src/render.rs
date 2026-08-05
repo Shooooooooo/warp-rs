@@ -125,7 +125,6 @@ impl Renderer {
     }
 
     /// The resolved 8-bit pixels of the last rendered frame.
-    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
     pub fn pixels(&self) -> &[[u8; 3]] {
         &self.pixels
     }

@@ -257,10 +257,14 @@ impl Canvas {
         }
         let max_r = ((self.width as f32).powi(2) + (self.height as f32).powi(2)).sqrt() * 0.5;
         let inv = 1.0 / max_r.max(1.0);
+        // The curve is quadratic in the distance, so it can be evaluated on the
+        // *squared* distance directly — taking a square root here only to square
+        // it again is a root per subpixel that never had to be taken.
+        let inv_sq = inv * inv;
         for y in 0..self.height {
             for x in 0..self.width {
-                let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() * inv;
-                let factor = 1.0 - strength * (d * d).min(1.0);
+                let d_sq = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)) * inv_sq;
+                let factor = 1.0 - strength * d_sq.min(1.0);
                 for channel in &mut self.buf[y * self.width + x] {
                     *channel *= factor;
                 }
