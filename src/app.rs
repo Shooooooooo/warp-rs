@@ -271,7 +271,8 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                 // resize events that settle on the size we already have, and
                 // clearing on those makes the field blink for no reason.
                 Event::Resize(cols, rows) => {
-                    if flight.resize(args, cols as usize, rows as usize) {
+                    let changed = flight.resize(args, cols as usize, rows as usize);
+                    if changed {
                         out.queue(terminal::Clear(terminal::ClearType::All))?;
                         flight.renderer.screen().force_redraw();
                     }
