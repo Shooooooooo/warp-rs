@@ -1,3 +1,6 @@
 /target
 # Snapshots land in the working directory; the ones in docs/ are tracked.
 /*.png
+# Frames dumped when checking against tests/golden/frames.sha256.
+/truecolor.txt
+/ascii.txt

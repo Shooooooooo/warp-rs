@@ -166,10 +166,12 @@ re-sent when they differ from the last cell written.
 
 ```sh
 cargo test
+cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI runs both on Linux, macOS and Windows, and re-checks the reproducibility
+CI runs these on Linux, macOS and Windows, checks that the crate still builds
+on the `rust-version` in `Cargo.toml`, and re-checks the reproducibility
 property below.
 
 To see where a frame goes — simulating the flight, drawing it, and getting it
@@ -187,6 +189,14 @@ checking that a change to the renderer changed only what you meant it to:
 ```sh
 cargo run --release -- --headless --frames 120 --seed 1 --size 120x36 --demo | sha256sum
 ```
+
+Repeatable is not the same as unchanged, though — a renderer that draws every
+frame differently is still perfectly repeatable about it — so the bytes
+themselves are committed, in `tests/golden/frames.sha256`, and CI checks
+against them. An edit meant to touch one thing that touched the whole sky
+fails there; when the change was the point, that file says how to regenerate
+it. The hashes hold across build profiles and rustc versions but not across
+platforms, so they are only checked on Linux.
 
 The `snapshot` feature writes a frame out as a PNG, which is a great deal easier
 to look at than a wall of escape codes:

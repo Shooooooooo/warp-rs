@@ -1,0 +1,25 @@
+# Reference output for the headless renderer, checked by CI.
+#
+# `--headless` runs on a fixed timestep with no terminal control, so a fixed
+# seed produces the same bytes every time. Checking those bytes against a
+# committed hash is what turns that property into a test with an opinion: the
+# run-to-run comparison beside it only says a flight is repeatable, and a
+# change that quietly alters every frame is repeatable too.
+#
+# Regenerate deliberately, with the diff in hand to say what moved:
+#
+#     cargo build --release
+#     flags="--headless --frames 120 --seed 1 --size 120x36 --demo"
+#     ./target/release/warp $flags --color truecolor > truecolor.txt
+#     ./target/release/warp $flags --color ascii     > ascii.txt
+#     sha256sum truecolor.txt ascii.txt > tests/golden/frames.sha256
+#     # and put this comment block back
+#
+# The hashes hold across build profiles and rustc versions — checked against
+# 1.85 and 1.94, debug and release — but not across platforms: sin, cos, exp
+# and powf come from the system maths library, and recycling the star pool
+# turns a one-ulp difference into a different sky. So this is checked on
+# ubuntu-latest only, and a runner image moving to a new glibc may need it
+# regenerated once.
+8bd038c4441ae845937926de60562c84f27f5f5ca44defb4f10b84ab37622689  truecolor.txt
+e00db6b280fac1ed2362f1ec2c92f3813ad47d00fedeeb721dc1723e4dedbb4d  ascii.txt
