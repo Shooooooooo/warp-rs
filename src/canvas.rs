@@ -100,6 +100,11 @@ impl Canvas {
         if (width, height) != (self.width, self.height) {
             self.width = width;
             self.height = height;
+            // Cleared, not just re-length-ed: the row stride follows the width,
+            // so light left over from the old layout would reappear somewhere
+            // it was never drawn. Every frame clears before it draws, but that
+            // is the renderer's habit, not something resize may lean on.
+            self.buf.clear();
             self.buf.resize(width * height, [0.0; 3]);
         }
     }
@@ -446,6 +451,32 @@ mod tests {
     fn an_empty_canvas_resolves_to_black() {
         let canvas = Canvas::new(16, 16);
         assert!(resolve(&canvas, 1.4, 2.2).iter().all(|p| *p == [0, 0, 0]));
+    }
+
+    #[test]
+    fn resizing_does_not_smear_old_light_into_the_new_layout() {
+        // A pixel's index is `y * width + x`, so changing the width moves every
+        // row. Anything left behind would surface somewhere it was never drawn.
+        let mut canvas = Canvas::new(16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                canvas.splat(x as f32, y as f32, [1.0; 3], 1.0);
+            }
+        }
+        assert!(total_light(&canvas) > 0.0);
+
+        canvas.resize(9, 30); // taller and narrower: the buffer grows
+        assert_eq!(canvas.dims(), (9, 30));
+        assert_eq!(total_light(&canvas), 0.0, "old light survived the reflow");
+
+        for y in 0..30 {
+            for x in 0..9 {
+                canvas.splat(x as f32, y as f32, [1.0; 3], 1.0);
+            }
+        }
+        canvas.resize(40, 4); // and again, this time shrinking it
+        assert_eq!(canvas.dims(), (40, 4));
+        assert_eq!(total_light(&canvas), 0.0, "old light survived the reflow");
     }
 
     #[test]
