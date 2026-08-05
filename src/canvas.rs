@@ -48,7 +48,10 @@ impl Tonemap {
             let t = i as f32 / (TONEMAP_LUT - 1) as f32;
             *slot = map_exact(t * t * ceiling, exposure, gamma);
         }
-        Self { lut, inv_ceiling: 1.0 / ceiling }
+        Self {
+            lut,
+            inv_ceiling: 1.0 / ceiling,
+        }
     }
 
     /// Map one HDR channel to eight bits. Negatives and NaN land on black.
@@ -88,7 +91,11 @@ pub struct Canvas {
 impl Canvas {
     pub fn new(width: usize, height: usize) -> Self {
         let (width, height) = (width.max(1), height.max(1));
-        Self { width, height, buf: vec![[0.0; 3]; width * height] }
+        Self {
+            width,
+            height,
+            buf: vec![[0.0; 3]; width * height],
+        }
     }
 
     pub fn dims(&self) -> (usize, usize) {
@@ -334,11 +341,13 @@ impl Canvas {
     /// keeps a 98 KB allocation out of every single frame.
     pub fn resolve_into(&self, tone: &Tonemap, out: &mut Vec<[u8; 3]>) {
         out.clear();
-        out.extend(
-            self.buf
-                .iter()
-                .map(|px| [tone.channel(px[0]), tone.channel(px[1]), tone.channel(px[2])]),
-        );
+        out.extend(self.buf.iter().map(|px| {
+            [
+                tone.channel(px[0]),
+                tone.channel(px[1]),
+                tone.channel(px[2]),
+            ]
+        }));
     }
 }
 
@@ -347,7 +356,12 @@ mod tests {
     use super::*;
 
     fn streak(from: (f32, f32), to: (f32, f32)) -> Streak {
-        Streak { from, to, color: [1.0, 1.0, 1.0], intensity: 1.0 }
+        Streak {
+            from,
+            to,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+        }
     }
 
     fn total_light(canvas: &Canvas) -> f32 {
@@ -437,7 +451,10 @@ mod tests {
         // recovers a pixel that is not a number.
         let mut canvas = Canvas::new(32, 32);
         for intensity in [0.0, -1.0, f32::NAN] {
-            canvas.draw_streak(&Streak { intensity, ..streak((2.0, 2.0), (28.0, 20.0)) });
+            canvas.draw_streak(&Streak {
+                intensity,
+                ..streak((2.0, 2.0), (28.0, 20.0))
+            });
         }
         assert_eq!(total_light(&canvas), 0.0);
         assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
@@ -450,8 +467,14 @@ mod tests {
         let mut long = Canvas::new(128, 128);
         long.draw_streak(&streak((10.0, 64.0), (110.0, 64.0)));
         let peak = |c: &Canvas| c.buf.iter().map(|p| p[0]).fold(0.0f32, f32::max);
-        assert!(peak(&long) < peak(&short), "a fast smear should not burn in");
-        assert!(total_light(&long) > total_light(&short), "but it should glow more");
+        assert!(
+            peak(&long) < peak(&short),
+            "a fast smear should not burn in"
+        );
+        assert!(
+            total_light(&long) > total_light(&short),
+            "but it should glow more"
+        );
     }
 
     #[test]
@@ -484,7 +507,11 @@ mod tests {
         let mut canvas = Canvas::new(4, 4);
         canvas.splat(1.0, 1.0, [1.0, 1.0, 1.0], 1e9);
         let out = resolve(&canvas, 1.0, 2.2);
-        assert_eq!(out[4 + 1], [255, 255, 255], "pixel (1, 1) of a 4-wide canvas");
+        assert_eq!(
+            out[4 + 1],
+            [255, 255, 255],
+            "pixel (1, 1) of a 4-wide canvas"
+        );
     }
 
     #[test]
@@ -531,7 +558,11 @@ mod tests {
             canvas.splat(1.0, 1.0, [1.0; 3], 1.0);
             canvas.resolve_into(&tone, &mut out);
         }
-        assert_eq!(out.capacity(), capacity, "a steady canvas must not reallocate");
+        assert_eq!(
+            out.capacity(),
+            capacity,
+            "a steady canvas must not reallocate"
+        );
 
         // The length has to follow a resize rather than the old dimensions.
         canvas.resize(40, 9);
@@ -584,7 +615,11 @@ mod tests {
         assert_eq!(canvas.dims(), (40, 9));
         assert_eq!(canvas.buf.len(), 40 * 9);
         canvas.resize(0, 0);
-        assert_eq!(canvas.dims(), (1, 1), "degenerate sizes are clamped, not fatal");
+        assert_eq!(
+            canvas.dims(),
+            (1, 1),
+            "degenerate sizes are clamped, not fatal"
+        );
     }
 
     #[test]
@@ -592,7 +627,10 @@ mod tests {
         let mut canvas = Canvas::new(32, 32);
         canvas.add_glow(16.0, 16.0, 8.0, [1.0, 1.0, 1.0], 1.0);
         assert!(canvas.buf[16 * 32 + 16][0] > canvas.buf[16 * 32 + 22][0]);
-        assert_eq!(canvas.buf[0][0], 0.0, "the glow should not reach the corner");
+        assert_eq!(
+            canvas.buf[0][0], 0.0,
+            "the glow should not reach the corner"
+        );
         // A glow hanging off the edge must not panic or wrap.
         canvas.add_glow(-40.0, -40.0, 10.0, [1.0; 3], 1.0);
         canvas.add_glow(200.0, 200.0, 50.0, [1.0; 3], 1.0);

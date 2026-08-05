@@ -48,19 +48,47 @@ pub struct SpectralClass {
 /// brightness, and a field of honest M dwarfs is a dim red smudge.
 pub const CLASSES: [SpectralClass; 7] = [
     // O
-    SpectralClass { rgb: [0.61, 0.69, 1.00], luminosity: 2.20, weight: 1.0 },
+    SpectralClass {
+        rgb: [0.61, 0.69, 1.00],
+        luminosity: 2.20,
+        weight: 1.0,
+    },
     // B
-    SpectralClass { rgb: [0.67, 0.75, 1.00], luminosity: 1.80, weight: 5.0 },
+    SpectralClass {
+        rgb: [0.67, 0.75, 1.00],
+        luminosity: 1.80,
+        weight: 5.0,
+    },
     // A
-    SpectralClass { rgb: [0.79, 0.84, 1.00], luminosity: 1.40, weight: 14.0 },
+    SpectralClass {
+        rgb: [0.79, 0.84, 1.00],
+        luminosity: 1.40,
+        weight: 14.0,
+    },
     // F
-    SpectralClass { rgb: [0.97, 0.97, 1.00], luminosity: 1.15, weight: 18.0 },
+    SpectralClass {
+        rgb: [0.97, 0.97, 1.00],
+        luminosity: 1.15,
+        weight: 18.0,
+    },
     // G
-    SpectralClass { rgb: [1.00, 0.96, 0.92], luminosity: 1.00, weight: 22.0 },
+    SpectralClass {
+        rgb: [1.00, 0.96, 0.92],
+        luminosity: 1.00,
+        weight: 22.0,
+    },
     // K
-    SpectralClass { rgb: [1.00, 0.82, 0.63], luminosity: 0.85, weight: 24.0 },
+    SpectralClass {
+        rgb: [1.00, 0.82, 0.63],
+        luminosity: 0.85,
+        weight: 24.0,
+    },
     // M
-    SpectralClass { rgb: [1.00, 0.65, 0.44], luminosity: 0.70, weight: 16.0 },
+    SpectralClass {
+        rgb: [1.00, 0.65, 0.44],
+        luminosity: 0.70,
+        weight: 16.0,
+    },
 ];
 
 /// Colour a star shifts toward when it is dead ahead and you are moving fast.
@@ -303,8 +331,7 @@ impl StarField {
             // it is close enough to matter again.
             let depth = (1.0 - (z - Z_NEAR) / (Z_FAR - Z_NEAR)).clamp(0.0, 1.0);
             let twinkle = 1.0 + twinkle_amt * (twinkle_phase + star.phase).sin();
-            let intensity =
-                class.luminosity * star.magnitude * depth.powf(DEPTH_FALLOFF) * twinkle;
+            let intensity = class.luminosity * star.magnitude * depth.powf(DEPTH_FALLOFF) * twinkle;
             if intensity <= 0.0 {
                 return None;
             }
@@ -316,7 +343,12 @@ impl StarField {
             let forward = cam.focal / (cam.focal * cam.focal + radius * radius).sqrt();
             let color = shift_color(class.rgb, forward, doppler);
 
-            Some(Streak { from, to, color, intensity })
+            Some(Streak {
+                from,
+                to,
+                color,
+                intensity,
+            })
         })
     }
 }
@@ -362,7 +394,9 @@ mod tests {
     fn the_nose_projects_to_the_vanishing_point_at_any_depth() {
         let cam = cam();
         for z in [1.0, 10.0, 100.0, Z_FAR] {
-            let p = cam.project([0.0, 0.0, z]).expect("in front of the near plane");
+            let p = cam
+                .project([0.0, 0.0, z])
+                .expect("in front of the near plane");
             assert!((p.0 - cam.cx).abs() < 1e-4 && (p.1 - cam.cy).abs() < 1e-4);
         }
     }
@@ -428,12 +462,14 @@ mod tests {
         }
         let visible = field
             .streaks(&cam, 0.0, 0.0)
-            .filter(|s| {
-                (0.0..cam.width).contains(&s.to.0) && (0.0..cam.height).contains(&s.to.1)
-            })
+            .filter(|s| (0.0..cam.width).contains(&s.to.0) && (0.0..cam.height).contains(&s.to.1))
             .count();
         let fraction = visible as f32 / field.len() as f32;
-        assert!(fraction > 0.5, "only {:.0}% of stars were on screen", fraction * 100.0);
+        assert!(
+            fraction > 0.5,
+            "only {:.0}% of stars were on screen",
+            fraction * 100.0
+        );
     }
 
     #[test]
@@ -445,7 +481,10 @@ mod tests {
         for _ in 0..900 {
             field.update(1.0 / 60.0, 25.0, 0.0, 0.0, &cam);
         }
-        let lit = field.streaks(&cam, 0.0, 0.0).filter(|s| s.intensity > 0.05).count();
+        let lit = field
+            .streaks(&cam, 0.0, 0.0)
+            .filter(|s| s.intensity > 0.05)
+            .count();
         assert!(lit > 200, "only {lit} stars were bright enough to see");
     }
 
@@ -492,7 +531,10 @@ mod tests {
             field.update(1.0 / 60.0, 20.0, 0.0, 0.0, &cam);
         }
         let sample = |time: f64| -> Vec<f32> {
-            field.streaks(&cam, 0.0, time).map(|s| s.intensity).collect()
+            field
+                .streaks(&cam, 0.0, time)
+                .map(|s| s.intensity)
+                .collect()
         };
 
         for t in [0.0f64, 3_600.0, 86_400.0, 524_288.0, 10_000_000.0] {
@@ -518,7 +560,10 @@ mod tests {
     fn doppler_blues_the_centre_and_reddens_the_edge() {
         let g = CLASSES[4].rgb;
         let ahead = shift_color(g, 1.0, 1.0);
-        assert!(ahead[2] > ahead[0], "dead ahead should read blue: {ahead:?}");
+        assert!(
+            ahead[2] > ahead[0],
+            "dead ahead should read blue: {ahead:?}"
+        );
         let edge = shift_color(g, 0.05, 1.0);
         assert!(edge[0] > edge[2], "the periphery should read red: {edge:?}");
     }

@@ -18,7 +18,11 @@ pub fn write_png(
     height: usize,
     scale: usize,
 ) -> io::Result<()> {
-    assert_eq!(pixels.len(), width * height, "pixel buffer does not match its dimensions");
+    assert_eq!(
+        pixels.len(),
+        width * height,
+        "pixel buffer does not match its dimensions"
+    );
     let scale = scale.max(1);
     let (out_w, out_h) = (width * scale, height * scale);
 

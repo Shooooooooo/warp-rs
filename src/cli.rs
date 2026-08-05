@@ -159,7 +159,9 @@ fn parse_size(text: &str) -> Result<(u16, u16), String> {
 }
 
 fn unit_interval(text: &str) -> Result<f32, String> {
-    let v: f32 = text.parse().map_err(|_| format!("`{text}` is not a number"))?;
+    let v: f32 = text
+        .parse()
+        .map_err(|_| format!("`{text}` is not a number"))?;
     if (0.0..=1.0).contains(&v) {
         Ok(v)
     } else {
@@ -168,7 +170,9 @@ fn unit_interval(text: &str) -> Result<f32, String> {
 }
 
 fn positive(text: &str) -> Result<f32, String> {
-    let v: f32 = text.parse().map_err(|_| format!("`{text}` is not a number"))?;
+    let v: f32 = text
+        .parse()
+        .map_err(|_| format!("`{text}` is not a number"))?;
     if v > 0.0 && v.is_finite() {
         Ok(v)
     } else {
@@ -298,10 +302,16 @@ mod tests {
         assert!(Args::try_parse_from(["warp", "--stars", "500000000"]).is_err());
         assert!(Args::try_parse_from(["warp", "--stars", "1000001"]).is_err());
         assert!(Args::try_parse_from(["warp", "--stars", "1000000"]).is_ok());
-        assert!(Args::try_parse_from(["warp", "--stars", "0"]).is_ok(), "0 still means auto");
+        assert!(
+            Args::try_parse_from(["warp", "--stars", "0"]).is_ok(),
+            "0 still means auto"
+        );
 
         assert!(parse_size("60000x60000").is_err());
-        assert!(parse_size("20000x10").is_err(), "past the per-dimension limit");
+        assert!(
+            parse_size("20000x10").is_err(),
+            "past the per-dimension limit"
+        );
         // Each dimension legal on its own, but the area is what gets allocated.
         assert!(parse_size("10000x10000").is_err());
         assert!(parse_size("2000x1000").is_ok(), "exactly the cell ceiling");
@@ -324,17 +334,29 @@ mod tests {
         ] {
             let (c, r) = clamp_size(cols, rows);
             let cells = c as usize * r as usize;
-            assert!(c >= 1 && r >= 1, "{cols}x{rows} clamped to a zero dimension");
+            assert!(
+                c >= 1 && r >= 1,
+                "{cols}x{rows} clamped to a zero dimension"
+            );
             assert!(c <= MAX_DIM && r <= MAX_DIM, "{cols}x{rows} -> {c}x{r}");
-            assert!(cells <= MAX_CELLS, "{cols}x{rows} -> {c}x{r}, which is {cells} cells");
+            assert!(
+                cells <= MAX_CELLS,
+                "{cols}x{rows} -> {c}x{r}, which is {cells} cells"
+            );
         }
         assert_eq!(clamp_size(80, 24), (80, 24), "a sane size is left alone");
     }
 
     #[test]
     fn color_modes_resolve() {
-        assert_eq!(args_for(&["--color", "256"]).color.resolve(), ColorMode::Ansi256);
-        assert_eq!(args_for(&["--color", "ascii"]).color.resolve(), ColorMode::Ascii);
+        assert_eq!(
+            args_for(&["--color", "256"]).color.resolve(),
+            ColorMode::Ansi256
+        );
+        assert_eq!(
+            args_for(&["--color", "ascii"]).color.resolve(),
+            ColorMode::Ascii
+        );
         assert_eq!(
             args_for(&["--color", "truecolor"]).color.resolve(),
             ColorMode::Truecolor

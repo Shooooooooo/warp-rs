@@ -78,7 +78,14 @@ impl Renderer {
     }
 
     /// Draw one frame into the cell grid. Nothing reaches the terminal yet.
-    pub fn render(&mut self, field: &StarField, ship: &Ship, cam: &Camera, time: f64, hud: &Readout) {
+    pub fn render(
+        &mut self,
+        field: &StarField,
+        ship: &Ship,
+        cam: &Camera,
+        time: f64,
+        hud: &Readout,
+    ) {
         let warp = ship.warp_intensity();
 
         self.canvas.clear();
@@ -135,7 +142,13 @@ mod tests {
     use super::*;
 
     fn readout(ship: &Ship) -> Readout<'_> {
-        Readout { ship, fps: 60.0, stars: 1000, paused: false, hints: true }
+        Readout {
+            ship,
+            fps: 60.0,
+            stars: 1000,
+            paused: false,
+            hints: true,
+        }
     }
 
     #[test]
@@ -206,7 +219,10 @@ mod tests {
         };
         let cruising = sample(false);
         let warping = sample(true);
-        assert!(warping > cruising * 1.5, "cruise {cruising:.1} vs warp {warping:.1}");
+        assert!(
+            warping > cruising * 1.5,
+            "cruise {cruising:.1} vs warp {warping:.1}"
+        );
     }
 
     #[test]
@@ -239,7 +255,11 @@ mod tests {
             renderer.resize(cols, rows);
             let (w, h) = renderer.canvas_dims();
             let (sc, sr) = renderer.screen().dims();
-            assert_eq!((w, h), (sc, sr * 2), "resize to {cols}x{rows} desynced them");
+            assert_eq!(
+                (w, h),
+                (sc, sr * 2),
+                "resize to {cols}x{rows} desynced them"
+            );
         }
     }
 
