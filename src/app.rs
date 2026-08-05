@@ -95,8 +95,13 @@ impl Flight {
         self.renderer.render(&self.field, &self.ship, &cam, self.time, &readout);
     }
 
+    /// How many stars are currently in flight.
+    pub fn stars(&self) -> usize {
+        self.field.len()
+    }
+
     /// Write the last drawn frame out as a self-contained block of text.
-    pub fn present_plain(&self, out: &mut impl Write) -> io::Result<()> {
+    pub fn present_plain(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.renderer.present_plain(out)
     }
 
@@ -212,7 +217,43 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     'flying: loop {
         let frame_start = Instant::now();
 
-        while event::poll(Duration::ZERO)? {
+        let elapsed = start.elapsed().as_secs_f64();
+        // `--demo` flies itself and then stops; a screensaver flies itself
+        // until something interrupts it.
+        if let Some(limit) = args.demo {
+            if elapsed >= limit as f64 {
+                break 'flying;
+            }
+        }
+        if args.demo.is_some() || args.screensaver {
+            flight.autopilot.update(&mut flight.ship, elapsed);
+        }
+
+        let dt = (frame_start - last).as_secs_f32().clamp(0.0, MAX_FRAME_DT);
+        last = frame_start;
+        // Smoothed so the readout is legible rather than flickering.
+        fps += (1.0 / dt.max(1e-4) - fps) * 0.08;
+
+        if !paused {
+            flight.advance(dt);
+        }
+        flight.draw(fps, paused, !args.screensaver);
+        flight.renderer.present(&mut out)?;
+
+        // Spend what is left of the frame waiting on the event queue rather
+        // than sleeping through it. The wait ends the moment something is
+        // typed, so a key is acted on when it arrives instead of whenever the
+        // sleep happens to finish — which at 60 fps is a few milliseconds, and
+        // at `--fps 5` is the difference between a screensaver that dismisses
+        // when touched and one that finishes its nap first.
+        loop {
+            // Saturating, not checked: a frame that has already run over its
+            // budget has nothing left to wait, but a terminal too slow to keep
+            // up still has to be quittable, so the queue is drained either way.
+            let remaining = frame_budget.saturating_sub(frame_start.elapsed());
+            if !event::poll(remaining)? {
+                break;
+            }
             match event::read()? {
                 // A screensaver dies on contact: any key at all gets you back
                 // to your terminal, not just the ones a pilot would know.
@@ -237,33 +278,6 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                 }
                 _ => {}
             }
-        }
-
-        let elapsed = start.elapsed().as_secs_f64();
-        // `--demo` flies itself and then stops; a screensaver flies itself
-        // until something interrupts it.
-        if let Some(limit) = args.demo {
-            if elapsed >= limit as f64 {
-                break 'flying;
-            }
-        }
-        if args.demo.is_some() || args.screensaver {
-            flight.autopilot.update(&mut flight.ship, elapsed);
-        }
-
-        let dt = (frame_start - last).as_secs_f32().clamp(0.0, MAX_FRAME_DT);
-        last = frame_start;
-        // Smoothed so the readout is legible rather than flickering.
-        fps += (1.0 / dt.max(1e-4) - fps) * 0.08;
-
-        if !paused {
-            flight.advance(dt);
-        }
-        flight.draw(fps, paused, !args.screensaver);
-        flight.renderer.present(&mut out)?;
-
-        if let Some(remaining) = frame_budget.checked_sub(frame_start.elapsed()) {
-            std::thread::sleep(remaining);
         }
     }
 

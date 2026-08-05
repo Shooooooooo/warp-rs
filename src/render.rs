@@ -120,7 +120,7 @@ impl Renderer {
     }
 
     /// Write the frame as a self-contained block of text, for piping.
-    pub fn present_plain(&self, out: &mut impl Write) -> io::Result<()> {
+    pub fn present_plain(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.screen.write_plain(out)
     }
 
