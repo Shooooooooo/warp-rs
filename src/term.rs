@@ -77,6 +77,135 @@ impl Cell {
     const BLANK: Cell = Cell { ch: ' ', fg: None, bg: None };
 }
 
+/// Where a frame's bytes go, and how they are spelled.
+///
+/// Spelling them by hand is worth the code: a frame is tens of thousands of
+/// escape sequences and crossterm writes each one through `fmt::Display`,
+/// which came to more than everything the renderer does to produce them. The
+/// command path stays for the one terminal whose commands are not sequences at
+/// all — a Windows console without virtual terminal processing, where they are
+/// WinAPI calls that no amount of bytes can stand in for.
+enum Sink<'a, W: Write> {
+    Ansi(&'a mut Vec<u8>),
+    Commands(&'a mut W),
+}
+
+impl<W: Write> Sink<'_, W> {
+    fn move_to(&mut self, col: usize, row: usize) -> io::Result<()> {
+        match self {
+            Sink::Ansi(buf) => {
+                buf.extend_from_slice(b"\x1b[");
+                push_decimal(buf, row + 1);
+                buf.push(b';');
+                push_decimal(buf, col + 1);
+                buf.push(b'H');
+                Ok(())
+            }
+            Sink::Commands(out) => {
+                out.queue(cursor::MoveTo(col as u16, row as u16))?;
+                Ok(())
+            }
+        }
+    }
+
+    fn set_color(&mut self, color: Option<(u8, u8, u8)>, ground: Ground) -> io::Result<()> {
+        match self {
+            Sink::Ansi(buf) => {
+                match color {
+                    Some((r, g, b)) => {
+                        buf.extend_from_slice(ground.rgb_prefix());
+                        push_decimal(buf, r as usize);
+                        buf.push(b';');
+                        push_decimal(buf, g as usize);
+                        buf.push(b';');
+                        push_decimal(buf, b as usize);
+                        buf.push(b'm');
+                    }
+                    None => buf.extend_from_slice(ground.reset()),
+                }
+                Ok(())
+            }
+            Sink::Commands(out) => {
+                let color = to_color(color);
+                match ground {
+                    Ground::Foreground => out.queue(SetForegroundColor(color))?,
+                    Ground::Background => out.queue(SetBackgroundColor(color))?,
+                };
+                Ok(())
+            }
+        }
+    }
+
+    fn glyph(&mut self, ch: char) -> io::Result<()> {
+        match self {
+            Sink::Ansi(buf) => {
+                buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
+                Ok(())
+            }
+            Sink::Commands(out) => {
+                out.queue(Print(ch))?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Which half of a cell's colour is being set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ground {
+    Foreground,
+    Background,
+}
+
+impl Ground {
+    fn rgb_prefix(self) -> &'static [u8] {
+        match self {
+            Ground::Foreground => b"\x1b[38;2;",
+            Ground::Background => b"\x1b[48;2;",
+        }
+    }
+
+    /// Back to the terminal's own colour.
+    fn reset(self) -> &'static [u8] {
+        match self {
+            Ground::Foreground => b"\x1b[39m",
+            Ground::Background => b"\x1b[49m",
+        }
+    }
+}
+
+/// Decimal, straight into the buffer. This is the whole of the formatting the
+/// fast path needs, and doing it here is most of why it is fast.
+fn push_decimal(buf: &mut Vec<u8>, value: usize) {
+    let mut digits = [0u8; 20]; // a `usize` cannot be longer than this
+    let mut n = 0;
+    let mut value = value;
+    loop {
+        digits[n] = b'0' + (value % 10) as u8;
+        value /= 10;
+        n += 1;
+        if value == 0 {
+            break;
+        }
+    }
+    while n > 0 {
+        n -= 1;
+        buf.push(digits[n]);
+    }
+}
+
+/// Whether escape sequences reach this terminal as escape sequences.
+fn ansi_supported() -> bool {
+    #[cfg(windows)]
+    {
+        crossterm::ansi_support::supports_ansi()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// A double-buffered grid of terminal cells.
 pub struct Screen {
     cols: usize,
@@ -87,6 +216,10 @@ pub struct Screen {
     /// What we want it to show.
     back: Vec<Cell>,
     dirty: bool,
+    /// A frame's bytes, reused across frames rather than reallocated.
+    scratch: Vec<u8>,
+    /// Whether this terminal can be written to directly. See `Sink`.
+    ansi: bool,
 }
 
 impl Screen {
@@ -99,6 +232,8 @@ impl Screen {
             front: vec![Cell::BLANK; cols * rows],
             back: vec![Cell::BLANK; cols * rows],
             dirty: true,
+            scratch: Vec::new(),
+            ansi: ansi_supported(),
         }
     }
 
@@ -227,6 +362,27 @@ impl Screen {
         if !self.dirty {
             return Ok(());
         }
+        if self.ansi {
+            // The scratch buffer is taken out and put back so that building
+            // the frame can borrow the two grids at the same time.
+            let mut buf = std::mem::take(&mut self.scratch);
+            buf.clear();
+            let built = self.diff(Sink::<Vec<u8>>::Ansi(&mut buf));
+            let written = built.and_then(|()| out.write_all(&buf));
+            self.scratch = buf;
+            written?;
+        } else {
+            self.diff(Sink::Commands(out))?;
+        }
+
+        out.flush()?;
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Emit every cell that differs from what the terminal is showing, and
+    /// remember that it is showing them now.
+    fn diff<W: Write>(&mut self, mut sink: Sink<W>) -> io::Result<()> {
         let mut last_fg: Option<Option<(u8, u8, u8)>> = None;
         let mut last_bg: Option<Option<(u8, u8, u8)>> = None;
         // Where the terminal's cursor sits, if we know it.
@@ -241,25 +397,22 @@ impl Screen {
                 }
 
                 if cursor_at != Some((col, row)) {
-                    out.queue(cursor::MoveTo(col as u16, row as u16))?;
+                    sink.move_to(col, row)?;
                 }
                 if last_fg != Some(cell.fg) {
-                    out.queue(SetForegroundColor(to_color(cell.fg)))?;
+                    sink.set_color(cell.fg, Ground::Foreground)?;
                     last_fg = Some(cell.fg);
                 }
                 if last_bg != Some(cell.bg) {
-                    out.queue(SetBackgroundColor(to_color(cell.bg)))?;
+                    sink.set_color(cell.bg, Ground::Background)?;
                     last_bg = Some(cell.bg);
                 }
-                out.queue(Print(cell.ch))?;
+                sink.glyph(cell.ch)?;
 
                 self.front[idx] = cell;
                 cursor_at = Some((col + 1, row));
             }
         }
-
-        out.flush()?;
-        self.dirty = false;
         Ok(())
     }
 
@@ -287,26 +440,36 @@ impl Screen {
     /// a cell carries about 40 bytes of escape codes, and a starfield is mostly
     /// long runs of black. Each row still ends on a reset, so a row is
     /// self-contained and never inherits state from the one above it.
-    pub fn write_plain(&self, out: &mut impl Write) -> io::Result<()> {
+    pub fn write_plain(&mut self, out: &mut impl Write) -> io::Result<()> {
+        let mut buf = std::mem::take(&mut self.scratch);
+        buf.clear();
+        let built = self.plain_into(Sink::<Vec<u8>>::Ansi(&mut buf));
+        let written = built.and_then(|()| out.write_all(&buf));
+        self.scratch = buf;
+        written?;
+        out.flush()
+    }
+
+    fn plain_into<W: Write>(&self, mut sink: Sink<W>) -> io::Result<()> {
         for row in 0..self.rows {
             let (mut last_fg, mut last_bg) = (None, None);
             for col in 0..self.cols {
                 let cell = self.back[row * self.cols + col];
                 if last_fg != Some(cell.fg) {
-                    out.queue(SetForegroundColor(to_color(cell.fg)))?;
+                    sink.set_color(cell.fg, Ground::Foreground)?;
                     last_fg = Some(cell.fg);
                 }
                 if last_bg != Some(cell.bg) {
-                    out.queue(SetBackgroundColor(to_color(cell.bg)))?;
+                    sink.set_color(cell.bg, Ground::Background)?;
                     last_bg = Some(cell.bg);
                 }
-                out.queue(Print(cell.ch))?;
+                sink.glyph(cell.ch)?;
             }
-            out.queue(SetForegroundColor(Color::Reset))?;
-            out.queue(SetBackgroundColor(Color::Reset))?;
-            out.queue(Print('\n'))?;
+            sink.set_color(None, Ground::Foreground)?;
+            sink.set_color(None, Ground::Background)?;
+            sink.glyph('\n')?;
         }
-        out.flush()
+        Ok(())
     }
 }
 
@@ -427,6 +590,66 @@ mod tests {
 
     fn pixels(cols: usize, rows: usize, fill: [u8; 3]) -> Vec<[u8; 3]> {
         vec![fill; cols * rows * 2]
+    }
+
+    /// What crossterm would put on the wire for a command.
+    fn crossterm_ansi(command: impl crossterm::Command) -> String {
+        let mut out = String::new();
+        command.write_ansi(&mut out).expect("writing to a String cannot fail");
+        out
+    }
+
+    /// What we put on the wire instead.
+    fn ours(write: impl FnOnce(&mut Sink<Vec<u8>>)) -> String {
+        let mut buf = Vec::new();
+        write(&mut Sink::<Vec<u8>>::Ansi(&mut buf));
+        String::from_utf8(buf).expect("escape sequences are utf-8")
+    }
+
+    #[test]
+    fn the_escapes_written_by_hand_are_the_ones_crossterm_writes() {
+        // The fast path spells its own sequences rather than formatting
+        // crossterm's, which is most of why it is fast. It is only allowed to
+        // do that while the two agree to the byte.
+        for (col, row) in [(0, 0), (7, 3), (79, 23), (199, 59), (1234, 999)] {
+            assert_eq!(
+                ours(|s| s.move_to(col, row).unwrap()),
+                crossterm_ansi(cursor::MoveTo(col as u16, row as u16)),
+                "MoveTo({col}, {row})"
+            );
+        }
+        for rgb in [(0, 0, 0), (255, 255, 255), (1, 10, 100), (58, 92, 118)] {
+            assert_eq!(
+                ours(|s| s.set_color(Some(rgb), Ground::Foreground).unwrap()),
+                crossterm_ansi(SetForegroundColor(to_color(Some(rgb)))),
+                "foreground {rgb:?}"
+            );
+            assert_eq!(
+                ours(|s| s.set_color(Some(rgb), Ground::Background).unwrap()),
+                crossterm_ansi(SetBackgroundColor(to_color(Some(rgb)))),
+                "background {rgb:?}"
+            );
+        }
+        assert_eq!(
+            ours(|s| s.set_color(None, Ground::Foreground).unwrap()),
+            crossterm_ansi(SetForegroundColor(Color::Reset))
+        );
+        assert_eq!(
+            ours(|s| s.set_color(None, Ground::Background).unwrap()),
+            crossterm_ansi(SetBackgroundColor(Color::Reset))
+        );
+        for ch in [' ', HALF_BLOCK, '@', '\n', '\u{250C}'] {
+            assert_eq!(ours(|s| s.glyph(ch).unwrap()), crossterm_ansi(Print(ch)), "{ch:?}");
+        }
+    }
+
+    #[test]
+    fn numbers_come_out_in_decimal() {
+        for v in [0, 1, 9, 10, 99, 100, 1023, 65_535, usize::MAX] {
+            let mut buf = Vec::new();
+            push_decimal(&mut buf, v);
+            assert_eq!(String::from_utf8(buf).unwrap(), v.to_string());
+        }
     }
 
     #[test]

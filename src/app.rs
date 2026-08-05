@@ -101,7 +101,7 @@ impl Flight {
     }
 
     /// Write the last drawn frame out as a self-contained block of text.
-    pub fn present_plain(&self, out: &mut impl Write) -> io::Result<()> {
+    pub fn present_plain(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.renderer.present_plain(out)
     }
 
