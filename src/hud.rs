@@ -7,6 +7,7 @@
 
 use crate::ship::Ship;
 use crate::term::{ColorMode, Screen};
+use crate::view::ViewMode;
 
 const LABEL: (u8, u8, u8) = (96, 176, 208);
 const VALUE: (u8, u8, u8) = (226, 240, 255);
@@ -133,6 +134,14 @@ pub struct Readout<'a> {
     /// Whether to show the control hints. A screensaver quits on any key, so
     /// listing which keys do what would be a lie.
     pub hints: bool,
+    /// Which camera the frame under the glass was drawn with. The panel is the
+    /// same either way except where the view itself has moved something: the
+    /// reticle marks where the nose is pointed, which is only a thing you can
+    /// see from behind it, and the ship's name is only worth reading when you
+    /// are looking at the ship.
+    pub view: ViewMode,
+    /// What the ship is, for the row that names it.
+    pub model: &'a str,
 }
 
 pub fn draw(screen: &mut Screen, r: &Readout) {
@@ -144,7 +153,9 @@ pub fn draw(screen: &mut Screen, r: &Readout) {
         return;
     }
 
-    draw_reticle(screen, cols, rows, g);
+    if r.view == ViewMode::Cockpit {
+        draw_reticle(screen, cols, rows, g);
+    }
     draw_nav_panel(screen, r, g);
     draw_status_line(screen, r, cols, rows, g);
     draw_throttle(screen, r, rows, g);
@@ -186,7 +197,7 @@ fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs) {
 
 fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
     let ship = r.ship;
-    let rows = [
+    let mut rows = vec![
         ("VELOCITY", velocity_text(ship), VALUE),
         (
             "WARP",
@@ -204,6 +215,11 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
         // the ship ended up.
         ("ROLL", roll_text(ship, g), VALUE),
     ];
+    // Only from outside: in the cockpit you are sitting in it, and a row that
+    // never changes is a row the panel does not need.
+    if r.view == ViewMode::Side {
+        rows.push(("SHIP", r.model.to_uppercase(), ACCENT));
+    }
 
     screen.overlay(2, 1, &format!("{} NAV", g.frame_top), LABEL);
     for (i, (label, value, color)) in rows.iter().enumerate() {
@@ -340,6 +356,8 @@ mod tests {
             stars: 4000,
             paused: false,
             hints: true,
+            view: ViewMode::Cockpit,
+            model: "dart",
         }
     }
 
@@ -522,6 +540,8 @@ mod tests {
                         stars: 900,
                         paused,
                         hints: true,
+                        view: ViewMode::Cockpit,
+                        model: "dart",
                     },
                 );
                 for row in 0..rows {
@@ -573,6 +593,8 @@ mod tests {
             stars: 4000,
             paused: false,
             hints: false,
+            view: ViewMode::Cockpit,
+            model: "dart",
         };
         // Which cells the panel stamped over the composed frame. The two modes
         // compose different backdrops — half blocks against a brightness ramp —
@@ -725,6 +747,8 @@ mod tests {
                     stars: 900,
                     paused: false,
                     hints,
+                    view: ViewMode::Cockpit,
+                    model: "dart",
                 },
             );
             let mut out = Vec::new();
@@ -755,6 +779,8 @@ mod tests {
                     stars: 900,
                     paused,
                     hints: true,
+                    view: ViewMode::Cockpit,
+                    model: "dart",
                 },
             );
             let mut out = Vec::new();

@@ -38,7 +38,7 @@ const PITCH_IMPULSE: f32 = 0.30;
 /// held down, `MAX_ROLL_RATE` comes out at about three and a half seconds for a
 /// full revolution.
 const ROLL_IMPULSE: f32 = 0.60;
-const MAX_YAW_RATE: f32 = 0.85;
+pub const MAX_YAW_RATE: f32 = 0.85;
 const MAX_PITCH_RATE: f32 = 0.60;
 const MAX_ROLL_RATE: f32 = 1.80;
 const STEER_DAMPING: f32 = 2.6;

@@ -5,13 +5,17 @@
 
 use crate::autopilot::Autopilot;
 use crate::cli::{resolved_size, Args};
+use crate::exterior::ExteriorField;
 use crate::hud::Readout;
-use crate::render::Renderer;
+use crate::menu::{self, Menu};
+use crate::models::{self, ShipModel};
+use crate::render::{Exterior, Renderer};
 use crate::ship::Ship;
 #[cfg(feature = "snapshot")]
 use crate::snapshot;
 use crate::starfield::StarField;
 use crate::term::RawGuard;
+use crate::view::ViewMode;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::{terminal, QueueableCommand};
 use std::io::{self, BufWriter, Write};
@@ -26,6 +30,9 @@ const MAX_FRAME_DT: f32 = 0.25;
 const AUTO_DENSITY: f32 = 0.05;
 const AUTO_MIN_STARS: usize = 300;
 const AUTO_MAX_STARS: usize = 20_000;
+/// Mixed into `--seed` for the outside view's sky, so the two fields are
+/// independent of each other and of when either was built.
+const EXTERIOR_SEED: u64 = 0x51DE_0000_0000_0000;
 
 /// Fly, in whichever of the three modes the arguments asked for.
 pub fn run(args: &Args) -> io::Result<()> {
@@ -44,8 +51,19 @@ pub fn run(args: &Args) -> io::Result<()> {
 pub struct Flight {
     ship: Ship,
     field: StarField,
+    /// The band of sky the outside view flies alongside, built the first time
+    /// that view is asked for. A cockpit-only run pays nothing for it — not the
+    /// pool, and not a single draw from its generator.
+    exterior: Option<ExteriorField>,
     renderer: Renderer,
     autopilot: Autopilot,
+    /// Which camera is flying, which ship is being flown, and whether the
+    /// picker is up over the top of it.
+    view: ViewMode,
+    model: usize,
+    menu: Option<Menu>,
+    /// Kept so a field built later gets the sky the seed asked for.
+    seed: u64,
     /// Wall time since launch, in seconds. `f64` because it only ever grows and
     /// a screensaver is expected to be left running: as an `f32` accumulator it
     /// stopped advancing altogether after about six days, freezing the twinkle
@@ -65,53 +83,181 @@ impl Flight {
 
         let renderer = Renderer::new(cols, rows, args.color.resolve(), args.exposure);
         let cam = renderer.camera(&ship, 0.0);
-        let field = StarField::new(star_count(args, &renderer), seed(args), &cam);
+        let seed = seed(args);
+        let field = StarField::new(star_count(args, &renderer), seed, &cam);
 
-        Self {
+        let mut flight = Self {
             ship,
             field,
+            exterior: None,
             renderer,
             autopilot: Autopilot::default(),
+            view: ViewMode::Cockpit,
+            model: args.ship,
+            menu: None,
+            seed,
             time: 0.0,
             accumulator: 0.0,
+        };
+        if args.view.resolve() == ViewMode::Side {
+            flight.set_view(ViewMode::Side, args);
+        }
+        flight
+    }
+
+    /// Which camera is flying.
+    pub fn view(&self) -> ViewMode {
+        self.view
+    }
+
+    /// The next camera round, building the sky it needs if this is the first
+    /// time it has been asked for.
+    pub fn cycle_view(&mut self, args: &Args) {
+        self.set_view(self.view.next(), args);
+    }
+
+    fn set_view(&mut self, view: ViewMode, args: &Args) {
+        self.view = view;
+        if view == ViewMode::Side && self.exterior.is_none() {
+            let cam = self.renderer.exterior_camera(&self.ship, self.time);
+            // Its own generator, from a seed of its own, so the cockpit's
+            // stream is untouched whenever this happens — and so the two skies
+            // are not the same pattern seen twice.
+            self.exterior = Some(ExteriorField::new(
+                star_count(args, &self.renderer),
+                self.seed ^ EXTERIOR_SEED,
+                &cam,
+            ));
         }
     }
 
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// Put the picker up, and go outside to look at what it is offering: a list
+    /// of ship names is a poor way to choose a ship.
+    pub fn open_menu(&mut self, args: &Args) {
+        self.menu = Some(Menu::new(self.model));
+        self.set_view(ViewMode::Side, args);
+    }
+
+    /// Take it down, keeping the ship that was being flown when it went up.
+    pub fn close_menu(&mut self) {
+        self.menu = None;
+    }
+
+    pub fn menu_move(&mut self, delta: isize) {
+        if let Some(menu) = &mut self.menu {
+            menu.move_cursor(delta);
+        }
+    }
+
+    /// Fly whatever the cursor is on, and take the picker down.
+    pub fn menu_confirm(&mut self) {
+        if let Some(menu) = self.menu.take() {
+            self.model = menu.cursor();
+        }
+    }
+
+    /// The ship to draw: the cursor's while the picker is up, so moving through
+    /// the list flies each one in turn instead of describing it.
+    fn drawn_model(&self) -> &'static ShipModel {
+        let index = self.menu.as_ref().map_or(self.model, Menu::cursor);
+        &models::models()[index.min(models::models().len() - 1)]
+    }
+
     /// Advance by `dt` of wall time, in fixed physics steps.
+    ///
+    /// Only the sky being looked at is stepped. That is safe because both
+    /// fields recompute where a star was from where it is at the top of their
+    /// update, so a field coming back after a spell out of view draws a proper
+    /// short streak on its first frame rather than one long scratch.
     pub fn advance(&mut self, dt: f32) {
         self.time += dt as f64;
         self.accumulator += dt;
         while self.accumulator >= SIM_STEP {
             self.ship.update(SIM_STEP);
-            let cam = self.renderer.camera(&self.ship, self.time);
-            self.field.update(
-                SIM_STEP,
-                self.ship.speed,
-                self.ship.yaw_rate,
-                self.ship.pitch_rate,
-                self.ship.roll_rate,
-                &cam,
-            );
+            match self.view {
+                ViewMode::Cockpit => {
+                    let cam = self.renderer.camera(&self.ship, self.time);
+                    self.field.update(
+                        SIM_STEP,
+                        self.ship.speed,
+                        self.ship.yaw_rate,
+                        self.ship.pitch_rate,
+                        self.ship.roll_rate,
+                        &cam,
+                    );
+                }
+                ViewMode::Side => {
+                    let cam = self.renderer.exterior_camera(&self.ship, self.time);
+                    if let Some(field) = &mut self.exterior {
+                        field.update(SIM_STEP, self.ship.speed, &cam);
+                    }
+                }
+            }
             self.accumulator -= SIM_STEP;
         }
     }
 
     pub fn draw(&mut self, fps: f32, paused: bool, hints: bool) {
-        let cam = self.renderer.camera(&self.ship, self.time);
+        let model = self.drawn_model();
         let readout = Readout {
             ship: &self.ship,
             fps,
-            stars: self.field.len(),
+            stars: self.stars(),
             paused,
             hints,
+            view: self.view,
+            model: model.name,
         };
-        self.renderer
-            .render(&self.field, &self.ship, &cam, self.time, &readout);
+        match (self.view, &mut self.exterior) {
+            (ViewMode::Side, Some(field)) => {
+                let cam = self.renderer.exterior_camera(&self.ship, self.time);
+                let scene = Exterior {
+                    field,
+                    ship: &self.ship,
+                    model,
+                    time: self.time,
+                };
+                self.renderer.render_exterior(scene, &cam, &readout);
+            }
+            _ => {
+                let cam = self.renderer.camera(&self.ship, self.time);
+                self.renderer
+                    .render(&self.field, &self.ship, &cam, self.time, &readout);
+            }
+        }
+        // Over the top of everything, panel included: it is a dialogue, and it
+        // is drawn here rather than inside the renderer so the pinned cockpit
+        // path stays exactly as it was.
+        if let Some(menu) = &self.menu {
+            menu::draw(self.renderer.screen(), menu);
+        }
     }
 
-    /// How many stars are currently in flight.
+    /// How many stars are currently in flight, in the view being flown.
     pub fn stars(&self) -> usize {
-        self.field.len()
+        match (self.view, &self.exterior) {
+            (ViewMode::Side, Some(field)) => field.len(),
+            _ => self.field.len(),
+        }
+    }
+
+    /// Grow or shrink the sky being looked at.
+    fn resize_pool(&mut self, scale: f32, floor: usize) {
+        let wanted = |len: usize| ((len as f32 * scale) as usize).clamp(floor, AUTO_MAX_STARS);
+        match (self.view, &mut self.exterior) {
+            (ViewMode::Side, Some(field)) => {
+                let n = wanted(field.len());
+                field.resize_pool(n);
+            }
+            _ => {
+                let n = wanted(self.field.len());
+                self.field.resize_pool(n);
+            }
+        }
     }
 
     /// Write the last drawn frame out as a self-contained block of text.
@@ -136,8 +282,16 @@ impl Flight {
         self.renderer.resize(cols, rows);
         let cam = self.renderer.camera(&self.ship, self.time);
         self.field.retarget(&cam);
+        let side = self.renderer.exterior_camera(&self.ship, self.time);
+        if let Some(field) = &mut self.exterior {
+            field.retarget(&side);
+        }
         if args.stars == 0 {
-            self.field.resize_pool(star_count(args, &self.renderer));
+            let count = star_count(args, &self.renderer);
+            self.field.resize_pool(count);
+            if let Some(field) = &mut self.exterior {
+                field.resize_pool(count);
+            }
         }
         true
     }
@@ -173,6 +327,12 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         return Action::Continue;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // A dialogue is up: it takes the keyboard, and in particular it takes
+    // `Esc`. Nothing is worse than reaching for the key that dismisses a menu
+    // and ending the flight with it.
+    if flight.menu_open() && !ctrl {
+        return menu_key(key, flight);
+    }
     match key.code {
         // `q` is on the stick, so it cannot also be the way out: nothing a
         // pilot reaches for mid-turn should end the flight.
@@ -202,14 +362,26 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
             flight.ship.throttle = args.throttle;
             *paused = false;
         }
-        KeyCode::Char('+' | '=') => {
-            let n = (flight.field.len() as f32 * 1.25) as usize;
-            flight.field.resize_pool(n.min(AUTO_MAX_STARS));
-        }
-        KeyCode::Char('-' | '_') => {
-            let n = (flight.field.len() as f32 * 0.8) as usize;
-            flight.field.resize_pool(n.max(64));
-        }
+        KeyCode::Char('+' | '=') => flight.resize_pool(1.25, 64),
+        KeyCode::Char('-' | '_') => flight.resize_pool(0.8, 64),
+
+        // The camera, and the hangar.
+        KeyCode::Char('c' | 'C') => flight.cycle_view(args),
+        KeyCode::Char('m' | 'M') => flight.open_menu(args),
+        _ => {}
+    }
+    Action::Continue
+}
+
+/// Keys while the ship picker is up. It is modal on purpose: the arrows move
+/// the highlight rather than the throttle, and every way out of it leaves the
+/// flight running.
+fn menu_key(key: KeyEvent, flight: &mut Flight) -> Action {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('w' | 'W' | 'k' | 'K') => flight.menu_move(-1),
+        KeyCode::Down | KeyCode::Char('s' | 'S' | 'j' | 'J') => flight.menu_move(1),
+        KeyCode::Enter | KeyCode::Char(' ') => flight.menu_confirm(),
+        KeyCode::Esc | KeyCode::Char('m' | 'M') => flight.close_menu(),
         _ => {}
     }
     Action::Continue
@@ -581,6 +753,254 @@ mod tests {
         // the sky has not emptied.
         flight.draw(60.0, false, true);
         assert!(flight.ship.roll.is_finite() && !flight.field.is_empty());
+    }
+
+    #[test]
+    fn c_cycles_the_camera_and_ctrl_c_still_quits() {
+        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+        assert_eq!(flight.view(), ViewMode::Cockpit, "a flight starts inside");
+
+        for key in ['c', 'C'] {
+            let before = flight.view();
+            let action = handle_key(
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                &mut flight,
+                &args,
+                &mut paused,
+            );
+            assert!(matches!(action, Action::Continue), "{key} ended the flight");
+            assert_eq!(
+                flight.view(),
+                before.next(),
+                "{key} did not change the view"
+            );
+        }
+        assert_eq!(
+            flight.view(),
+            ViewMode::Cockpit,
+            "two presses should come round"
+        );
+
+        // And the key that quits still quits, which is the thing a new binding
+        // on `c` could most easily break.
+        assert!(matches!(
+            handle_key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &mut flight,
+                &args,
+                &mut paused
+            ),
+            Action::Quit
+        ));
+    }
+
+    #[test]
+    fn the_outside_sky_is_only_built_when_it_is_asked_for() {
+        // A cockpit-only run must pay nothing for the view it never opens —
+        // not the pool, and not a draw from a generator that would have to come
+        // from somewhere.
+        let args = args_for(&["--stars", "500", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        assert!(
+            flight.exterior.is_none(),
+            "the outside sky was built anyway"
+        );
+
+        flight.cycle_view(&args);
+        assert!(
+            flight.exterior.is_some(),
+            "C did not build a sky to look at"
+        );
+        assert_eq!(flight.field.len(), 500, "the cockpit pool was disturbed");
+    }
+
+    #[test]
+    fn the_two_skies_are_independent_of_one_another() {
+        // The cockpit field's generator is the one the reference frames were
+        // recorded from. Building a second field must not touch it, whenever
+        // that happens, and the two skies must not be the same pattern twice.
+        let args = args_for(&["--seed", "4", "--stars", "300", "--size", "60x20"]);
+        let sky = |side: bool| {
+            let mut flight = Flight::new(&args, 60, 20);
+            if side {
+                flight.cycle_view(&args);
+            }
+            let cam = flight.renderer.camera(&flight.ship, 0.0);
+            flight
+                .field
+                .streaks(&cam, 0.0, 0.0)
+                .map(|s| s.to)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sky(false), sky(true), "going outside moved the cockpit sky");
+    }
+
+    #[test]
+    fn switching_views_leaves_the_other_sky_where_it_was() {
+        // Only the view being flown is stepped, which is safe because both
+        // fields work out where a star *was* from where it is. Nothing may
+        // freeze, and coming back must not draw a scratch across the frame.
+        let args = args_for(&["--seed", "8", "--stars", "400", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        flight.ship.throttle = 1.0;
+        for _ in 0..60 {
+            flight.advance(1.0 / 60.0);
+        }
+        let cam = flight.renderer.camera(&flight.ship, flight.time);
+        let parked: Vec<(f32, f32)> = flight.field.streaks(&cam, 0.0, 0.0).map(|s| s.to).collect();
+
+        flight.cycle_view(&args);
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+            flight.draw(60.0, false, true);
+        }
+        let cam = flight.renderer.camera(&flight.ship, flight.time);
+        let after: Vec<(f32, f32)> = flight.field.streaks(&cam, 0.0, 0.0).map(|s| s.to).collect();
+        assert_eq!(
+            parked, after,
+            "the cockpit sky moved while nobody was in it"
+        );
+
+        // Back inside, and the first frame is a normal one rather than a smear
+        // of two seconds' travel.
+        flight.cycle_view(&args);
+        flight.advance(1.0 / 60.0);
+        let cam = flight.renderer.camera(&flight.ship, flight.time);
+        let longest = flight
+            .field
+            .streaks(&cam, 0.0, 0.0)
+            .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
+            .fold(0.0f32, f32::max);
+        assert!(longest < 40.0, "coming back drew a scratch {longest} long");
+    }
+
+    #[test]
+    fn m_opens_the_ship_picker_and_escape_closes_it_without_quitting() {
+        // The nastiest bug this feature could have: reaching for the key that
+        // dismisses a dialogue and losing the terminal instead.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
+        assert!(flight.menu_open(), "M did not open the picker");
+        assert_eq!(
+            flight.view(),
+            ViewMode::Side,
+            "the picker should show you what it is offering"
+        );
+
+        let action = handle_key(press(KeyCode::Esc), &mut flight, &args, &mut paused);
+        assert!(matches!(action, Action::Continue), "Esc ended the flight");
+        assert!(!flight.menu_open(), "Esc did not close the picker");
+
+        // With it shut, Esc is the way out again.
+        assert!(matches!(
+            handle_key(press(KeyCode::Esc), &mut flight, &args, &mut paused),
+            Action::Quit
+        ));
+    }
+
+    #[test]
+    fn the_picker_takes_the_keyboard_while_it_is_up() {
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
+
+        let throttle = flight.ship.throttle;
+        for code in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Char('w'),
+            KeyCode::Char('a'),
+            KeyCode::Char(' '),
+        ] {
+            handle_key(press(code), &mut flight, &args, &mut paused);
+        }
+        assert_eq!(flight.ship.throttle, throttle, "the arrows flew the ship");
+        assert_eq!(
+            flight.ship.yaw_rate, 0.0,
+            "the stick was live under the menu"
+        );
+        assert!(!flight.ship.warp_engaged, "space lit the drive");
+    }
+
+    #[test]
+    fn choosing_a_ship_previews_it_and_keeps_it() {
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let flown = |f: &Flight| f.drawn_model().name;
+
+        handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
+        let first = flown(&flight);
+        handle_key(press(KeyCode::Down), &mut flight, &args, &mut paused);
+        assert_ne!(
+            flown(&flight),
+            first,
+            "the picker describes instead of showing"
+        );
+
+        let previewed = flown(&flight);
+        handle_key(press(KeyCode::Enter), &mut flight, &args, &mut paused);
+        assert!(!flight.menu_open());
+        assert_eq!(flown(&flight), previewed, "Enter did not keep the choice");
+
+        // And backing out leaves the ship alone.
+        handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
+        handle_key(press(KeyCode::Down), &mut flight, &args, &mut paused);
+        handle_key(press(KeyCode::Esc), &mut flight, &args, &mut paused);
+        assert_eq!(flown(&flight), previewed, "Esc changed the ship anyway");
+    }
+
+    #[test]
+    fn the_outside_view_flies_and_resizes_like_the_inside_one() {
+        let args = args_for(&["--seed", "2", "--view", "side", "--ship", "trident"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        assert_eq!(flight.view(), ViewMode::Side, "--view side did not take");
+        assert_eq!(flight.drawn_model().name, "trident");
+
+        flight.ship.throttle = 1.0;
+        flight.ship.toggle_warp();
+        for (cols, rows) in [(80, 24), (1, 1), (200, 60), (46, 12), (120, 40)] {
+            flight.resize(&args, cols, rows);
+            for _ in 0..30 {
+                flight.advance(1.0 / 60.0);
+                flight.draw(60.0, false, true);
+            }
+            let (cw, ch) = flight.renderer.canvas_dims();
+            assert_eq!(flight.renderer.pixels().len(), cw * ch);
+            assert!(
+                flight.stars() > 0,
+                "the outside sky emptied at {cols}x{rows}"
+            );
+            flight.renderer.present(&mut Vec::new()).unwrap();
+        }
+        assert!(flight
+            .renderer
+            .pixels()
+            .iter()
+            .any(|p| p.iter().any(|v| *v > 40)));
+    }
+
+    #[test]
+    fn the_star_keys_grow_whichever_sky_is_being_looked_at() {
+        let args = args_for(&["--stars", "500", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        let outside = flight.stars();
+        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+        assert!(flight.stars() > outside, "+ did not grow the outside sky");
+        assert_eq!(flight.field.len(), 500, "it grew the wrong one");
     }
 
     #[test]

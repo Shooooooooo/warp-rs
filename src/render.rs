@@ -5,7 +5,10 @@
 //! drive spools rather than each effect arriving on its own schedule.
 
 use crate::canvas::{Canvas, Tonemap};
+use crate::exterior::ExteriorField;
 use crate::hud::{self, Readout};
+use crate::lens::Lens;
+use crate::models::{self, ShipModel};
 use crate::ship::Ship;
 use crate::starfield::{Camera, StarField};
 use crate::term::{ColorMode, Screen};
@@ -19,6 +22,21 @@ const SHAKE_AMPLITUDE: f32 = 0.045;
 /// Display gamma the tonemap decodes for. Fixed: it describes the terminal,
 /// not a taste setting, and `--exposure` is the knob for brightness.
 const GAMMA: f32 = 2.2;
+
+/// Everything the view from outside draws, beyond the camera and the panel.
+///
+/// A bundle rather than four more arguments: `render_exterior` would otherwise
+/// be one past the point where clippy — which CI runs as an error — starts
+/// asking what all of them are for.
+pub struct Exterior<'a> {
+    /// Taken by mutable reference because bending a streak needs somewhere to
+    /// put it, and that scratch is kept with the field rather than allocated
+    /// afresh for every star of every frame.
+    pub field: &'a mut ExteriorField,
+    pub ship: &'a Ship,
+    pub model: &'a ShipModel,
+    pub time: f64,
+}
 
 pub struct Renderer {
     canvas: Canvas,
@@ -148,6 +166,62 @@ impl Renderer {
         hud::draw(&mut self.screen, hud);
     }
 
+    /// Draw one frame of the view from outside. Nothing reaches the terminal
+    /// yet.
+    ///
+    /// The same order as [`Self::render`] — sky, then what is lit, then the
+    /// glass — with the hull between them. There is no depth buffer and none is
+    /// needed: [`crate::exterior`]'s near wall is four units beyond the ship, so
+    /// nothing can be in front of it, and the far side of the hull is culled on
+    /// the winding of each plate.
+    pub fn render_exterior(&mut self, scene: Exterior<'_>, cam: &Camera, hud: &Readout) {
+        let Exterior {
+            field,
+            ship,
+            model,
+            time,
+        } = scene;
+        let warp = ship.warp_intensity();
+        let (_, h) = self.canvas.dims();
+
+        // The ship sits dead on the camera's axis, so its centre projects to
+        // the vanishing point — shake included, which keeps the bend locked to
+        // the hull rather than to the frame.
+        let lens = Lens::for_warp((cam.cx, cam.cy), warp, h as f32);
+
+        self.canvas.clear();
+        field.draw(&mut self.canvas, cam, warp, time, &lens);
+
+        // A wash inside the shadow, so the disc the lens has swept clear reads
+        // as a bubble the ship is sitting in rather than as a hole punched in
+        // the sky.
+        if lens.is_on() {
+            let glare = warp * warp * warp;
+            self.canvas.add_glow(
+                cam.cx,
+                cam.cy,
+                lens.shadow() * 1.5,
+                CORE_COLOR,
+                glare * 0.35,
+            );
+        }
+
+        models::draw(&mut self.canvas, cam, ship, model);
+
+        // A lighter vignette than the cockpit's: there is no tunnel to be
+        // pulled down here, and the ship is off the centre of attention.
+        self.canvas
+            .apply_vignette(cam.cx, cam.cy, 0.18 + 0.30 * warp);
+        if ship.flash > 0.0 {
+            self.canvas
+                .add_flash([1.0, 1.0, 1.0], ship.flash.powf(1.6) * 0.85);
+        }
+
+        self.canvas.resolve_into(&self.tonemap, &mut self.pixels);
+        self.screen.compose(&self.pixels);
+        hud::draw(&mut self.screen, hud);
+    }
+
     /// Push the frame to an interactive terminal, writing only what changed.
     pub fn present(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.screen.flush(out)
@@ -175,6 +249,8 @@ mod tests {
             stars: 1000,
             paused: false,
             hints: true,
+            view: crate::view::ViewMode::Cockpit,
+            model: "dart",
         }
     }
 
@@ -257,6 +333,106 @@ mod tests {
             warping > cruising * 1.5,
             "cruise {cruising:.1} vs warp {warping:.1}"
         );
+    }
+
+    /// Fly the outside view for a while and hand back the renderer.
+    fn fly_outside(
+        cols: usize,
+        rows: usize,
+        model: usize,
+        engaged: bool,
+        frames: usize,
+        stars: usize,
+    ) -> Renderer {
+        let mut renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        if engaged {
+            ship.toggle_warp();
+        }
+        let cam = renderer.exterior_camera(&ship, 0.0);
+        let mut field = crate::exterior::ExteriorField::new(stars, 5, &cam);
+        let mut time = 0.0;
+        for _ in 0..frames {
+            time += 1.0 / 60.0;
+            ship.update(1.0 / 60.0);
+            let cam = renderer.exterior_camera(&ship, time);
+            field.update(1.0 / 60.0, ship.speed, &cam);
+            let readout = readout(&ship);
+            let scene = Exterior {
+                field: &mut field,
+                ship: &ship,
+                model: &crate::models::models()[model],
+                time,
+            };
+            renderer.render_exterior(scene, &cam, &readout);
+        }
+        renderer
+    }
+
+    #[test]
+    fn the_outside_view_renders_end_to_end_for_every_ship() {
+        for model in 0..crate::models::models().len() {
+            for engaged in [false, true] {
+                let renderer = fly_outside(80, 24, model, engaged, 90, 800);
+                assert!(
+                    renderer.pixels().iter().any(|p| p.iter().any(|v| *v > 40)),
+                    "ship {model} came out black"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn warp_opens_a_hole_in_the_sky_around_the_ship() {
+        // The lens, seen from the outside of the renderer: at warp the sky
+        // immediately around the hull is swept clear and piles up beyond it,
+        // and at impulse the two read much the same.
+        let sample = |engaged: bool| -> (f32, f32) {
+            let renderer = fly_outside(120, 36, 0, engaged, 150, 2500);
+            let (w, h) = renderer.canvas_dims();
+            let px = renderer.pixels();
+            let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+            // Two rings: one just outside the hull, one well beyond it.
+            let mean = |lo: f32, hi: f32| {
+                let (mut total, mut n) = (0u64, 0u64);
+                for y in 0..h {
+                    for x in 0..w {
+                        let r = (x as f32 - cx).hypot(y as f32 - cy);
+                        if r >= lo && r < hi {
+                            let p = px[y * w + x];
+                            total += (p[0] as u64 + p[1] as u64 + p[2] as u64) / 3;
+                            n += 1;
+                        }
+                    }
+                }
+                total as f32 / n.max(1) as f32
+            };
+            (
+                mean(h as f32 * 0.22, h as f32 * 0.30),
+                mean(h as f32 * 0.55, h as f32 * 0.75),
+            )
+        };
+
+        let (near_hull, far_out) = sample(true);
+        assert!(
+            near_hull < far_out * 0.7,
+            "warp did not clear the sky around the ship: {near_hull} against {far_out}"
+        );
+        let (near_hull, far_out) = sample(false);
+        assert!(
+            near_hull > far_out * 0.7,
+            "impulse should not bend anything: {near_hull} against {far_out}"
+        );
+    }
+
+    #[test]
+    fn a_zero_sized_terminal_does_not_crash_in_either_view() {
+        for (cols, rows) in [(0usize, 0usize), (80, 0), (0, 24), (1, 0), (2, 3)] {
+            let renderer = fly_outside(cols, rows, 0, true, 5, 200);
+            let (w, h) = renderer.canvas_dims();
+            assert_eq!(renderer.pixels().len(), w * h);
+        }
     }
 
     #[test]

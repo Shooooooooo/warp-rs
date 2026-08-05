@@ -688,6 +688,30 @@ mod tests {
     }
 
     #[test]
+    fn bending_the_sky_stops_allocating_once_it_is_under_way() {
+        // Every star at warp is chopped into arcs and mapped twice over. Doing
+        // that into a fresh `Vec` each time would be thousands of allocations a
+        // frame, in the same spirit as the buffer `resolve_into` reuses.
+        let cam = cam();
+        let mut field = ExteriorField::new(3000, 9, &cam);
+        let mut canvas = Canvas::new(200, 100);
+        let lens = Lens::for_warp((cam.cx, cam.cy), 1.0, cam.height);
+
+        let mut settled = None;
+        for frame in 0..120 {
+            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam);
+            field.draw(&mut canvas, &cam, 1.0, frame as f64 / 60.0, &lens);
+            let capacity = (field.source.capacity(), field.bent.capacity());
+            match settled {
+                // Twenty frames to reach the longest streak it will ever draw.
+                None if frame == 20 => settled = Some(capacity),
+                Some(settled) => assert_eq!(capacity, settled, "it grew again at {frame}"),
+                None => {}
+            }
+        }
+    }
+
+    #[test]
     fn resizing_the_pool_and_the_canvas_keeps_it_valid() {
         let cam = cam();
         let mut field = ExteriorField::new(100, 1, &cam);

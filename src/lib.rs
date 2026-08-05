@@ -15,6 +15,8 @@ pub mod cli;
 pub mod exterior;
 pub mod hud;
 pub mod lens;
+pub mod menu;
+pub mod models;
 pub mod render;
 pub mod ship;
 pub mod starfield;

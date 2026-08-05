@@ -66,7 +66,16 @@ enum Backdrop {
     /// Never darken anything: keep the background pixel, and lighten the glyph
     /// against the pixel it replaces.
     Lighten,
+    /// Cover what is behind it outright, spaces included. For a dialogue,
+    /// which is in front of the scene rather than painted on the glass — and
+    /// which has to stay readable over whatever the sky happens to be doing.
+    Panel,
 }
+
+/// How far the sky is taken down under a panel. Not to black: a dialogue that
+/// blacks out a starfield reads as a hole cut in the frame, and the ship is
+/// worth still seeing behind the list of ships.
+const PANEL_DIM: f32 = 0.22;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cell {
@@ -333,6 +342,12 @@ impl Screen {
         self.stamp(col, row, text, fg, Backdrop::Lighten);
     }
 
+    /// Stamp a run of a dialogue box: the frame behind it is taken down and
+    /// covered, spaces included, so the box is opaque rather than a stencil.
+    pub fn overlay_panel(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8)) {
+        self.stamp(col, row, text, fg, Backdrop::Panel);
+    }
+
     fn stamp(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8), how: Backdrop) {
         if row >= self.rows {
             return;
@@ -347,11 +362,13 @@ impl Screen {
             let Some(c) = col.checked_add(i).filter(|c| *c < self.cols) else {
                 break;
             };
-            // Keep the starfield showing through the gaps in the panel text.
-            if ch == ' ' {
+            // Keep the starfield showing through the gaps in the panel text —
+            // except under a dialogue, where a space is part of the box.
+            if ch == ' ' && how != Backdrop::Panel {
                 continue;
             }
             let cell = &mut self.back[row * self.cols + c];
+            let under = cell.ch;
             cell.ch = ch;
             match how {
                 Backdrop::Shadow => {
@@ -360,6 +377,29 @@ impl Screen {
                     // the field still glows through, but text stays readable
                     // even when a streak happens to be blazing directly behind.
                     cell.bg = cell.bg.map(|(r, g, b)| (r / 4, g / 4, b / 4));
+                }
+                Backdrop::Panel => {
+                    // Both halves of the cell go down, not just the background:
+                    // the foreground *is* the top subpixel of the frame, so
+                    // dimming only the background would leave a bright streak
+                    // showing through the top half of every character.
+                    let dim = |c: (u8, u8, u8)| {
+                        let take = |v: u8| (v as f32 * PANEL_DIM) as u8;
+                        (take(c.0), take(c.1), take(c.2))
+                    };
+                    cell.bg = cell.bg.map(dim);
+                    if ch == ' ' {
+                        // A gap in the box is backdrop and nothing else. In
+                        // colour the half block stays, so the sky is still
+                        // faintly there behind the dialogue rather than a hole
+                        // being cut in the frame. With no colour to take down
+                        // there is nothing to dim, so it has to be cleared
+                        // instead or the brightness ramp shows through the box.
+                        cell.ch = if mark.is_some() { under } else { ' ' };
+                        cell.fg = cell.fg.map(dim);
+                    } else {
+                        cell.fg = mark;
+                    }
                 }
                 Backdrop::Lighten => {
                     // `compose` already ran, so the cell's own colours *are*
@@ -783,6 +823,67 @@ mod tests {
         );
         assert_eq!(bg, Some((0, 0, 0)));
         assert_eq!(screen.back[3].ch, '\u{250C}');
+    }
+
+    #[test]
+    fn a_panel_covers_the_gaps_a_readout_lets_through() {
+        // An instrument skips its spaces so the starfield glows between the
+        // words. A dialogue must not: the gaps in a box are part of the box,
+        // and a picker with stars shining through it reads as a fault.
+        let lit = [240u8, 245, 255];
+        let mut screen = Screen::new(12, 2, ColorMode::Truecolor);
+        screen.compose(&pixels(12, 2, lit));
+        screen.overlay(0, 0, "A B", (200, 100, 50));
+        screen.overlay_panel(0, 1, "A B", (200, 100, 50));
+
+        // The readout left the gap exactly as the sky drew it.
+        let (fg, bg) = screen.cell_colors(1, 0);
+        assert_eq!((fg, bg), (Some((240, 245, 255)), Some((240, 245, 255))));
+        // The panel took it down, both halves of the cell.
+        let (fg, bg) = screen.cell_colors(1, 1);
+        let (fg, bg) = (fg.unwrap(), bg.unwrap());
+        assert!(
+            fg.0 < 80 && bg.0 < 80,
+            "the sky showed through: {fg:?} {bg:?}"
+        );
+        // And what it wrote is still legible in its own ink.
+        assert_eq!(screen.cell_colors(0, 1).0, Some((200, 100, 50)));
+        assert_eq!(screen.back[screen.cols].ch, 'A');
+    }
+
+    #[test]
+    fn a_panel_in_ascii_mode_clears_what_it_covers() {
+        // With no colour there is nothing to take down, so a gap has to be
+        // blanked instead — otherwise the brightness ramp goes on drawing
+        // stars inside the box.
+        let mut screen = Screen::new(8, 1, ColorMode::Ascii);
+        screen.compose(&pixels(8, 1, [255, 255, 255]));
+        assert_ne!(screen.row_text(0).trim(), "", "the sky should be drawn");
+        screen.overlay_panel(0, 0, "A B", (200, 100, 50));
+        assert_eq!(&screen.row_text(0)[..3], "A B", "the gap kept its star");
+    }
+
+    #[test]
+    fn a_panel_leaves_the_other_two_backdrops_alone() {
+        // The new arm must not disturb the two the instrument panel relies on.
+        let lit = [200u8, 210, 230];
+        let mut screen = Screen::new(8, 3, ColorMode::Truecolor);
+        screen.compose(&pixels(8, 3, lit));
+        screen.overlay(0, 0, "X", (255, 255, 255));
+        screen.overlay_mark(0, 1, "X", (58, 92, 118));
+        screen.overlay_panel(0, 2, "X", (255, 255, 255));
+
+        assert_eq!(
+            screen.cell_colors(0, 0).1,
+            Some((50, 52, 57)),
+            "the shadow is still a quarter of what is behind it"
+        );
+        assert_eq!(
+            screen.cell_colors(0, 1).1,
+            Some((200, 210, 230)),
+            "a mark still never darkens anything"
+        );
+        assert!(screen.cell_colors(0, 2).1.unwrap().0 < 60, "the panel dims");
     }
 
     #[test]
