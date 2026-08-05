@@ -270,6 +270,16 @@ impl Screen {
         (cell.fg, cell.bg)
     }
 
+    /// The glyphs of one row, for tests that care about the panel's layout
+    /// rather than its colours.
+    #[cfg(test)]
+    pub fn row_text(&self, row: usize) -> String {
+        self.back[row * self.cols..(row + 1) * self.cols]
+            .iter()
+            .map(|c| c.ch)
+            .collect()
+    }
+
     /// Render the frame as plain text plus ANSI colour, for piping somewhere
     /// that is not an interactive terminal.
     pub fn write_plain(&self, out: &mut impl Write) -> io::Result<()> {
