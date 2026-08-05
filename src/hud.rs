@@ -20,6 +20,30 @@ const MIN_COLS: usize = 46;
 /// Below this many rows there is no space for the lower panel.
 const MIN_ROWS: usize = 12;
 
+/// Where the throttle readout starts, and how wide its bar is.
+const THROTTLE_COL: usize = 2;
+const THROTTLE_BAR: usize = 16;
+
+/// Control hints, widest first: the first that fits is the one drawn, so a
+/// narrow window sheds detail rather than losing the line entirely.
+const HINTS: [&str; 2] = [
+    "SPACE warp  \u{2191}\u{2193} throttle  \u{2190}\u{2192}IK steer  P pause  R reset  Q quit",
+    "SPACE warp  \u{2191}\u{2193}\u{2190}\u{2192} fly  P pause  Q quit",
+];
+
+/// The three instrument rows, counted up from the bottom. Each owns its row
+/// outright — the hints used to share the throttle's, right-aligned, and
+/// quietly overwrote it on any terminal narrow enough for the two to meet.
+fn status_row(rows: usize) -> usize {
+    rows.saturating_sub(3)
+}
+fn throttle_row(rows: usize) -> usize {
+    rows.saturating_sub(2)
+}
+fn hint_row(rows: usize) -> usize {
+    rows.saturating_sub(1)
+}
+
 pub struct Readout<'a> {
     pub ship: &'a Ship,
     pub fps: f32,
@@ -116,7 +140,7 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) 
 
     let text = truncate(&text, cols);
     let col = cols.saturating_sub(text.chars().count()) / 2;
-    screen.overlay(col, rows.saturating_sub(3), &text, color);
+    screen.overlay(col, status_row(rows), &text, color);
 
     // Right-hand corner: how hard the machine is working.
     let stats = format!("STARS {:>5}   {:>3.0} FPS", r.stars, r.fps);
@@ -125,26 +149,26 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) 
 }
 
 fn draw_throttle(screen: &mut Screen, r: &Readout, rows: usize) {
-    const WIDTH: usize = 16;
-    let filled = (r.ship.throttle * WIDTH as f32).round() as usize;
-    let bar: String = (0..WIDTH)
+    let filled = (r.ship.throttle * THROTTLE_BAR as f32).round() as usize;
+    let bar: String = (0..THROTTLE_BAR)
         .map(|i| if i < filled { '\u{2588}' } else { '\u{2591}' })
         .collect();
     let color = if r.ship.warp_engaged { ACCENT } else { LABEL };
 
-    let row = rows.saturating_sub(2);
-    screen.overlay(2, row, "THR", LABEL);
-    screen.overlay(6, row, &bar, color);
-    screen.overlay(6 + WIDTH + 1, row, &format!("{:>3.0}%", r.ship.throttle * 100.0), VALUE);
+    let row = throttle_row(rows);
+    let bar_col = THROTTLE_COL + 4;
+    screen.overlay(THROTTLE_COL, row, "THR", LABEL);
+    screen.overlay(bar_col, row, &bar, color);
+    let pct = format!("{:>3.0}%", r.ship.throttle * 100.0);
+    screen.overlay(bar_col + THROTTLE_BAR + 1, row, &pct, VALUE);
 }
 
 fn draw_hints(screen: &mut Screen, cols: usize, rows: usize) {
-    let hint = "SPACE warp  \u{2191}\u{2193} throttle  \u{2190}\u{2192}IK steer  P pause  R reset  Q quit";
-    if hint.chars().count() + 2 > cols {
+    let Some(hint) = HINTS.iter().find(|h| h.chars().count() + 2 <= cols) else {
         return;
-    }
-    let col = cols.saturating_sub(hint.chars().count() + 2);
-    screen.overlay(col, rows.saturating_sub(2), hint, DIM);
+    };
+    let col = cols - (hint.chars().count() + 2);
+    screen.overlay(col, hint_row(rows), hint, DIM);
 }
 
 fn velocity_text(ship: &Ship) -> String {
@@ -304,6 +328,62 @@ mod tests {
             for (got, under) in [(fg.0, lit[0]), (fg.1, lit[1]), (fg.2, lit[2])] {
                 assert!(got >= under, "reticle at ({x},{y}) dimmed a channel: {got} < {under}");
             }
+        }
+    }
+
+    #[test]
+    fn the_hints_never_eat_the_throttle_readout() {
+        // Regression: the hints were right-aligned onto the throttle's own row
+        // and only checked that they fit the terminal, not that they cleared
+        // the bar. At every width from 63 to 89 — the default 80 among them —
+        // they overwrote the end of the bar and the whole percentage:
+        //
+        //   THR ███░░░░░░░░░░SPACE warp  ↑↓ throttle  ←→IK steer  P pause ...
+        let mut ship = Ship::new();
+        ship.throttle = 0.5;
+        let rows = 24;
+
+        for cols in MIN_COLS..=200 {
+            let mut screen = blank(cols, rows);
+            draw(&mut screen, &readout(&ship));
+            let row = screen.row_text(throttle_row(rows));
+            let cells: Vec<char> = row.chars().collect();
+
+            let bar_col = THROTTLE_COL + 4;
+            for (i, ch) in cells[bar_col..bar_col + THROTTLE_BAR].iter().enumerate() {
+                assert!(
+                    *ch == '\u{2588}' || *ch == '\u{2591}',
+                    "bar cell {i} became {ch:?} at {cols} columns"
+                );
+            }
+            assert!(row.contains("50%"), "the percentage went missing at {cols} columns");
+            assert!(
+                !row.contains("pause"),
+                "hints landed on the throttle row at {cols} columns"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hints_shed_detail_rather_than_vanishing() {
+        // The full hint needs 63 columns. Below that a shorter one still has
+        // to name the keys that matter, down to the panel's own minimum.
+        let ship = Ship::new();
+        let rows = 24;
+        for cols in MIN_COLS..=120 {
+            let mut screen = blank(cols, rows);
+            draw(&mut screen, &readout(&ship));
+            let hints = screen.row_text(hint_row(rows));
+            assert!(
+                hints.contains("warp") && hints.contains("quit"),
+                "no usable hint at {cols} columns: {hints:?}"
+            );
+            // Whatever was chosen has to have fitted: nothing may be clipped
+            // off the right-hand edge.
+            assert!(
+                !hints.ends_with("quit"),
+                "the hint ran into the last column at {cols} columns"
+            );
         }
     }
 

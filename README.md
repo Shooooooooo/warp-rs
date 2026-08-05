@@ -148,6 +148,9 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+CI runs both on Linux, macOS and Windows, and re-checks the reproducibility
+property below.
+
 `--headless` renders with a fixed timestep and no terminal control, so with a
 fixed `--seed` the same flight produces byte-identical output — useful for
 checking that a change to the renderer changed only what you meant it to:

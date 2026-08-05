@@ -21,6 +21,64 @@ const TAIL_BRIGHTNESS: f32 = 0.32;
 /// Backstop on samples per streak; clipping already bounds this in practice.
 const MAX_SAMPLES: usize = 4096;
 
+/// Entries in the tonemap table. The curve is sampled on a square-root
+/// compressed domain, which spends resolution where the output moves fastest;
+/// 1024 holds the worst error to a single 8-bit level and keeps the whole
+/// table inside L1.
+const TONEMAP_LUT: usize = 1024;
+
+/// The tonemap curve, precomputed.
+///
+/// Exposure and gamma are fixed for the life of a run and the output is only
+/// eight bits wide, so the entire curve fits in a table. That turns what was
+/// an `exp` and a `powf` per channel per subpixel — around 98k of each per
+/// frame on a large terminal, and the most expensive thing the renderer did —
+/// into a square root and an index.
+pub struct Tonemap {
+    lut: Box<[u8; TONEMAP_LUT]>,
+    /// Reciprocal of the smallest HDR value that already resolves to 255.
+    inv_ceiling: f32,
+}
+
+impl Tonemap {
+    pub fn new(exposure: f32, gamma: f32) -> Self {
+        let ceiling = saturation_point(exposure, gamma);
+        let mut lut = Box::new([0u8; TONEMAP_LUT]);
+        for (i, slot) in lut.iter_mut().enumerate() {
+            let t = i as f32 / (TONEMAP_LUT - 1) as f32;
+            *slot = map_exact(t * t * ceiling, exposure, gamma);
+        }
+        Self { lut, inv_ceiling: 1.0 / ceiling }
+    }
+
+    /// Map one HDR channel to eight bits. Negatives and NaN land on black.
+    fn channel(&self, v: f32) -> u8 {
+        let t = (v.max(0.0) * self.inv_ceiling).min(1.0).sqrt();
+        // A float-to-int cast saturates, so even a rogue value stays in range.
+        self.lut[((t * (TONEMAP_LUT - 1) as f32) as usize).min(TONEMAP_LUT - 1)]
+    }
+}
+
+/// The exponential tonemap, evaluated honestly: monotonic, never clips, and
+/// rolls highlights off instead of flattening them. Only the table is built
+/// from this now; the per-pixel path goes through `Tonemap::channel`.
+fn map_exact(v: f32, exposure: f32, gamma: f32) -> u8 {
+    let mapped = 1.0 - (-v.max(0.0) * exposure).exp();
+    (mapped.powf(1.0 / gamma) * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// The smallest HDR value that already resolves to 255. Sampling the table
+/// beyond here would spend entries on a curve that has stopped moving.
+fn saturation_point(exposure: f32, gamma: f32) -> f32 {
+    let top = (254.5f32 / 255.0).powf(gamma);
+    let ceiling = -(1.0 - top).ln() / exposure.max(f32::MIN_POSITIVE);
+    if ceiling.is_finite() && ceiling > 0.0 {
+        ceiling
+    } else {
+        1.0
+    }
+}
+
 pub struct Canvas {
     width: usize,
     height: usize,
@@ -42,6 +100,11 @@ impl Canvas {
         if (width, height) != (self.width, self.height) {
             self.width = width;
             self.height = height;
+            // Cleared, not just re-length-ed: the row stride follows the width,
+            // so light left over from the old layout would reappear somewhere
+            // it was never drawn. Every frame clears before it draws, but that
+            // is the renderer's habit, not something resize may lean on.
+            self.buf.clear();
             self.buf.resize(width * height, [0.0; 3]);
         }
     }
@@ -205,22 +268,16 @@ impl Canvas {
         }
     }
 
-    /// Collapse the HDR buffer to 8-bit sRGB-ish pixels, row-major.
-    pub fn resolve(&self, exposure: f32, gamma: f32) -> Vec<[u8; 3]> {
-        let inv_gamma = 1.0 / gamma;
-        self.buf
-            .iter()
-            .map(|px| {
-                let mut out = [0u8; 3];
-                for i in 0..3 {
-                    // Exponential tonemap: monotonic, never clips, and rolls
-                    // highlights off instead of flattening them.
-                    let mapped = 1.0 - (-px[i].max(0.0) * exposure).exp();
-                    out[i] = (mapped.powf(inv_gamma) * 255.0).round().clamp(0.0, 255.0) as u8;
-                }
-                out
-            })
-            .collect()
+    /// Collapse the HDR buffer to 8-bit sRGB-ish pixels, row-major, into a
+    /// caller-owned buffer. Taking one rather than returning a fresh `Vec`
+    /// keeps a 98 KB allocation out of every single frame.
+    pub fn resolve_into(&self, tone: &Tonemap, out: &mut Vec<[u8; 3]>) {
+        out.clear();
+        out.extend(
+            self.buf
+                .iter()
+                .map(|px| [tone.channel(px[0]), tone.channel(px[1]), tone.channel(px[2])]),
+        );
     }
 }
 
@@ -234,6 +291,12 @@ mod tests {
 
     fn total_light(canvas: &Canvas) -> f32 {
         canvas.buf.iter().map(|p| p[0] + p[1] + p[2]).sum()
+    }
+
+    fn resolve(canvas: &Canvas, exposure: f32, gamma: f32) -> Vec<[u8; 3]> {
+        let mut out = Vec::new();
+        canvas.resolve_into(&Tonemap::new(exposure, gamma), &mut out);
+        out
     }
 
     #[test]
@@ -312,7 +375,7 @@ mod tests {
             let v = x as f32 * 0.5;
             canvas.splat(x as f32, 0.0, [1.0, 1.0, 1.0], v);
         }
-        let out = canvas.resolve(1.0, 2.2);
+        let out = resolve(&canvas, 1.0, 2.2);
         let mut prev = 0u8;
         for px in out.iter().take(64) {
             assert!(px[0] >= prev, "tonemap must not go backwards");
@@ -325,14 +388,95 @@ mod tests {
     fn enormous_values_saturate_rather_than_wrapping() {
         let mut canvas = Canvas::new(4, 4);
         canvas.splat(1.0, 1.0, [1.0, 1.0, 1.0], 1e9);
-        let out = canvas.resolve(1.0, 2.2);
+        let out = resolve(&canvas, 1.0, 2.2);
         assert_eq!(out[4 + 1], [255, 255, 255], "pixel (1, 1) of a 4-wide canvas");
+    }
+
+    #[test]
+    fn the_tonemap_table_matches_the_curve_it_replaces() {
+        // The table stands in for an `exp` and a `powf` per channel per
+        // subpixel. It is allowed to be a shade off, but never by more than one
+        // 8-bit level, and never out of order — the bloom is the tonemap's
+        // monotonicity showing through, so a kink in it would be visible.
+        for step in 1..=40 {
+            let exposure = step as f32 * 0.075;
+            let tone = Tonemap::new(exposure, 2.2);
+            let ceiling = saturation_point(exposure, 2.2);
+            let mut prev = 0u8;
+            // Well past the ceiling: the buffer is HDR and streaks pile up.
+            for k in 0..=20_000 {
+                let v = k as f32 / 20_000.0 * ceiling * 3.0;
+                let (got, want) = (tone.channel(v), map_exact(v, exposure, 2.2));
+                assert!(
+                    got.abs_diff(want) <= 1,
+                    "exposure {exposure}, v {v}: table says {got}, curve says {want}"
+                );
+                assert!(got >= prev, "the table went backwards at v {v}");
+                prev = got;
+            }
+            assert_eq!(tone.channel(0.0), 0, "black must stay black");
+            assert_eq!(tone.channel(1e9), 255, "an enormous value must saturate");
+            assert_eq!(tone.channel(f32::NAN), 0, "a NaN must land on black");
+            assert_eq!(tone.channel(-5.0), 0, "negative light is still black");
+        }
+    }
+
+    #[test]
+    fn resolving_reuses_its_output_buffer() {
+        // Regression: this allocated and freed a fresh ~98 KB `Vec` every
+        // frame, in a field documented as being reused across frames.
+        let mut canvas = Canvas::new(64, 32);
+        let tone = Tonemap::new(1.9, 2.2);
+        let mut out = Vec::new();
+
+        canvas.resolve_into(&tone, &mut out);
+        assert_eq!(out.len(), 64 * 32);
+        let capacity = out.capacity();
+        for _ in 0..10 {
+            canvas.splat(1.0, 1.0, [1.0; 3], 1.0);
+            canvas.resolve_into(&tone, &mut out);
+        }
+        assert_eq!(out.capacity(), capacity, "a steady canvas must not reallocate");
+
+        // The length has to follow a resize rather than the old dimensions.
+        canvas.resize(40, 9);
+        canvas.resolve_into(&tone, &mut out);
+        assert_eq!(out.len(), 40 * 9);
+        canvas.resize(200, 100);
+        canvas.resolve_into(&tone, &mut out);
+        assert_eq!(out.len(), 200 * 100);
     }
 
     #[test]
     fn an_empty_canvas_resolves_to_black() {
         let canvas = Canvas::new(16, 16);
-        assert!(canvas.resolve(1.4, 2.2).iter().all(|p| *p == [0, 0, 0]));
+        assert!(resolve(&canvas, 1.4, 2.2).iter().all(|p| *p == [0, 0, 0]));
+    }
+
+    #[test]
+    fn resizing_does_not_smear_old_light_into_the_new_layout() {
+        // A pixel's index is `y * width + x`, so changing the width moves every
+        // row. Anything left behind would surface somewhere it was never drawn.
+        let mut canvas = Canvas::new(16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                canvas.splat(x as f32, y as f32, [1.0; 3], 1.0);
+            }
+        }
+        assert!(total_light(&canvas) > 0.0);
+
+        canvas.resize(9, 30); // taller and narrower: the buffer grows
+        assert_eq!(canvas.dims(), (9, 30));
+        assert_eq!(total_light(&canvas), 0.0, "old light survived the reflow");
+
+        for y in 0..30 {
+            for x in 0..9 {
+                canvas.splat(x as f32, y as f32, [1.0; 3], 1.0);
+            }
+        }
+        canvas.resize(40, 4); // and again, this time shrinking it
+        assert_eq!(canvas.dims(), (40, 4));
+        assert_eq!(total_light(&canvas), 0.0, "old light survived the reflow");
     }
 
     #[test]

@@ -227,13 +227,27 @@ impl Flight {
         self.renderer.render(&self.field, &self.ship, &cam, self.time, &readout);
     }
 
-    fn resize(&mut self, args: &Args, cols: usize, rows: usize) {
+    /// Adapt to a new terminal size. Reports whether anything actually moved,
+    /// so the caller can skip the repaint a resize otherwise forces.
+    fn resize(&mut self, args: &Args, cols: usize, rows: usize) -> bool {
+        // `--size` is a fixed size, not a starting point. Without this the flag
+        // held only until the first resize event, after which the terminal
+        // silently won.
+        if args.size.is_some() {
+            return false;
+        }
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        if self.renderer.screen().dims() == (cols, rows) {
+            return false;
+        }
+
         self.renderer.resize(cols, rows);
         let cam = self.renderer.camera(&self.ship, self.time);
         self.field.retarget(&cam);
         if args.stars == 0 {
             self.field.resize_pool(star_count(args, &self.renderer));
         }
+        true
     }
 }
 
@@ -384,10 +398,14 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                         break 'flying;
                     }
                 }
+                // Only repaint if the size really changed: terminals emit
+                // resize events that settle on the size we already have, and
+                // clearing on those makes the field blink for no reason.
                 Event::Resize(cols, rows) => {
-                    flight.resize(args, cols as usize, rows as usize);
-                    out.queue(terminal::Clear(terminal::ClearType::All))?;
-                    flight.renderer.screen().force_redraw();
+                    if flight.resize(args, cols as usize, rows as usize) {
+                        out.queue(terminal::Clear(terminal::ClearType::All))?;
+                        flight.renderer.screen().force_redraw();
+                    }
                 }
                 _ => {}
             }
@@ -710,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_flight_survives_being_resized_underneath_it() {
-        let args = args_for(&["--size", "80x24"]);
+        let args = args_for(&[]);
         let mut flight = Flight::new(&args, 80, 24);
         for (cols, rows) in [(80, 24), (250, 70), (8, 3), (1, 1), (120, 40)] {
             flight.resize(&args, cols, rows);
@@ -721,6 +739,82 @@ mod tests {
             flight.renderer.present(&mut Vec::new()).unwrap();
             assert!(flight.field.len() >= 1);
         }
+    }
+
+    #[test]
+    fn a_resize_storm_keeps_every_buffer_in_step() {
+        // Three buffers have to agree: the canvas is two subpixel rows per
+        // terminal row, the screen is one cell per terminal cell, and the
+        // resolved pixel buffer has to match the canvas exactly or `compose`
+        // reads off the end of it. Walk a deliberately awful sequence —
+        // degenerate, lopsided, and either side of the panel's breakpoints —
+        // drawing and presenting at every step.
+        let args = args_for(&["--seed", "9"]);
+        let mut flight = Flight::new(&args, 80, 24);
+
+        for (cols, rows) in [
+            (80, 24),
+            (1, 1),
+            (300, 90),
+            (2, 40),
+            (200, 3),
+            (45, 11), // just under the panel's minimum: it goes compact
+            (46, 12), // and just over: the full panel comes back
+            (37, 13),
+            (1, 1),
+            (120, 40),
+        ] {
+            flight.resize(&args, cols, rows);
+            for _ in 0..5 {
+                flight.advance(1.0 / 60.0);
+                flight.draw(60.0, false, true);
+            }
+
+            let (cw, ch) = flight.renderer.canvas_dims();
+            assert_eq!(
+                flight.renderer.pixels().len(),
+                cw * ch,
+                "the resolved pixel buffer is stale at {cols}x{rows}"
+            );
+            assert!(flight.field.len() >= 1, "the star pool emptied at {cols}x{rows}");
+            assert!(flight.ship.speed.is_finite());
+
+            let (sc, sr) = flight.renderer.screen().dims();
+            assert_eq!((cw, ch), (sc, sr * 2), "canvas and screen disagree at {cols}x{rows}");
+            flight.renderer.present(&mut Vec::new()).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_forced_size_ignores_the_terminal_moving_underneath_it() {
+        // Regression: `--size` was honoured at startup and then discarded by
+        // the first resize event, so the flag meant "until the window moves".
+        let args = args_for(&["--size", "120x40", "--stars", "200"]);
+        let mut flight = Flight::new(&args, 120, 40);
+        assert!(!flight.resize(&args, 80, 24), "a forced size must not move");
+        assert_eq!(flight.renderer.canvas_dims(), (120, 80));
+
+        // Without the flag the terminal is the authority — but only when it
+        // actually says something new.
+        let args = args_for(&["--stars", "200"]);
+        let mut flight = Flight::new(&args, 120, 40);
+        assert!(flight.resize(&args, 80, 24), "an unforced size follows the terminal");
+        assert_eq!(flight.renderer.canvas_dims(), (80, 48));
+        assert!(!flight.resize(&args, 80, 24), "settling on the same size is no change");
+    }
+
+    #[test]
+    fn resizing_retunes_the_automatic_star_count_but_not_an_explicit_one() {
+        let args = args_for(&[]);
+        let mut flight = Flight::new(&args, 40, 12);
+        let small = flight.field.len();
+        flight.resize(&args, 300, 90);
+        assert!(flight.field.len() > small, "a bigger window should hold more stars");
+
+        let args = args_for(&["--stars", "777"]);
+        let mut flight = Flight::new(&args, 40, 12);
+        flight.resize(&args, 300, 90);
+        assert_eq!(flight.field.len(), 777, "an explicit count is not a suggestion");
     }
 
     #[test]

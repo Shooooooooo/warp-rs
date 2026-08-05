@@ -270,6 +270,16 @@ impl Screen {
         (cell.fg, cell.bg)
     }
 
+    /// The glyphs of one row, for tests that care about the panel's layout
+    /// rather than its colours.
+    #[cfg(test)]
+    pub fn row_text(&self, row: usize) -> String {
+        self.back[row * self.cols..(row + 1) * self.cols]
+            .iter()
+            .map(|c| c.ch)
+            .collect()
+    }
+
     /// Render the frame as plain text plus ANSI colour, for piping somewhere
     /// that is not an interactive terminal.
     pub fn write_plain(&self, out: &mut impl Write) -> io::Result<()> {
@@ -353,8 +363,19 @@ pub struct RawGuard;
 impl RawGuard {
     pub fn new() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
+        // Own the undoing before anything else can fail. Constructing the guard
+        // last meant a `?` on any of the lines below returned with raw mode
+        // still on and nothing left to switch it off.
+        let guard = Self;
+
         let mut out = io::stdout();
         out.queue(terminal::EnterAlternateScreen)?;
+        // No autowrap. The grid is painted with explicit cursor moves and never
+        // relies on it, and leaving it on means a terminal that shrinks between
+        // our idea of its width and the next flush shears the frame diagonally
+        // instead of harmlessly clipping. It also keeps the bottom-right cell —
+        // which every full repaint writes — from scrolling the alternate screen.
+        out.queue(terminal::DisableLineWrap)?;
         out.queue(cursor::Hide)?;
         out.flush()?;
 
@@ -366,7 +387,7 @@ impl RawGuard {
             previous(info);
         }));
 
-        Ok(Self)
+        Ok(guard)
     }
 }
 
@@ -382,6 +403,7 @@ pub fn restore() {
     let _ = out.queue(SetForegroundColor(Color::Reset));
     let _ = out.queue(SetBackgroundColor(Color::Reset));
     let _ = out.queue(cursor::Show);
+    let _ = out.queue(terminal::EnableLineWrap);
     let _ = out.queue(terminal::LeaveAlternateScreen);
     let _ = out.flush();
     let _ = terminal::disable_raw_mode();
