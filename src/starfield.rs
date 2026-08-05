@@ -18,7 +18,8 @@ pub const Z_FAR: f32 = 260.0;
 /// Stars live in a *rectangular* screen-space frustum this much larger than
 /// the visible area. A circular bound wastes most of the star budget on the
 /// corners of a disc that never intersects a wide terminal; the margin that
-/// remains is what a turn has to bite into.
+/// remains is the run-up a star gets before it reaches the screen, so nothing
+/// a turn brings into view has to appear in view.
 const SPAWN_MARGIN: f32 = 1.3;
 
 /// How sharply a star dims with distance. Real inverse-square falloff spans
@@ -105,7 +106,9 @@ pub struct Camera {
     pub cx: f32,
     pub cy: f32,
     pub focal: f32,
-    /// Roll, applied after projection.
+    /// The lean into a turn, applied after projection. The pilot's own roll is
+    /// not here: that turns the stars instead, in `StarField::update`, so that
+    /// it streaks along the arc it swept.
     pub bank: f32,
 }
 
@@ -258,37 +261,91 @@ impl StarField {
 
     /// Advance the field: fly forward, swing with the ship's steering, and
     /// recycle anything that has left the view.
-    pub fn update(&mut self, dt: f32, speed: f32, yaw: f32, pitch: f32, cam: &Camera) {
+    ///
+    /// `yaw`, `pitch` and `roll` are the ship's angular rates. Roll turns the
+    /// stars rather than the projection so that it streaks like the other two
+    /// axes do: a streak is the segment between a star's old and new positions,
+    /// and a camera that rolled underneath a star that had not moved would draw
+    /// no arc at all.
+    pub fn update(&mut self, dt: f32, speed: f32, yaw: f32, pitch: f32, roll: f32, cam: &Camera) {
         let (sy, cy) = (yaw * dt).sin_cos();
         let (sp, cp) = (pitch * dt).sin_cos();
+        // Negated: the sky turns the opposite way from the ship, so dropping
+        // the starboard wing swings the stars anticlockwise.
+        let (sr, cr) = (-roll * dt).sin_cos();
         let travel = speed * dt;
         let (bound_x, bound_y) = self.bound;
+        let focal = self.focal;
+
+        // Where a star sits relative to the vanishing point, and whether that
+        // has it out of the frustum. Behind the near plane counts as out.
+        let offset = |pos| cam.project(pos).map(|(px, py)| (px - cam.cx, py - cam.cy));
+        let escaped = |o: Option<(f32, f32)>| {
+            o.is_none_or(|(sx, sy)| sx.abs() > bound_x || sy.abs() > bound_y)
+        };
 
         for i in 0..self.stars.len() {
             let star = &mut self.stars[i];
             star.prev = cam.project(star.pos);
 
             let [x, y, z] = star.pos;
-            // Yaw about the vertical axis, then pitch about the horizontal.
+            // Where this frame's travel alone would have put it. Kept so that a
+            // star which has left the frustum can say which way it went.
+            let coasted = [x, y, z - travel];
+
+            // Yaw about the vertical axis, pitch about the horizontal, roll
+            // about the nose. Each is a rotation of camera space, so all three
+            // stay relative to the ship: roll ninety degrees and the pitch axis
+            // has come round to where the yaw axis was, exactly as it would in
+            // something with wings.
             let (x, z) = (x * cy - z * sy, x * sy + z * cy);
             let (y, z) = (y * cp - z * sp, y * sp + z * cp);
+            let (x, y) = (x * cr - y * sr, x * sr + y * cr);
             star.pos = [x, y, z - travel];
+            let pos = star.pos;
 
-            // A star leaves either by flying past the canopy or by fanning out
-            // beyond the edge of the frustum on its way in. Both are the same
-            // event — it is behind us now — and both put it back at the far
-            // plane, which is the only place new stars can honestly come from.
-            let gone = star.pos[2] <= Z_NEAR
-                || match cam.project(star.pos) {
-                    Some((px, py)) => {
-                        (px - cam.cx).abs() > bound_x || (py - cam.cy).abs() > bound_y
-                    }
-                    None => true,
-                };
-
-            if gone {
-                self.stars[i] = self.spawn(DepthRule::FarPlane);
+            let here = offset(pos);
+            if !escaped(here) {
+                continue;
             }
+
+            // Two quite different events wear the same disguise here. Flying
+            // past the canopy — or fanning out beyond the edge of the frustum
+            // on the way in, which is the same thing — leaves the star behind
+            // us, and the far plane is the only place it can honestly come back
+            // from. But a turn that *swings* a star out of view has not passed
+            // it: the sky making room is the sky on the other side, already at
+            // whatever distance it had. Sending that to the far plane too is
+            // what emptied the edges of the frame during a hard turn, and roll,
+            // which sweeps the whole frame at once, makes it impossible to miss.
+            let swung_out = match (here, escaped(offset(coasted))) {
+                (Some(offset), false) => Some(offset),
+                _ => None,
+            };
+            let Some((sx, sy)) = swung_out else {
+                self.stars[i] = self.spawn(DepthRule::FarPlane);
+                continue;
+            };
+
+            // Out past one edge, back in at the one opposite, at the depth it
+            // already had. The frustum is wider than the screen, so it returns
+            // off-camera and sweeps into view rather than appearing in it.
+            let sx = if sx.abs() > bound_x { -sx } else { sx };
+            let sy = if sy.abs() > bound_y { -sy } else { sy };
+            let (sx, sy) = (sx.clamp(-bound_x, bound_x), sy.clamp(-bound_y, bound_y));
+            // Undo the bank the projection applies, then back-project through
+            // the depth, the same way `spawn` places a fresh star.
+            let (sin, cos) = cam.bank.sin_cos();
+            let scale = pos[2] / focal;
+            let star = &mut self.stars[i];
+            star.pos = [
+                (sx * cos + sy * sin) * scale,
+                (sy * cos - sx * sin) * scale,
+                pos[2],
+            ];
+            // It did not travel there, so it must not draw a streak saying it
+            // did — that segment would be a scratch clean across the frame.
+            star.prev = None;
         }
     }
 
@@ -421,7 +478,7 @@ mod tests {
         let cam = cam();
         let mut field = StarField::new(500, 7, &cam);
         for _ in 0..600 {
-            field.update(1.0 / 60.0, 400.0, 0.0, 0.0, &cam);
+            field.update(1.0 / 60.0, 400.0, 0.0, 0.0, 0.0, &cam);
             assert_eq!(field.len(), 500);
             for star in &field.stars {
                 assert!(
@@ -441,13 +498,146 @@ mod tests {
             // Steering rotates stars, which can swing one out past the far
             // plane. That is legitimate — it goes dark until it comes back —
             // but nothing may go behind the camera or turn into a NaN.
-            field.update(1.0 / 60.0, 400.0, 0.85, -0.6, &cam);
+            field.update(1.0 / 60.0, 400.0, 0.85, -0.6, 1.1, &cam);
             assert_eq!(field.len(), 500);
             for star in &field.stars {
                 assert!(star.pos[2] > Z_NEAR, "z went behind us: {}", star.pos[2]);
                 assert!(star.pos.iter().all(|c| c.is_finite()));
             }
         }
+    }
+
+    #[test]
+    fn rolling_turns_the_sky_the_other_way() {
+        // A roll to starboard drops the right wing, so the sky swings
+        // anticlockwise: a star out on the right-hand horizon rides upward.
+        let cam = cam();
+        let mut field = StarField::new(1, 5, &cam);
+        field.stars[0].pos = [20.0, 0.0, 50.0];
+        let before = cam.project(field.stars[0].pos).unwrap();
+        for _ in 0..20 {
+            field.update(1.0 / 60.0, 0.0, 0.0, 0.0, 1.0, &cam);
+        }
+        let after = cam.project(field.stars[0].pos).unwrap();
+        assert!(after.1 < before.1 - 1.0, "{before:?} then {after:?}");
+        assert!(
+            after.0 > cam.cx,
+            "it should still be on the right: {after:?}"
+        );
+
+        // And the radius is preserved: a roll turns the sky, it does not fly
+        // the ship anywhere.
+        let radius = |p: (f32, f32)| (p.0 - cam.cx).hypot(p.1 - cam.cy);
+        assert!((radius(after) - radius(before)).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_roll_streaks_along_the_arc_it_swept() {
+        // Roll turns the stars rather than the projection precisely so that it
+        // streaks. A camera that rolled underneath stationary stars would leave
+        // every one of them a point.
+        let cam = cam();
+        let mut field = StarField::new(600, 17, &cam);
+        for _ in 0..60 {
+            field.update(1.0 / 60.0, 20.0, 0.0, 0.0, 0.0, &cam);
+        }
+        let length = |f: &StarField| -> f32 {
+            f.streaks(&cam, 0.0, 0.0)
+                .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
+                .sum()
+        };
+        let coasting = length(&field);
+        field.update(1.0 / 60.0, 20.0, 0.0, 0.0, 1.8, &cam);
+        assert!(
+            length(&field) > coasting * 2.0,
+            "rolling should smear the field: {coasting} then {}",
+            length(&field)
+        );
+    }
+
+    #[test]
+    fn a_hard_turn_does_not_empty_the_edges_of_the_frame() {
+        // Regression: every star that left the frustum went back to the far
+        // plane, where it is invisible and, at impulse, a good half minute from
+        // being seen again. A turn sweeps the whole field out sideways, so the
+        // edges of the frame — a third of it, on a wide terminal — simply went
+        // dark and stayed dark. Roll sweeps every edge at once and made it
+        // obvious, but yaw and pitch had it too.
+        let cam = cam();
+        // The outer sixth on each side: the first part to go, and the part a
+        // rectangular frustum is least generous with.
+        let edges = |field: &StarField| -> (usize, usize) {
+            let mut left = 0;
+            let mut right = 0;
+            for s in field.streaks(&cam, 0.0, 0.0).filter(|s| s.intensity > 0.05) {
+                let (x, y) = s.to;
+                if !(0.0..cam.height).contains(&y) {
+                    continue;
+                }
+                if (0.0..cam.width / 6.0).contains(&x) {
+                    left += 1;
+                } else if (cam.width * 5.0 / 6.0..cam.width).contains(&x) {
+                    right += 1;
+                }
+            }
+            (left, right)
+        };
+
+        // Impulse, where the field turns over slowly enough for a hole to last.
+        let speed = 8.0;
+        for (yaw, pitch, roll) in [(0.0, 0.0, 1.8), (0.85, 0.0, 0.0), (0.0, 0.6, 0.0)] {
+            let mut field = StarField::new(4000, 42, &cam);
+            for _ in 0..1200 {
+                field.update(1.0 / 60.0, speed, 0.0, 0.0, 0.0, &cam);
+            }
+            let (l0, r0) = edges(&field);
+            assert!(l0 > 40 && r0 > 40, "the settled field is thin: {l0}, {r0}");
+
+            // Two full seconds of it, which for the roll is most of a turn.
+            for _ in 0..120 {
+                field.update(1.0 / 60.0, speed, yaw, pitch, roll, &cam);
+            }
+            let (l1, r1) = edges(&field);
+            assert!(
+                l1 * 2 > l0 && r1 * 2 > r0,
+                "steering at ({yaw}, {pitch}, {roll}) emptied the edges: \
+                 {l0} left and {r0} right became {l1} and {r1}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_star_swung_out_of_view_comes_back_off_camera() {
+        // The replacement sky enters from beyond the edge of the *screen*, not
+        // in the middle of it: a star that popped into an occupied frame would
+        // read as a rendering fault rather than as sky coming round.
+        let cam = cam();
+        let mut field = StarField::new(3000, 8, &cam);
+        for _ in 0..600 {
+            field.update(1.0 / 60.0, 8.0, 0.0, 0.0, 0.0, &cam);
+        }
+        let mut swung_back = 0;
+        for _ in 0..240 {
+            field.update(1.0 / 60.0, 8.0, 0.0, 0.0, 1.8, &cam);
+            for star in &field.stars {
+                // A star that was put back anywhere has had its trail cleared.
+                // The ones sent to the far plane are allowed on screen — they
+                // are invisible out there and fade up as they come — so only
+                // the ones kept at their own depth are of interest.
+                if star.prev.is_some() || star.pos[2] >= Z_FAR * 0.92 {
+                    continue;
+                }
+                swung_back += 1;
+                let Some((x, y)) = cam.project(star.pos) else {
+                    continue;
+                };
+                assert!(
+                    x < 0.0 || x >= cam.width || y < 0.0 || y >= cam.height,
+                    "a star reappeared on screen at ({x}, {y})"
+                );
+            }
+        }
+        assert!(swung_back > 100, "the roll swung nothing out: {swung_back}");
     }
 
     #[test]
@@ -458,7 +648,7 @@ mod tests {
         let cam = cam();
         let mut field = StarField::new(3000, 21, &cam);
         for _ in 0..400 {
-            field.update(1.0 / 60.0, 30.0, 0.0, 0.0, &cam);
+            field.update(1.0 / 60.0, 30.0, 0.0, 0.0, 0.0, &cam);
         }
         let visible = field
             .streaks(&cam, 0.0, 0.0)
@@ -479,7 +669,7 @@ mod tests {
         let cam = cam();
         let mut field = StarField::new(2000, 13, &cam);
         for _ in 0..900 {
-            field.update(1.0 / 60.0, 25.0, 0.0, 0.0, &cam);
+            field.update(1.0 / 60.0, 25.0, 0.0, 0.0, 0.0, &cam);
         }
         let lit = field
             .streaks(&cam, 0.0, 0.0)
@@ -502,8 +692,8 @@ mod tests {
     fn streaks_are_points_at_rest_and_stretch_under_way() {
         let cam = cam();
         let mut field = StarField::new(400, 3, &cam);
-        field.update(1.0 / 60.0, 0.0, 0.0, 0.0, &cam);
-        field.update(1.0 / 60.0, 0.0, 0.0, 0.0, &cam);
+        field.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0.0, &cam);
+        field.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0.0, &cam);
         let still: f32 = field
             .streaks(&cam, 0.0, 0.0)
             .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
@@ -511,7 +701,7 @@ mod tests {
         assert!(still < 1.0, "a parked ship should not streak: {still}");
 
         for _ in 0..30 {
-            field.update(1.0 / 60.0, crate::ship::WARP_MAX, 0.0, 0.0, &cam);
+            field.update(1.0 / 60.0, crate::ship::WARP_MAX, 0.0, 0.0, 0.0, &cam);
         }
         let moving: f32 = field
             .streaks(&cam, 1.0, 0.0)
@@ -528,7 +718,7 @@ mod tests {
         let cam = cam();
         let mut field = StarField::new(400, 3, &cam);
         for _ in 0..10 {
-            field.update(1.0 / 60.0, 20.0, 0.0, 0.0, &cam);
+            field.update(1.0 / 60.0, 20.0, 0.0, 0.0, 0.0, &cam);
         }
         let sample = |time: f64| -> Vec<f32> {
             field
