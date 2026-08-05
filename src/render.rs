@@ -4,7 +4,7 @@
 //! warp ramp the streaks use, so the whole image tightens up together as the
 //! drive spools rather than each effect arriving on its own schedule.
 
-use crate::canvas::Canvas;
+use crate::canvas::{Canvas, Tonemap};
 use crate::hud::{self, Readout};
 use crate::ship::Ship;
 use crate::starfield::{Camera, StarField};
@@ -15,12 +15,15 @@ use std::io::{self, Write};
 const CORE_COLOR: [f32; 3] = [0.62, 0.80, 1.00];
 /// Shake displacement at full intensity, as a fraction of canvas height.
 const SHAKE_AMPLITUDE: f32 = 0.045;
+/// Display gamma the tonemap decodes for. Fixed: it describes the terminal,
+/// not a taste setting, and `--exposure` is the knob for brightness.
+const GAMMA: f32 = 2.2;
 
 pub struct Renderer {
     canvas: Canvas,
     screen: Screen,
-    exposure: f32,
-    gamma: f32,
+    /// The exposure and gamma curve, baked into a table once at startup.
+    tonemap: Tonemap,
     /// Scratch buffer for resolved pixels, reused across frames.
     pixels: Vec<[u8; 3]>,
 }
@@ -37,9 +40,8 @@ impl Renderer {
             // Two subpixel rows per terminal row: that is the half-block trick.
             canvas: Canvas::new(cols, rows * 2),
             screen: Screen::new(cols, rows, mode),
-            exposure,
-            gamma: 2.2,
-            pixels: Vec::new(),
+            tonemap: Tonemap::new(exposure, GAMMA),
+            pixels: Vec::with_capacity(cols * rows * 2),
         }
     }
 
@@ -105,7 +107,7 @@ impl Renderer {
                 .add_flash([1.0, 1.0, 1.0], ship.flash.powf(1.6) * 0.85);
         }
 
-        self.pixels = self.canvas.resolve(self.exposure, self.gamma);
+        self.canvas.resolve_into(&self.tonemap, &mut self.pixels);
         self.screen.compose(&self.pixels);
         hud::draw(&mut self.screen, hud);
     }
