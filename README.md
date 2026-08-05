@@ -151,6 +151,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 CI runs both on Linux, macOS and Windows, and re-checks the reproducibility
 property below.
 
+To see where a frame goes — simulating the flight, drawing it, and getting it
+out — against the 16.7 ms that 60 fps allows:
+
+```sh
+cargo run --release --example bench
+cargo run --release --example bench 200 60 20000    # a specific size and count
+```
+
 `--headless` renders with a fixed timestep and no terminal control, so with a
 fixed `--seed` the same flight produces byte-identical output — useful for
 checking that a change to the renderer changed only what you meant it to:
