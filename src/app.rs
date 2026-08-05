@@ -89,6 +89,7 @@ impl Flight {
                 self.ship.speed,
                 self.ship.yaw_rate,
                 self.ship.pitch_rate,
+                self.ship.roll_rate,
                 &cam,
             );
             self.accumulator -= SIM_STEP;
@@ -173,15 +174,24 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
+        // `q` is on the stick, so it cannot also be the way out: nothing a
+        // pilot reaches for mid-turn should end the flight.
         KeyCode::Char('c' | 'd') if ctrl => return Action::Quit,
-        KeyCode::Char('q' | 'Q') | KeyCode::Esc => return Action::Quit,
+        KeyCode::Esc => return Action::Quit,
 
-        KeyCode::Up | KeyCode::Char('w' | 'W') => flight.ship.nudge_throttle(1.0),
-        KeyCode::Down | KeyCode::Char('s' | 'S') => flight.ship.nudge_throttle(-1.0),
+        // The stick. WASD for the two axes that point the nose, QE for the one
+        // that turns the sky about it; `i`/`k` pitch too, as they always have.
+        KeyCode::Char('w' | 'W' | 'i' | 'I') => flight.ship.nudge_pitch(-1.0),
+        KeyCode::Char('s' | 'S' | 'k' | 'K') => flight.ship.nudge_pitch(1.0),
         KeyCode::Left | KeyCode::Char('a' | 'A') => flight.ship.nudge_yaw(-1.0),
         KeyCode::Right | KeyCode::Char('d' | 'D') => flight.ship.nudge_yaw(1.0),
-        KeyCode::Char('i' | 'I') => flight.ship.nudge_pitch(-1.0),
-        KeyCode::Char('k' | 'K') => flight.ship.nudge_pitch(1.0),
+        KeyCode::Char('q' | 'Q') => flight.ship.nudge_roll(-1.0),
+        KeyCode::Char('e' | 'E') => flight.ship.nudge_roll(1.0),
+
+        // The throttle is the arrows, which is where it has always been: only
+        // its letters went to the stick.
+        KeyCode::Up => flight.ship.nudge_throttle(1.0),
+        KeyCode::Down => flight.ship.nudge_throttle(-1.0),
 
         KeyCode::Char(' ') => {
             flight.ship.toggle_warp();
@@ -453,11 +463,6 @@ mod tests {
         handle_key(press(KeyCode::Char(' ')), &mut flight, &args, &mut paused);
         assert!(flight.ship.warp_engaged);
 
-        handle_key(press(KeyCode::Left), &mut flight, &args, &mut paused);
-        assert!(flight.ship.yaw_rate < 0.0);
-        handle_key(press(KeyCode::Char('i')), &mut flight, &args, &mut paused);
-        assert!(flight.ship.pitch_rate < 0.0);
-
         handle_key(press(KeyCode::Char('p')), &mut flight, &args, &mut paused);
         assert!(paused);
 
@@ -467,9 +472,115 @@ mod tests {
         handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
         assert!(flight.field.len() < stars * 2);
 
+        // Reset has to take the attitude with it, roll included — a ship left
+        // inverted after an `R` would be a reset in name only.
+        handle_key(press(KeyCode::Char('e')), &mut flight, &args, &mut paused);
+        flight.advance(1.0 / 60.0);
+        assert!(flight.ship.roll != 0.0);
         handle_key(press(KeyCode::Char('r')), &mut flight, &args, &mut paused);
         assert!(!flight.ship.warp_engaged && !paused);
         assert_eq!(flight.ship.throttle, args.throttle);
+        assert_eq!((flight.ship.roll, flight.ship.roll_rate), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_stick_is_wasd_and_qe() {
+        // Every axis, in both directions, on both cases of the letter — and on
+        // the arrows that share the yaw axis with A and D.
+        let args = args_for(&["--stars", "200", "--size", "40x12"]);
+        let mut flight = Flight::new(&args, 40, 12);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // Pitch, yaw, roll — the first key of each pair is the negative end.
+        let rates = |ship: &Ship| [ship.pitch_rate, ship.yaw_rate, ship.roll_rate];
+        let pairs = [('w', 's'), ('a', 'd'), ('q', 'e')];
+        for (axis, (down, up)) in pairs.into_iter().enumerate() {
+            for (key, want_negative) in [(down, true), (up, false)] {
+                for key in [key, key.to_ascii_uppercase()] {
+                    flight.ship.reset();
+                    let before = flight.ship.throttle;
+                    handle_key(press(KeyCode::Char(key)), &mut flight, &args, &mut paused);
+
+                    let rates = rates(&flight.ship);
+                    assert_eq!(
+                        rates[axis] < 0.0,
+                        want_negative,
+                        "{key} moved the stick the wrong way: {}",
+                        rates[axis]
+                    );
+                    // One key, one axis: the stick must not cross-couple, and
+                    // W and S must no longer touch the throttle they used to be.
+                    for other in (0..3).filter(|o| *o != axis) {
+                        assert_eq!(rates[other], 0.0, "{key} also moved axis {other}");
+                    }
+                    assert_eq!(flight.ship.throttle, before, "{key} moved the throttle");
+                }
+            }
+        }
+
+        // `i`/`k` pitched before WASD arrived and still do.
+        for (key, want_up) in [('i', true), ('k', false)] {
+            flight.ship.reset();
+            handle_key(press(KeyCode::Char(key)), &mut flight, &args, &mut paused);
+            assert_eq!(flight.ship.pitch_rate < 0.0, want_up, "{key} pitched wrong");
+        }
+
+        // The arrows steer the same axis A and D do, and are the only throttle.
+        for (code, want_left) in [(KeyCode::Left, true), (KeyCode::Right, false)] {
+            flight.ship.reset();
+            handle_key(press(code), &mut flight, &args, &mut paused);
+            assert_eq!(flight.ship.yaw_rate < 0.0, want_left);
+            assert_eq!(flight.ship.pitch_rate, 0.0, "an arrow must not pitch");
+        }
+        for (code, want_more) in [(KeyCode::Up, true), (KeyCode::Down, false)] {
+            flight.ship.reset();
+            let before = flight.ship.throttle;
+            handle_key(press(code), &mut flight, &args, &mut paused);
+            assert_eq!(flight.ship.throttle > before, want_more);
+        }
+    }
+
+    #[test]
+    fn a_roll_turns_the_sky_and_stays_where_it_is_put() {
+        // The pilot's roll is attitude, not a transient: it holds after the
+        // impulse has decayed, which is what makes flying inverted possible.
+        let args = args_for(&["--stars", "300", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        for _ in 0..30 {
+            handle_key(press(KeyCode::Char('e')), &mut flight, &args, &mut paused);
+            flight.advance(1.0 / 60.0);
+        }
+        assert!(
+            flight.ship.roll > 0.1,
+            "E should have rolled to starboard: {}",
+            flight.ship.roll
+        );
+
+        for _ in 0..300 {
+            flight.advance(1.0 / 60.0);
+        }
+        assert!(
+            flight.ship.roll_rate.abs() < 0.01,
+            "the roll rate must decay"
+        );
+        let rolled = flight.ship.roll;
+        for _ in 0..300 {
+            flight.advance(1.0 / 60.0);
+        }
+        assert!(
+            (flight.ship.roll - rolled).abs() < 1e-3,
+            "the roll itself must not: {rolled} became {}",
+            flight.ship.roll
+        );
+
+        // And the flight is still flyable afterwards — nothing has gone NaN and
+        // the sky has not emptied.
+        flight.draw(60.0, false, true);
+        assert!(flight.ship.roll.is_finite() && !flight.field.is_empty());
     }
 
     #[test]
@@ -506,25 +617,48 @@ mod tests {
         let mut flight = Flight::new(&args, 20, 8);
         let mut paused = false;
         for key in [
-            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
         ] {
             assert!(matches!(
                 handle_key(key, &mut flight, &args, &mut paused),
                 Action::Quit
             ));
         }
-        // A plain 'c' is not a quit — it would be a nasty surprise if it were.
-        assert!(matches!(
-            handle_key(
-                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+        // Neither a plain 'c' nor a plain 'd' is a quit — it would be a nasty
+        // surprise if either were, and 'd' steers.
+        for key in ['c', 'd'] {
+            assert!(matches!(
+                handle_key(
+                    KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                    &mut flight,
+                    &args,
+                    &mut paused
+                ),
+                Action::Continue
+            ));
+        }
+    }
+
+    #[test]
+    fn q_flies_the_ship_rather_than_ending_the_flight() {
+        // Regression in waiting: `q` quit before it was a control. Now it rolls
+        // to port, and a pilot reaching for it must not lose the terminal.
+        let args = args_for(&["--stars", "100", "--size", "20x8"]);
+        let mut flight = Flight::new(&args, 20, 8);
+        let mut paused = false;
+        for key in ['q', 'Q'] {
+            flight.ship.reset();
+            let action = handle_key(
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
                 &mut flight,
                 &args,
-                &mut paused
-            ),
-            Action::Continue
-        ));
+                &mut paused,
+            );
+            assert!(matches!(action, Action::Continue), "{key} quit");
+            assert!(flight.ship.roll_rate < 0.0, "{key} did not roll to port");
+        }
     }
 
     #[test]

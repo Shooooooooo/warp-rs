@@ -168,7 +168,14 @@ mod tests {
             time += 1.0 / 60.0;
             ship.update(1.0 / 60.0);
             let cam = renderer.camera(&ship, time);
-            field.update(1.0 / 60.0, ship.speed, ship.yaw_rate, ship.pitch_rate, &cam);
+            field.update(
+                1.0 / 60.0,
+                ship.speed,
+                ship.yaw_rate,
+                ship.pitch_rate,
+                ship.roll_rate,
+                &cam,
+            );
             renderer.render(&field, &ship, &cam, time, &readout(&ship));
 
             if frame == 120 {
@@ -200,7 +207,7 @@ mod tests {
                 time += 1.0 / 60.0;
                 ship.update(1.0 / 60.0);
                 let cam = renderer.camera(&ship, time);
-                field.update(1.0 / 60.0, ship.speed, 0.0, 0.0, &cam);
+                field.update(1.0 / 60.0, ship.speed, 0.0, 0.0, 0.0, &cam);
                 renderer.render(&field, &ship, &cam, time, &readout(&ship));
             }
             let (w, h) = renderer.canvas_dims();
@@ -247,7 +254,7 @@ mod tests {
             let mut field = StarField::new(50, 1, &cam);
             for _ in 0..5 {
                 ship.update(1.0 / 60.0);
-                field.update(1.0 / 60.0, ship.speed, 0.0, 0.0, &cam);
+                field.update(1.0 / 60.0, ship.speed, 0.0, 0.0, 0.0, &cam);
                 renderer.render(&field, &ship, &cam, 0.0, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();
@@ -282,7 +289,7 @@ mod tests {
             field.retarget(&cam);
             for _ in 0..30 {
                 ship.update(1.0 / 60.0);
-                field.update(1.0 / 60.0, ship.speed, 0.2, 0.0, &cam);
+                field.update(1.0 / 60.0, ship.speed, 0.2, 0.0, 0.0, &cam);
                 renderer.render(&field, &ship, &cam, i as f64, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();

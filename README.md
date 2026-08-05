@@ -26,18 +26,33 @@ cargo run --release -- --demo
 
 | Key | |
 | --- | --- |
-| `↑` `↓` / `W` `S` | Throttle |
-| `←` `→` / `A` `D` | Yaw |
-| `I` `K` | Pitch |
+| `W` `S` / `I` `K` | Pitch — nose up and nose down |
+| `A` `D` / `←` `→` | Yaw — nose left and nose right |
+| `Q` `E` | Roll — port and starboard |
+| `↑` `↓` | Throttle |
 | `Space` | Engage or disengage the warp drive |
 | `+` `-` | More or fewer stars |
 | `P` | Pause |
 | `R` | Reset |
-| `Q` / `Esc` / `Ctrl-C` / `Ctrl-D` | Quit |
+| `Esc` / `Ctrl-C` / `Ctrl-D` | Quit |
 
 Throttle and steering are impulse-driven — a press nudges the ship and it eases
 back on its own — because terminals report key presses but not releases. Hold a
 key and auto-repeat does the rest.
+
+The three axes are the ship's, not the screen's, so they compose the way an
+aircraft's do: roll ninety degrees and pitch has come round to where yaw was, so
+`Q` and then `W` is a turn. Pitch stops short of straight up, because there is
+no way back over the top — roll has no such stop, so `Q` or `E` held down is a
+barrel roll.
+
+A roll you are not currently flying is invisible against a starfield, since
+space has no horizon to be level with, so the panel carries a `ROLL` readout.
+It is the only thing that will tell you the ship is inverted once the sky has
+stopped turning.
+
+`Q` steers rather than quits, so a hand on the stick cannot end the flight by
+accident. `Esc` or `Ctrl-C` gets you out.
 
 ## What you are looking at
 
@@ -54,7 +69,7 @@ to bend outward, and a glare opens up down the throat of the tunnel.
 Engaging the drive kicks the view and whites out the frame; dropping out bleeds
 speed off much harder than a normal throttle-down. The panel reports velocity in
 multiples of *c*, warp factor on the TNG scale (`v = w^(10/3)·c`), distance
-travelled, and heading.
+travelled, heading, and roll.
 
 Stars are coloured by spectral class, weighted toward the hot end of the main
 sequence — which is what actually fills a real sky, since apparent brightness

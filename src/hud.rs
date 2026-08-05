@@ -26,9 +26,10 @@ const THROTTLE_BAR: usize = 16;
 
 /// Control hints, widest first: the first that fits is the one drawn, so a
 /// narrow window sheds detail rather than losing the line entirely.
-const HINTS: [&str; 2] = [
-    "SPACE warp  \u{2191}\u{2193} throttle  \u{2190}\u{2192}IK steer  P pause  R reset  Q quit",
-    "SPACE warp  \u{2191}\u{2193}\u{2190}\u{2192} fly  P pause  Q quit",
+const HINTS: [&str; 3] = [
+    "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  P pause  R reset  ESC quit",
+    "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  ESC quit",
+    "SPACE warp  WASD steer  QE roll  ESC quit",
 ];
 
 /// The three instrument rows, counted up from the bottom. Each owns its row
@@ -117,6 +118,10 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout) {
             VALUE,
         ),
         ("HEADING", heading_text(ship), VALUE),
+        // A roll against a starfield is only visible while it is happening —
+        // the sky has no up — so the number is the only thing that says where
+        // the ship ended up.
+        ("ROLL", roll_text(ship), VALUE),
     ];
 
     screen.overlay(2, 1, "\u{250C} NAV", LABEL);
@@ -222,6 +227,12 @@ fn heading_text(ship: &Ship) -> String {
     format!("{deg:>5.1}\u{b0} / {pitch:>+5.1}\u{b0}")
 }
 
+/// Signed, the way a bank indicator reads: starboard positive, and never more
+/// than half a turn away from level in either direction.
+fn roll_text(ship: &Ship) -> String {
+    format!("{:>+6.1}\u{b0}", ship.roll.to_degrees())
+}
+
 /// Character-aware truncation — the panel is full of multi-byte glyphs.
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -235,6 +246,7 @@ fn truncate(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::term::ColorMode;
+    use std::f32::consts::PI;
 
     fn readout(ship: &Ship) -> Readout<'_> {
         Readout {
@@ -319,6 +331,66 @@ mod tests {
         let mut ship = Ship::new();
         ship.heading = -1.0; // must wrap into 0..360 rather than print negative
         assert!(!heading_text(&ship).starts_with('-'));
+    }
+
+    #[test]
+    fn the_roll_readout_is_signed_and_stays_in_its_column() {
+        let mut ship = Ship::new();
+        assert_eq!(roll_text(&ship).trim(), "+0.0\u{b0}");
+        for roll in [-PI, -1.0, 0.0, 1.0, PI - 0.001] {
+            ship.roll = roll;
+            let text = roll_text(&ship);
+            assert_eq!(text.chars().count(), 7, "{text:?} is the wrong width");
+            assert!(
+                text.contains('+') || text.contains('-'),
+                "{text:?} should carry a sign"
+            );
+        }
+        ship.roll = -1.0;
+        assert!(roll_text(&ship).contains('-'), "port should read negative");
+        ship.roll = 1.0;
+        assert!(roll_text(&ship).contains('+'), "starboard should read plus");
+    }
+
+    #[test]
+    fn the_panel_reports_the_roll_it_was_flown_to() {
+        let mut screen = blank(120, 34);
+        let mut ship = Ship::new();
+        for _ in 0..40 {
+            ship.nudge_roll(1.0);
+            ship.update(1.0 / 60.0);
+        }
+        draw(&mut screen, &readout(&ship));
+        let mut out = Vec::new();
+        screen.flush(&mut out).unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("ROLL"), "the panel lost its roll row");
+        // The sky itself gives a static roll away not at all, so the number is
+        // the only report there is: it has to be the one that was flown.
+        let degrees = format!("{:.1}", ship.roll.to_degrees());
+        assert!(text.contains(&degrees), "expected {degrees} in the panel");
+    }
+
+    #[test]
+    fn the_hints_name_the_keys_that_exist() {
+        // The hints are the only place the controls are written down, so a key
+        // that has moved must move here too — and `q` no longer quits.
+        for hint in HINTS {
+            assert!(hint.contains("WASD") && hint.contains("QE"), "{hint:?}");
+            assert!(hint.contains("ESC quit"), "{hint:?}");
+            assert!(!hint.contains("Q quit"), "{hint:?}");
+            assert!(!hint.contains("IK"), "{hint:?}");
+        }
+        // Widest first, so the first that fits is the most detailed that fits.
+        let widths: Vec<usize> = HINTS.iter().map(|h| h.chars().count()).collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] > w[1]),
+            "hints are out of order: {widths:?}"
+        );
+        assert!(
+            widths.last().is_some_and(|w| w + 2 <= MIN_COLS),
+            "the shortest hint does not fit the narrowest panel: {widths:?}"
+        );
     }
 
     #[test]
