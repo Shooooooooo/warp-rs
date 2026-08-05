@@ -44,11 +44,22 @@ modulo a period — it only ever feeds `sin`/`cos`.
 **4. `RawGuard::new` can leave raw mode enabled.** `enable_raw_mode()?`
 succeeds, then any `?` on the following lines returns without a guard to drop.
 Construct `Self` first, then do the rest.
+*Fixed alongside the resize work below.*
 
 **5. A doc comment describes behaviour that does not exist.**
 `DepthRule::Anywhere` says it is "used when refilling the sides mid-turn", but
 `update` always respawns with `FarPlane`; `Anywhere` is reached only from `new`
 and `resize_pool`.
+
+**5a. Resizing, since fixed.** Four things reachable by moving a window, none
+of which had a numbered entry above because they only surfaced once the resize
+path was walked deliberately: `Canvas::resize` grew the buffer with
+`Vec::resize`, which keeps the old contents under a row stride that has just
+changed; `--size` was discarded by the first resize event, so the flag meant
+"until the window moves"; every resize event forced a clear and full repaint,
+including the ones that settle on the size already in use; and autowrap was
+left on, so a terminal shrinking between our idea of its width and the next
+flush sheared the frame diagonally instead of clipping.
 
 ## Performance
 
