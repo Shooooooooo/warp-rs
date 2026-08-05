@@ -95,6 +95,11 @@ impl Flight {
         self.renderer.render(&self.field, &self.ship, &cam, self.time, &readout);
     }
 
+    /// How many stars are currently in flight.
+    pub fn stars(&self) -> usize {
+        self.field.len()
+    }
+
     /// Write the last drawn frame out as a self-contained block of text.
     pub fn present_plain(&self, out: &mut impl Write) -> io::Result<()> {
         self.renderer.present_plain(out)
