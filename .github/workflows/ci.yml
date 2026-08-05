@@ -39,7 +39,7 @@ jobs:
       - run: cargo test --locked --all-features
 
   lint:
-    name: clippy
+    name: clippy and rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +54,46 @@ jobs:
           key: ubuntu-clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ubuntu-clippy-
 
+      # Formatting first: it needs no build, so a misformatted branch says so
+      # in seconds rather than after clippy has compiled the dependency tree.
+      - run: cargo fmt --all --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  # `rust-version` in Cargo.toml is a promise to anyone on an older toolchain,
+  # and an untested promise is a guess. Checking rather than testing: this is
+  # about whether the crate and its locked dependencies still compile there,
+  # and the behaviour they compile into is what the matrix above is for.
+  msrv:
+    name: minimum supported rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          version=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::Cargo.toml has no rust-version to check against"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ubuntu-msrv-${{ steps.msrv.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-msrv-${{ steps.msrv.outputs.version }}-
+
+      - run: cargo check --locked --all-targets --all-features
 
   # `--headless` renders on a fixed timestep with no terminal control, so a
   # fixed seed has to produce the same bytes every time. That is what makes it
@@ -94,6 +133,30 @@ jobs:
           fi
           if [ "$a" = "$c" ]; then
             echo "::error::two different seeds produced the same sky"
+            exit 1
+          fi
+
+      # Repeatable is not the same as unchanged: a renderer that draws every
+      # frame differently is still perfectly repeatable about it. This pins the
+      # bytes themselves, so an edit that was meant to touch one thing and
+      # touched the whole sky has to say so.
+      - name: the frames are the ones committed as the reference
+        run: |
+          flags="--headless --frames 120 --seed 1 --size 120x36 --demo"
+          ./target/release/warp $flags --color truecolor > truecolor.txt
+          ./target/release/warp $flags --color ascii     > ascii.txt
+          if ! sha256sum -c tests/golden/frames.sha256; then
+            echo "::error::the frames no longer match tests/golden/frames.sha256; if that was the point of the change, regenerate it with the recipe in that file"
+            exit 1
+          fi
+
+      # The mode exists for terminals that cannot be sent colour, and such a
+      # terminal is generally not one to send U+2588 to either.
+      - name: ascii mode really is ascii
+        run: |
+          if LC_ALL=C grep -qP '[^\x20-\x7e\n]' ascii.txt; then
+            echo "::error::--color ascii emitted bytes outside printable ascii"
+            LC_ALL=C grep -nP '[^\x20-\x7e\n]' ascii.txt | head -5
             exit 1
           fi
 

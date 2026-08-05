@@ -6,7 +6,7 @@
 //! instead of overflowing.
 
 use crate::ship::Ship;
-use crate::term::Screen;
+use crate::term::{ColorMode, Screen};
 
 const LABEL: (u8, u8, u8) = (96, 176, 208);
 const VALUE: (u8, u8, u8) = (226, 240, 255);
@@ -31,6 +31,86 @@ const HINTS: [&str; 3] = [
     "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  ESC quit",
     "SPACE warp  WASD steer  QE roll  ESC quit",
 ];
+
+/// The same hints without the arrows, for a terminal being drawn in ASCII.
+const ASCII_HINTS: [&str; 3] = [
+    "SPACE warp  UP/DN throttle  WASD steer  QE roll  P pause  R reset  ESC quit",
+    "SPACE warp  UP/DN throttle  WASD steer  QE roll  ESC quit",
+    "SPACE warp  WASD steer  QE roll  ESC quit",
+];
+
+/// The characters the panel is drawn from.
+///
+/// [`ColorMode::Ascii`] exists for a terminal that cannot be sent colour, and
+/// such a terminal is generally not one to send U+2588 to either — so it gets
+/// a set that stays inside ASCII. Every substitute is one character wide, so
+/// the two faces lay out identically and only the ink differs.
+struct Glyphs {
+    /// The nav panel's frame: the corner it opens on, the corner it closes on,
+    /// and the rule down its left-hand side.
+    frame_top: char,
+    frame_bottom: char,
+    vrule: char,
+    /// The reticle's four corners, clockwise from the top left.
+    reticle: [char; 4],
+    /// Wraps the status banner.
+    open: char,
+    close: char,
+    /// Inside the warp banner, and — three of it — the placeholder for no warp.
+    dash: char,
+    /// Wraps the paused banner.
+    stop: char,
+    bar_full: char,
+    bar_empty: char,
+    degree: char,
+    hints: &'static [&'static str; 3],
+}
+
+impl Glyphs {
+    const UNICODE: Glyphs = Glyphs {
+        frame_top: '\u{250C}',
+        frame_bottom: '\u{2514}',
+        vrule: '\u{2502}',
+        reticle: ['\u{250C}', '\u{2510}', '\u{2514}', '\u{2518}'],
+        open: '\u{27E8}',
+        close: '\u{27E9}',
+        dash: '\u{2014}',
+        stop: '\u{2016}',
+        bar_full: '\u{2588}',
+        bar_empty: '\u{2591}',
+        degree: '\u{B0}',
+        hints: &HINTS,
+    };
+
+    /// Chosen against [`crate::term`]'s brightness ramp as much as against the
+    /// alphabet: in this mode the panel has no colour to set it apart from the
+    /// starfield, so a glyph the ramp also draws — `#`, `.`, `+`, `*` — reads
+    /// as a bright star rather than as an instrument. The bar and the reticle,
+    /// which are shapes rather than words, avoid the ramp entirely.
+    const ASCII: Glyphs = Glyphs {
+        frame_top: '+',
+        frame_bottom: '+',
+        vrule: '|',
+        reticle: ['[', ']', '[', ']'],
+        open: '<',
+        close: '>',
+        dash: '-',
+        stop: '|',
+        bar_full: '|',
+        bar_empty: '_',
+        // Nothing in ASCII means "degrees". `*` is the usual stand-in and, at
+        // one column, it keeps the readout inside its column.
+        degree: '*',
+        hints: &ASCII_HINTS,
+    };
+
+    fn for_mode(mode: ColorMode) -> &'static Glyphs {
+        match mode {
+            ColorMode::Ascii => &Self::ASCII,
+            ColorMode::Truecolor | ColorMode::Ansi256 => &Self::UNICODE,
+        }
+    }
+}
 
 /// The three instrument rows, counted up from the bottom. Each owns its row
 /// outright — the hints used to share the throttle's, right-aligned, and
@@ -57,24 +137,25 @@ pub struct Readout<'a> {
 
 pub fn draw(screen: &mut Screen, r: &Readout) {
     let (cols, rows) = screen.dims();
+    let g = Glyphs::for_mode(screen.color_mode());
 
     if cols < MIN_COLS || rows < MIN_ROWS {
-        draw_compact(screen, r, cols, rows);
+        draw_compact(screen, r, cols, rows, g);
         return;
     }
 
-    draw_reticle(screen, cols, rows);
-    draw_nav_panel(screen, r);
-    draw_status_line(screen, r, cols, rows);
-    draw_throttle(screen, r, rows);
+    draw_reticle(screen, cols, rows, g);
+    draw_nav_panel(screen, r, g);
+    draw_status_line(screen, r, cols, rows, g);
+    draw_throttle(screen, r, rows, g);
     if r.hints {
-        draw_hints(screen, cols, rows);
+        draw_hints(screen, cols, rows, g);
     }
 }
 
 /// Everything the panel says, squeezed onto one line for a tiny window.
-fn draw_compact(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) {
-    let line = format!("{} {}", velocity_text(r.ship), warp_text(r.ship));
+fn draw_compact(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, g: &Glyphs) {
+    let line = format!("{} {}", velocity_text(r.ship), warp_text(r.ship, g));
     screen.overlay(0, 0, &truncate(&line, cols), VALUE);
     if rows > 1 {
         let thr = format!("THR {:>3.0}%", r.ship.throttle * 100.0);
@@ -83,17 +164,17 @@ fn draw_compact(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) {
 }
 
 /// Corner brackets around the vanishing point — where you are actually going.
-fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize) {
+fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs) {
     let (cx, cy) = (cols / 2, rows / 2);
     let (dx, dy) = (9usize, 3usize);
     if cx < dx + 1 || cy < dy + 1 || cx + dx >= cols || cy + dy >= rows {
         return;
     }
     for (x, y, ch) in [
-        (cx - dx, cy - dy, '\u{250C}'),
-        (cx + dx, cy - dy, '\u{2510}'),
-        (cx - dx, cy + dy, '\u{2514}'),
-        (cx + dx, cy + dy, '\u{2518}'),
+        (cx - dx, cy - dy, g.reticle[0]),
+        (cx + dx, cy - dy, g.reticle[1]),
+        (cx - dx, cy + dy, g.reticle[2]),
+        (cx + dx, cy + dy, g.reticle[3]),
     ] {
         // A mark, not a readout: it sits in the scene, so it lightens what is
         // behind it instead of casting the panel's shadow. These brackets land
@@ -103,13 +184,13 @@ fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize) {
     }
 }
 
-fn draw_nav_panel(screen: &mut Screen, r: &Readout) {
+fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
     let ship = r.ship;
     let rows = [
         ("VELOCITY", velocity_text(ship), VALUE),
         (
             "WARP",
-            warp_text(ship),
+            warp_text(ship, g),
             if ship.warp_engaged { ACCENT } else { DIM },
         ),
         (
@@ -117,32 +198,34 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout) {
             format!("{} ly", distance_text(ship.distance_ly)),
             VALUE,
         ),
-        ("HEADING", heading_text(ship), VALUE),
+        ("HEADING", heading_text(ship, g), VALUE),
         // A roll against a starfield is only visible while it is happening —
         // the sky has no up — so the number is the only thing that says where
         // the ship ended up.
-        ("ROLL", roll_text(ship), VALUE),
+        ("ROLL", roll_text(ship, g), VALUE),
     ];
 
-    screen.overlay(2, 1, "\u{250C} NAV", LABEL);
+    screen.overlay(2, 1, &format!("{} NAV", g.frame_top), LABEL);
     for (i, (label, value, color)) in rows.iter().enumerate() {
         let row = 2 + i;
-        screen.overlay(2, row, "\u{2502}", RULE);
+        screen.overlay(2, row, &g.vrule.to_string(), RULE);
         screen.overlay(4, row, label, LABEL);
         screen.overlay(15, row, value, *color);
     }
-    screen.overlay(2, 2 + rows.len(), "\u{2514}", RULE);
+    screen.overlay(2, 2 + rows.len(), &g.frame_bottom.to_string(), RULE);
 }
 
 /// The headline: what the drive is doing right now.
-fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) {
+fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, g: &Glyphs) {
     let ship = r.ship;
+    let (open, close, stop) = (g.open, g.close, g.stop);
     let (text, color) = if r.paused {
-        ("\u{2016} ALL STOP \u{2016}".to_string(), WARN)
+        (format!("{stop} ALL STOP {stop}"), WARN)
     } else if ship.warp_engaged {
         (
             format!(
-                "\u{27E8} WARP DRIVE ENGAGED \u{2014} FACTOR {:.2} \u{27E9}",
+                "{open} WARP DRIVE ENGAGED {} FACTOR {:.2} {close}",
+                g.dash,
                 ship.warp_factor()
             ),
             // Flash the banner along with the engage transient.
@@ -153,9 +236,9 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) 
             },
         )
     } else if ship.speed > 1.0 {
-        ("\u{27E8} IMPULSE \u{27E9}".to_string(), LABEL)
+        (format!("{open} IMPULSE {close}"), LABEL)
     } else {
-        ("\u{27E8} STATION KEEPING \u{27E9}".to_string(), DIM)
+        (format!("{open} STATION KEEPING {close}"), DIM)
     };
 
     let text = truncate(&text, cols);
@@ -168,10 +251,10 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) 
     screen.overlay(col, 1, &stats, DIM);
 }
 
-fn draw_throttle(screen: &mut Screen, r: &Readout, rows: usize) {
+fn draw_throttle(screen: &mut Screen, r: &Readout, rows: usize, g: &Glyphs) {
     let filled = (r.ship.throttle * THROTTLE_BAR as f32).round() as usize;
     let bar: String = (0..THROTTLE_BAR)
-        .map(|i| if i < filled { '\u{2588}' } else { '\u{2591}' })
+        .map(|i| if i < filled { g.bar_full } else { g.bar_empty })
         .collect();
     let color = if r.ship.warp_engaged { ACCENT } else { LABEL };
 
@@ -183,8 +266,8 @@ fn draw_throttle(screen: &mut Screen, r: &Readout, rows: usize) {
     screen.overlay(bar_col + THROTTLE_BAR + 1, row, &pct, VALUE);
 }
 
-fn draw_hints(screen: &mut Screen, cols: usize, rows: usize) {
-    let Some(hint) = HINTS.iter().find(|h| h.chars().count() + 2 <= cols) else {
+fn draw_hints(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs) {
+    let Some(hint) = g.hints.iter().find(|h| h.chars().count() + 2 <= cols) else {
         return;
     };
     let col = cols - (hint.chars().count() + 2);
@@ -202,10 +285,10 @@ fn velocity_text(ship: &Ship) -> String {
     }
 }
 
-fn warp_text(ship: &Ship) -> String {
+fn warp_text(ship: &Ship, g: &Glyphs) -> String {
     let w = ship.warp_factor();
     if w <= 0.0 {
-        "\u{2014}\u{2014}\u{2014}".to_string()
+        String::from_iter([g.dash; 3])
     } else {
         format!("FACTOR {w:.2}")
     }
@@ -221,16 +304,18 @@ fn distance_text(ly: f64) -> String {
     }
 }
 
-fn heading_text(ship: &Ship) -> String {
+fn heading_text(ship: &Ship, g: &Glyphs) -> String {
     let deg = ship.heading.to_degrees().rem_euclid(360.0);
     let pitch = ship.pitch.to_degrees();
-    format!("{deg:>5.1}\u{b0} / {pitch:>+5.1}\u{b0}")
+    let d = g.degree;
+    format!("{deg:>5.1}{d} / {pitch:>+5.1}{d}")
 }
 
 /// Signed, the way a bank indicator reads: starboard positive, and never more
 /// than half a turn away from level in either direction.
-fn roll_text(ship: &Ship) -> String {
-    format!("{:>+6.1}\u{b0}", ship.roll.to_degrees())
+fn roll_text(ship: &Ship, g: &Glyphs) -> String {
+    let d = g.degree;
+    format!("{:>+6.1}{d}", ship.roll.to_degrees())
 }
 
 /// Character-aware truncation — the panel is full of multi-byte glyphs.
@@ -259,9 +344,18 @@ mod tests {
     }
 
     fn blank(cols: usize, rows: usize) -> Screen {
-        let mut screen = Screen::new(cols, rows, ColorMode::Truecolor);
+        blank_in(cols, rows, ColorMode::Truecolor)
+    }
+
+    fn blank_in(cols: usize, rows: usize, mode: ColorMode) -> Screen {
+        let mut screen = Screen::new(cols, rows, mode);
         screen.compose(&vec![[0, 0, 0]; cols * rows * 2]);
         screen
+    }
+
+    /// The glyph set the readout helpers were written against.
+    fn uni() -> &'static Glyphs {
+        &Glyphs::UNICODE
     }
 
     #[test]
@@ -308,7 +402,7 @@ mod tests {
         let mut ship = Ship::new();
         ship.throttle = 0.0;
         assert!(velocity_text(&ship).ends_with(" c"));
-        assert_eq!(warp_text(&ship), "\u{2014}\u{2014}\u{2014}");
+        assert_eq!(warp_text(&ship, uni()), "\u{2014}\u{2014}\u{2014}");
 
         ship.throttle = 1.0;
         ship.toggle_warp();
@@ -316,9 +410,9 @@ mod tests {
             ship.update(1.0 / 60.0);
         }
         assert!(
-            warp_text(&ship).starts_with("FACTOR 9"),
+            warp_text(&ship, uni()).starts_with("FACTOR 9"),
             "{}",
-            warp_text(&ship)
+            warp_text(&ship, uni())
         );
         assert!(ship.distance_ly > 0.0);
     }
@@ -330,16 +424,16 @@ mod tests {
         }
         let mut ship = Ship::new();
         ship.heading = -1.0; // must wrap into 0..360 rather than print negative
-        assert!(!heading_text(&ship).starts_with('-'));
+        assert!(!heading_text(&ship, uni()).starts_with('-'));
     }
 
     #[test]
     fn the_roll_readout_is_signed_and_stays_in_its_column() {
         let mut ship = Ship::new();
-        assert_eq!(roll_text(&ship).trim(), "+0.0\u{b0}");
+        assert_eq!(roll_text(&ship, uni()).trim(), "+0.0\u{b0}");
         for roll in [-PI, -1.0, 0.0, 1.0, PI - 0.001] {
             ship.roll = roll;
-            let text = roll_text(&ship);
+            let text = roll_text(&ship, uni());
             assert_eq!(text.chars().count(), 7, "{text:?} is the wrong width");
             assert!(
                 text.contains('+') || text.contains('-'),
@@ -347,9 +441,15 @@ mod tests {
             );
         }
         ship.roll = -1.0;
-        assert!(roll_text(&ship).contains('-'), "port should read negative");
+        assert!(
+            roll_text(&ship, uni()).contains('-'),
+            "port should read negative"
+        );
         ship.roll = 1.0;
-        assert!(roll_text(&ship).contains('+'), "starboard should read plus");
+        assert!(
+            roll_text(&ship, uni()).contains('+'),
+            "starboard should read plus"
+        );
     }
 
     #[test]
@@ -374,23 +474,131 @@ mod tests {
     #[test]
     fn the_hints_name_the_keys_that_exist() {
         // The hints are the only place the controls are written down, so a key
-        // that has moved must move here too — and `q` no longer quits.
-        for hint in HINTS {
-            assert!(hint.contains("WASD") && hint.contains("QE"), "{hint:?}");
-            assert!(hint.contains("ESC quit"), "{hint:?}");
-            assert!(!hint.contains("Q quit"), "{hint:?}");
-            assert!(!hint.contains("IK"), "{hint:?}");
+        // that has moved must move here too — and `q` no longer quits. Both
+        // faces of the panel carry their own copy, so both are checked.
+        for set in [&HINTS, &ASCII_HINTS] {
+            for hint in set {
+                assert!(hint.contains("WASD") && hint.contains("QE"), "{hint:?}");
+                assert!(hint.contains("ESC quit"), "{hint:?}");
+                assert!(!hint.contains("Q quit"), "{hint:?}");
+                assert!(!hint.contains("IK"), "{hint:?}");
+            }
+            // Widest first, so the first that fits is the most detailed one.
+            let widths: Vec<usize> = set.iter().map(|h| h.chars().count()).collect();
+            assert!(
+                widths.windows(2).all(|w| w[0] > w[1]),
+                "hints are out of order: {widths:?}"
+            );
+            assert!(
+                widths.last().is_some_and(|w| w + 2 <= MIN_COLS),
+                "the shortest hint does not fit the narrowest panel: {widths:?}"
+            );
         }
-        // Widest first, so the first that fits is the most detailed that fits.
-        let widths: Vec<usize> = HINTS.iter().map(|h| h.chars().count()).collect();
+    }
+
+    #[test]
+    fn the_ascii_panel_is_actually_ascii() {
+        // Regression: `--color ascii` is for a terminal that cannot be sent
+        // colour, but the panel went on drawing box rules, block bars, angle
+        // brackets, em dashes, degree signs and arrow keys at it — every one
+        // of them multi-byte. Only the starfield ramp was ever ASCII.
+        let mut ship = Ship::new();
+        ship.throttle = 0.5;
+        ship.toggle_warp();
+        for _ in 0..900 {
+            ship.update(1.0 / 60.0);
+        }
+
+        // Wide enough for the full panel, and narrow enough for the compact
+        // one, and paused as well as under way: every branch that writes text.
+        for (cols, rows) in [(120, 34), (80, 24), (46, 12), (20, 6), (2, 2)] {
+            for paused in [false, true] {
+                let mut screen = blank_in(cols, rows, ColorMode::Ascii);
+                draw(
+                    &mut screen,
+                    &Readout {
+                        ship: &ship,
+                        fps: 60.0,
+                        stars: 900,
+                        paused,
+                        hints: true,
+                    },
+                );
+                for row in 0..rows {
+                    let text = screen.row_text(row);
+                    assert!(
+                        text.is_ascii(),
+                        "row {row} of {cols}x{rows} left ASCII: {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_ascii_shapes_stay_clear_of_the_brightness_ramp() {
+        // In this mode the panel has no colour to distinguish it from the sky,
+        // so the marks that are read as shapes rather than words must not be
+        // characters the starfield also draws. The words may overlap the ramp:
+        // `NAV` is legible next to a star, a bar of `#` against `#` is not.
+        let ramp: Vec<char> = crate::term::ASCII_RAMP.iter().map(|b| *b as char).collect();
+        let g = &Glyphs::ASCII;
+        let mut shapes = vec![g.bar_full, g.bar_empty, g.vrule];
+        shapes.extend_from_slice(&g.reticle);
+        for ch in shapes {
+            assert!(
+                !ramp.contains(&ch),
+                "{ch:?} is in the brightness ramp, so it reads as a star"
+            );
+        }
         assert!(
-            widths.windows(2).all(|w| w[0] > w[1]),
-            "hints are out of order: {widths:?}"
+            g.bar_full != g.bar_empty,
+            "a bar needs two ends to tell apart"
         );
-        assert!(
-            widths.last().is_some_and(|w| w + 2 <= MIN_COLS),
-            "the shortest hint does not fit the narrowest panel: {widths:?}"
-        );
+    }
+
+    #[test]
+    fn the_two_faces_of_the_panel_lay_out_identically() {
+        // The ASCII substitutes are all one column wide, which is what lets
+        // the same layout code serve both: a wider stand-in would push the
+        // readouts out of their columns on exactly the terminals least able
+        // to spare the room.
+        let ship = Ship::new();
+        // The hints are left out: "UP/DN" is genuinely wider than "\u{2191}\u{2193}",
+        // so that one line is expected to differ, and it is right-aligned on a
+        // row of its own precisely so it can.
+        let quiet = Readout {
+            ship: &ship,
+            fps: 60.0,
+            stars: 4000,
+            paused: false,
+            hints: false,
+        };
+        // Which cells the panel stamped over the composed frame. The two modes
+        // compose different backdrops — half blocks against a brightness ramp —
+        // so the glyphs cannot be compared directly, but the footprint can.
+        let footprint = |mode, cols: usize, rows: usize| -> Vec<Vec<bool>> {
+            let bare = blank_in(cols, rows, mode);
+            let mut drawn = blank_in(cols, rows, mode);
+            draw(&mut drawn, &quiet);
+            (0..rows)
+                .map(|row| {
+                    bare.row_text(row)
+                        .chars()
+                        .zip(drawn.row_text(row).chars())
+                        .map(|(before, after)| before != after)
+                        .collect()
+                })
+                .collect()
+        };
+
+        for (cols, rows) in [(120, 34), (80, 24), (46, 12), (20, 6)] {
+            assert_eq!(
+                footprint(ColorMode::Truecolor, cols, rows),
+                footprint(ColorMode::Ascii, cols, rows),
+                "the two faces disagree about the layout at {cols}x{rows}"
+            );
+        }
     }
 
     #[test]
