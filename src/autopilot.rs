@@ -80,7 +80,10 @@ mod tests {
             assert!((0.0..=1.0).contains(&ship.throttle));
         }
         assert!(engaged_at_some_point, "the autopilot never lit the drive");
-        assert!(peak > 100.0, "the autopilot never got up to speed: {peak} c");
+        assert!(
+            peak > 100.0,
+            "the autopilot never got up to speed: {peak} c"
+        );
         assert!(!ship.warp_engaged, "the cycle should end back at impulse");
         assert!(ship.velocity_c() < 1.0, "it should be sublight by the end");
     }
@@ -103,7 +106,10 @@ mod tests {
             }
             let days = start / 86_400.0;
             assert!(engaged, "the drive never lit {days:.1} days in");
-            assert!(peak > 100.0, "never got up to speed {days:.1} days in: {peak} c");
+            assert!(
+                peak > 100.0,
+                "never got up to speed {days:.1} days in: {peak} c"
+            );
         }
     }
 }

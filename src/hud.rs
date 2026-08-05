@@ -106,8 +106,16 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout) {
     let ship = r.ship;
     let rows = [
         ("VELOCITY", velocity_text(ship), VALUE),
-        ("WARP", warp_text(ship), if ship.warp_engaged { ACCENT } else { DIM }),
-        ("DISTANCE", format!("{} ly", distance_text(ship.distance_ly)), VALUE),
+        (
+            "WARP",
+            warp_text(ship),
+            if ship.warp_engaged { ACCENT } else { DIM },
+        ),
+        (
+            "DISTANCE",
+            format!("{} ly", distance_text(ship.distance_ly)),
+            VALUE,
+        ),
         ("HEADING", heading_text(ship), VALUE),
     ];
 
@@ -128,9 +136,16 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize) 
         ("\u{2016} ALL STOP \u{2016}".to_string(), WARN)
     } else if ship.warp_engaged {
         (
-            format!("\u{27E8} WARP DRIVE ENGAGED \u{2014} FACTOR {:.2} \u{27E9}", ship.warp_factor()),
+            format!(
+                "\u{27E8} WARP DRIVE ENGAGED \u{2014} FACTOR {:.2} \u{27E9}",
+                ship.warp_factor()
+            ),
             // Flash the banner along with the engage transient.
-            if ship.flash > 0.35 { (255, 255, 255) } else { ACCENT },
+            if ship.flash > 0.35 {
+                (255, 255, 255)
+            } else {
+                ACCENT
+            },
         )
     } else if ship.speed > 1.0 {
         ("\u{27E8} IMPULSE \u{27E9}".to_string(), LABEL)
@@ -222,7 +237,13 @@ mod tests {
     use crate::term::ColorMode;
 
     fn readout(ship: &Ship) -> Readout<'_> {
-        Readout { ship, fps: 60.0, stars: 4000, paused: false, hints: true }
+        Readout {
+            ship,
+            fps: 60.0,
+            stars: 4000,
+            paused: false,
+            hints: true,
+        }
     }
 
     fn blank(cols: usize, rows: usize) -> Screen {
@@ -236,7 +257,15 @@ mod tests {
         let ship = Ship::new();
         // Including sizes far below anything usable: the panel must degrade,
         // never panic or write outside the grid.
-        for (cols, rows) in [(1, 1), (2, 3), (20, 8), (46, 12), (80, 24), (200, 60), (400, 120)] {
+        for (cols, rows) in [
+            (1, 1),
+            (2, 3),
+            (20, 8),
+            (46, 12),
+            (80, 24),
+            (200, 60),
+            (400, 120),
+        ] {
             let mut screen = blank(cols, rows);
             draw(&mut screen, &readout(&ship));
             assert_eq!(screen.dims(), (cols, rows));
@@ -274,7 +303,11 @@ mod tests {
         for _ in 0..1200 {
             ship.update(1.0 / 60.0);
         }
-        assert!(warp_text(&ship).starts_with("FACTOR 9"), "{}", warp_text(&ship));
+        assert!(
+            warp_text(&ship).starts_with("FACTOR 9"),
+            "{}",
+            warp_text(&ship)
+        );
         assert!(ship.distance_ly > 0.0);
     }
 
@@ -324,9 +357,16 @@ mod tests {
         ] {
             let (fg, bg) = screen.cell_colors(x, y);
             let (fg, bg) = (fg.expect("truecolor cell"), bg.expect("truecolor cell"));
-            assert_eq!(bg, (lit[0], lit[1], lit[2]), "reticle at ({x},{y}) dimmed its backdrop");
+            assert_eq!(
+                bg,
+                (lit[0], lit[1], lit[2]),
+                "reticle at ({x},{y}) dimmed its backdrop"
+            );
             for (got, under) in [(fg.0, lit[0]), (fg.1, lit[1]), (fg.2, lit[2])] {
-                assert!(got >= under, "reticle at ({x},{y}) dimmed a channel: {got} < {under}");
+                assert!(
+                    got >= under,
+                    "reticle at ({x},{y}) dimmed a channel: {got} < {under}"
+                );
             }
         }
     }
@@ -356,7 +396,10 @@ mod tests {
                     "bar cell {i} became {ch:?} at {cols} columns"
                 );
             }
-            assert!(row.contains("50%"), "the percentage went missing at {cols} columns");
+            assert!(
+                row.contains("50%"),
+                "the percentage went missing at {cols} columns"
+            );
             assert!(
                 !row.contains("pause"),
                 "hints landed on the throttle row at {cols} columns"
@@ -394,12 +437,24 @@ mod tests {
         let render = |hints: bool| {
             let mut screen = blank(120, 34);
             let ship = Ship::new();
-            draw(&mut screen, &Readout { ship: &ship, fps: 60.0, stars: 900, paused: false, hints });
+            draw(
+                &mut screen,
+                &Readout {
+                    ship: &ship,
+                    fps: 60.0,
+                    stars: 900,
+                    paused: false,
+                    hints,
+                },
+            );
             let mut out = Vec::new();
             screen.flush(&mut out).unwrap();
             String::from_utf8_lossy(&out).into_owned()
         };
-        assert!(render(true).contains("pause"), "hints should be there by default");
+        assert!(
+            render(true).contains("pause"),
+            "hints should be there by default"
+        );
         let bare = render(false);
         assert!(!bare.contains("pause"), "hints should be gone");
         // Everything else still draws.
@@ -412,7 +467,16 @@ mod tests {
         // lands in the output as one contiguous run.
         let flushed = |ship: &Ship, paused: bool| {
             let mut screen = blank(120, 34);
-            draw(&mut screen, &Readout { ship, fps: 60.0, stars: 900, paused, hints: true });
+            draw(
+                &mut screen,
+                &Readout {
+                    ship,
+                    fps: 60.0,
+                    stars: 900,
+                    paused,
+                    hints: true,
+                },
+            );
             let mut out = Vec::new();
             screen.flush(&mut out).unwrap();
             String::from_utf8_lossy(&out).into_owned()
@@ -421,11 +485,20 @@ mod tests {
         let mut ship = Ship::new();
         ship.throttle = 0.0;
         ship.speed = 0.0;
-        assert!(flushed(&ship, false).contains("KEEPING"), "expected station keeping");
-        assert!(flushed(&ship, true).contains("STOP"), "expected the paused banner");
+        assert!(
+            flushed(&ship, false).contains("KEEPING"),
+            "expected station keeping"
+        );
+        assert!(
+            flushed(&ship, true).contains("STOP"),
+            "expected the paused banner"
+        );
 
         ship.speed = 20.0;
-        assert!(flushed(&ship, false).contains("IMPULSE"), "expected impulse");
+        assert!(
+            flushed(&ship, false).contains("IMPULSE"),
+            "expected impulse"
+        );
 
         ship.throttle = 1.0;
         ship.toggle_warp();
@@ -434,7 +507,10 @@ mod tests {
         }
         let text = flushed(&ship, false);
         assert!(text.contains("ENGAGED"), "expected the warp banner");
-        assert!(text.contains("FACTOR"), "the banner should quote a warp factor");
+        assert!(
+            text.contains("FACTOR"),
+            "the banner should quote a warp factor"
+        );
     }
 
     #[test]

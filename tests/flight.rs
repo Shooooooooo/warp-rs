@@ -24,7 +24,9 @@ fn fly(argv: &[&str], cols: usize, rows: usize, frames: usize) -> Vec<u8> {
     for _ in 0..frames {
         flight.advance(1.0 / 60.0);
         flight.draw(60.0, false, true);
-        flight.present_plain(&mut out).expect("writing to a Vec cannot fail");
+        flight
+            .present_plain(&mut out)
+            .expect("writing to a Vec cannot fail");
     }
     out
 }
@@ -65,11 +67,10 @@ fn a_frame_does_not_repeat_a_colour_it_is_already_using() {
     for (row, line) in text.lines().enumerate() {
         let mut last: Option<&str> = None;
         for code in line.split('\u{1b}').skip(1) {
-            let Some((code, _)) = code.split_once('m') else { continue };
-            assert!(
-                last != Some(code),
-                "row {row} set `{code}` twice in a row"
-            );
+            let Some((code, _)) = code.split_once('m') else {
+                continue;
+            };
+            assert!(last != Some(code), "row {row} set `{code}` twice in a row");
             last = Some(code);
         }
     }

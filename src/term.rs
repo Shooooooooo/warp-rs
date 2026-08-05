@@ -74,7 +74,11 @@ struct Cell {
 }
 
 impl Cell {
-    const BLANK: Cell = Cell { ch: ' ', fg: None, bg: None };
+    const BLANK: Cell = Cell {
+        ch: ' ',
+        fg: None,
+        bg: None,
+    };
 }
 
 /// Where a frame's bytes go, and how they are spelled.
@@ -356,7 +360,6 @@ impl Screen {
         self.dirty = true;
     }
 
-
     /// Push the differences to the terminal. One write, one flush.
     pub fn flush(&mut self, out: &mut impl Write) -> io::Result<()> {
         if !self.dirty {
@@ -482,7 +485,11 @@ fn to_color(rgb: Option<(u8, u8, u8)>) -> Color {
 
 /// The brighter of two colours, channel by channel.
 fn lighten(under: (u8, u8, u8), mark: (u8, u8, u8), mode: ColorMode) -> (u8, u8, u8) {
-    let lit = (under.0.max(mark.0), under.1.max(mark.1), under.2.max(mark.2));
+    let lit = (
+        under.0.max(mark.0),
+        under.1.max(mark.1),
+        under.2.max(mark.2),
+    );
     match mode {
         // A per-channel max of two palette entries need not itself be one: the
         // 24-step grey ramp and the 6×6×6 cube share no values, so mixing them
@@ -509,7 +516,11 @@ fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
             .min_by_key(|c| (*c as i32 - v as i32).abs())
             .unwrap()
     };
-    let cube = [nearest_cube(rgb[0]), nearest_cube(rgb[1]), nearest_cube(rgb[2])];
+    let cube = [
+        nearest_cube(rgb[0]),
+        nearest_cube(rgb[1]),
+        nearest_cube(rgb[2]),
+    ];
 
     // The 24-step grey ramp is finer than the cube's grey diagonal, so near-grey
     // colours come out visibly better if we let it compete.
@@ -595,7 +606,9 @@ mod tests {
     /// What crossterm would put on the wire for a command.
     fn crossterm_ansi(command: impl crossterm::Command) -> String {
         let mut out = String::new();
-        command.write_ansi(&mut out).expect("writing to a String cannot fail");
+        command
+            .write_ansi(&mut out)
+            .expect("writing to a String cannot fail");
         out
     }
 
@@ -639,7 +652,11 @@ mod tests {
             crossterm_ansi(SetBackgroundColor(Color::Reset))
         );
         for ch in [' ', HALF_BLOCK, '@', '\n', '\u{250C}'] {
-            assert_eq!(ours(|s| s.glyph(ch).unwrap()), crossterm_ansi(Print(ch)), "{ch:?}");
+            assert_eq!(
+                ours(|s| s.glyph(ch).unwrap()),
+                crossterm_ansi(Print(ch)),
+                "{ch:?}"
+            );
         }
     }
 
@@ -736,7 +753,11 @@ mod tests {
         screen.compose(&pixels(8, 2, [0, 0, 0]));
         screen.overlay_mark(3, 0, "\u{250C}", (58, 92, 118));
         let (fg, bg) = screen.cell_colors(3, 0);
-        assert_eq!(fg, Some((58, 92, 118)), "over black the mark keeps its own colour");
+        assert_eq!(
+            fg,
+            Some((58, 92, 118)),
+            "over black the mark keeps its own colour"
+        );
         assert_eq!(bg, Some((0, 0, 0)));
         assert_eq!(screen.back[3].ch, '\u{250C}');
     }
@@ -764,7 +785,11 @@ mod tests {
         screen.compose(&pixels(4, 1, [255, 255, 255]));
         screen.overlay_mark(1, 0, "\u{250C}", (58, 92, 118));
         let (fg, bg) = screen.cell_colors(1, 0);
-        assert_eq!((fg, bg), (None, None), "ascii mode carries no colour to blend");
+        assert_eq!(
+            (fg, bg),
+            (None, None),
+            "ascii mode carries no colour to blend"
+        );
         assert_eq!(screen.back[1].ch, '\u{250C}');
     }
 
@@ -803,7 +828,9 @@ mod tests {
                     let q = quantize_256([r, g, b]);
                     assert!(is_member(q), "{q:?} is not in the 256 palette");
                     let err = (q.0 as i32 - r as i32).abs().max(
-                        (q.1 as i32 - g as i32).abs().max((q.2 as i32 - b as i32).abs()),
+                        (q.1 as i32 - g as i32)
+                            .abs()
+                            .max((q.2 as i32 - b as i32).abs()),
                     );
                     // The palette's widest gap is 0..95, so the worst honest
                     // per-channel error is 48. Anything past that is a bug.
@@ -854,8 +881,16 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
 
         // One pair of codes per row is all a uniform frame needs.
-        assert_eq!(text.matches("38;2;10;20;30").count(), 4, "foreground repeated");
-        assert_eq!(text.matches("48;2;10;20;30").count(), 4, "background repeated");
+        assert_eq!(
+            text.matches("38;2;10;20;30").count(),
+            4,
+            "foreground repeated"
+        );
+        assert_eq!(
+            text.matches("48;2;10;20;30").count(),
+            4,
+            "background repeated"
+        );
         assert_eq!(text.lines().count(), 4);
     }
 

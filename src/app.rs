@@ -67,7 +67,14 @@ impl Flight {
         let cam = renderer.camera(&ship, 0.0);
         let field = StarField::new(star_count(args, &renderer), seed(args), &cam);
 
-        Self { ship, field, renderer, autopilot: Autopilot::default(), time: 0.0, accumulator: 0.0 }
+        Self {
+            ship,
+            field,
+            renderer,
+            autopilot: Autopilot::default(),
+            time: 0.0,
+            accumulator: 0.0,
+        }
     }
 
     /// Advance by `dt` of wall time, in fixed physics steps.
@@ -90,9 +97,15 @@ impl Flight {
 
     pub fn draw(&mut self, fps: f32, paused: bool, hints: bool) {
         let cam = self.renderer.camera(&self.ship, self.time);
-        let readout =
-            Readout { ship: &self.ship, fps, stars: self.field.len(), paused, hints };
-        self.renderer.render(&self.field, &self.ship, &cam, self.time, &readout);
+        let readout = Readout {
+            ship: &self.ship,
+            fps,
+            stars: self.field.len(),
+            paused,
+            hints,
+        };
+        self.renderer
+            .render(&self.field, &self.ship, &cam, self.time, &readout);
     }
 
     /// How many stars are currently in flight.
@@ -295,7 +308,9 @@ fn run_headless(args: &Args) -> io::Result<()> {
 
     for frame in 0..args.frames {
         if args.demo.is_some() {
-            flight.autopilot.update(&mut flight.ship, frame as f64 * dt as f64);
+            flight
+                .autopilot
+                .update(&mut flight.ship, frame as f64 * dt as f64);
         }
         flight.advance(dt);
         flight.draw(args.fps as f32, false, true);
@@ -312,7 +327,9 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
 
     for frame in 0..args.warmup {
         if args.demo.is_some() {
-            flight.autopilot.update(&mut flight.ship, frame as f64 * dt as f64);
+            flight
+                .autopilot
+                .update(&mut flight.ship, frame as f64 * dt as f64);
         }
         flight.advance(dt);
     }
@@ -350,7 +367,10 @@ mod tests {
             let days = start / 86_400.0;
             flight.time = start;
             flight.advance(dt);
-            assert!(flight.time > start, "the clock stopped at {start} s ({days:.1} days)");
+            assert!(
+                flight.time > start,
+                "the clock stopped at {start} s ({days:.1} days)"
+            );
 
             // The counter moving is not enough on its own: the phase it drives
             // has to still differ from one frame to the next.
@@ -569,11 +589,18 @@ mod tests {
                 cw * ch,
                 "the resolved pixel buffer is stale at {cols}x{rows}"
             );
-            assert!(!flight.field.is_empty(), "the star pool emptied at {cols}x{rows}");
+            assert!(
+                !flight.field.is_empty(),
+                "the star pool emptied at {cols}x{rows}"
+            );
             assert!(flight.ship.speed.is_finite());
 
             let (sc, sr) = flight.renderer.screen().dims();
-            assert_eq!((cw, ch), (sc, sr * 2), "canvas and screen disagree at {cols}x{rows}");
+            assert_eq!(
+                (cw, ch),
+                (sc, sr * 2),
+                "canvas and screen disagree at {cols}x{rows}"
+            );
             flight.renderer.present(&mut Vec::new()).unwrap();
         }
     }
@@ -591,9 +618,15 @@ mod tests {
         // actually says something new.
         let args = args_for(&["--stars", "200"]);
         let mut flight = Flight::new(&args, 120, 40);
-        assert!(flight.resize(&args, 80, 24), "an unforced size follows the terminal");
+        assert!(
+            flight.resize(&args, 80, 24),
+            "an unforced size follows the terminal"
+        );
         assert_eq!(flight.renderer.canvas_dims(), (80, 48));
-        assert!(!flight.resize(&args, 80, 24), "settling on the same size is no change");
+        assert!(
+            !flight.resize(&args, 80, 24),
+            "settling on the same size is no change"
+        );
     }
 
     #[test]
@@ -602,17 +635,26 @@ mod tests {
         let mut flight = Flight::new(&args, 40, 12);
         let small = flight.field.len();
         flight.resize(&args, 300, 90);
-        assert!(flight.field.len() > small, "a bigger window should hold more stars");
+        assert!(
+            flight.field.len() > small,
+            "a bigger window should hold more stars"
+        );
 
         let args = args_for(&["--stars", "777"]);
         let mut flight = Flight::new(&args, 40, 12);
         flight.resize(&args, 300, 90);
-        assert_eq!(flight.field.len(), 777, "an explicit count is not a suggestion");
+        assert_eq!(
+            flight.field.len(),
+            777,
+            "an explicit count is not a suggestion"
+        );
     }
 
     #[test]
     fn a_long_flight_stays_finite() {
-        let args = args_for(&["--seed", "3", "--stars", "800", "--size", "60x20", "--engage"]);
+        let args = args_for(&[
+            "--seed", "3", "--stars", "800", "--size", "60x20", "--engage",
+        ]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut autopilot = Autopilot::default();
         for frame in 0..3000 {
@@ -621,6 +663,10 @@ mod tests {
         }
         flight.draw(60.0, false, true);
         assert!(flight.ship.speed.is_finite() && flight.ship.distance_ly.is_finite());
-        assert!(flight.renderer.pixels().iter().any(|p| p.iter().any(|v| *v > 0)));
+        assert!(flight
+            .renderer
+            .pixels()
+            .iter()
+            .any(|p| p.iter().any(|v| *v > 0)));
     }
 }

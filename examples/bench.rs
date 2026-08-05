@@ -69,7 +69,9 @@ fn run(cols: usize, rows: usize, stars: usize, warp: bool) {
         flight.draw(60.0, false, true);
         let c = Instant::now();
         out.clear();
-        flight.present_plain(&mut out).expect("writing to a Vec cannot fail");
+        flight
+            .present_plain(&mut out)
+            .expect("writing to a Vec cannot fail");
         let d = Instant::now();
 
         sim += (b - a).as_secs_f64();
