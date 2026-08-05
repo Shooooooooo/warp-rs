@@ -116,8 +116,14 @@ impl Canvas {
     /// Add light at a subpixel position, spread bilinearly over the four
     /// neighbouring cells. The interpolation is what keeps slow stars from
     /// visibly hopping from cell to cell.
+    ///
+    /// Anywhere at all: off the canvas, NaN, negative. Everything is checked.
     pub fn splat(&mut self, x: f32, y: f32, color: [f32; 3], weight: f32) {
         if weight <= 0.0 || !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        if x >= 0.0 && y >= 0.0 && x <= self.max_x() && y <= self.max_y() {
+            self.splat_inside(x, y, color, weight);
             return;
         }
         let (x0, y0) = (x.floor(), y.floor());
@@ -144,17 +150,71 @@ impl Canvas {
         }
     }
 
+    /// The same splat for a point already known to be on the canvas, which is
+    /// every sample of a clipped streak — the overwhelming majority of them.
+    ///
+    /// Worth the duplication because this is the innermost loop in the program:
+    /// at warp a single frame can splat a couple of million times, and the
+    /// general path spends most of that testing four taps it already knows the
+    /// answer for. The one case still needing care is the far edge, where the
+    /// `+1` neighbour does not exist — but a point can only sit on the last
+    /// column when its fraction is exactly zero, so that tap's weight is zero
+    /// too and folding it back onto the pixel itself adds nothing to it.
+    ///
+    /// Arithmetic and ordering are identical to `splat`, deliberately: this is
+    /// meant to produce the same frame, not merely a similar one.
+    fn splat_inside(&mut self, x: f32, y: f32, color: [f32; 3], weight: f32) {
+        let (x0, y0) = (x as usize, y as usize); // non-negative, so a floor
+        let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+        let right = usize::from(x0 + 1 < self.width);
+        let below = if y0 + 1 < self.height { self.width } else { 0 };
+
+        let base = y0 * self.width + x0;
+        let taps = [
+            (base, (1.0 - fx) * (1.0 - fy)),
+            (base + right, fx * (1.0 - fy)),
+            (base + below, (1.0 - fx) * fy),
+            (base + right + below, fx * fy),
+        ];
+        for (idx, share) in taps {
+            let px = &mut self.buf[idx];
+            let w = weight * share;
+            for i in 0..3 {
+                px[i] += color[i] * w;
+            }
+        }
+    }
+
+    /// The last column and row, as the coordinates a sample may reach.
+    fn max_x(&self) -> f32 {
+        (self.width - 1) as f32
+    }
+
+    fn max_y(&self) -> f32 {
+        (self.height - 1) as f32
+    }
+
     /// Draw one star's contribution: a line from where it was to where it is,
     /// brightening toward the head.
     pub fn draw_streak(&mut self, streak: &Streak) {
+        // A dark star has nothing to add, and a NaN one would spread across the
+        // buffer — nothing recovers a pixel once it is not a number.
+        if streak.intensity.is_nan() || streak.intensity <= 0.0 {
+            return;
+        }
         let Some((from, to)) = self.clip(streak.from, streak.to) else {
             return;
         };
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         let length = (dx * dx + dy * dy).sqrt();
+        // Clipping put both ends on the canvas. The clamps below are for the
+        // last of the floating-point slack: an interpolated point can land a
+        // hair outside the box its endpoints were clipped to.
+        let (max_x, max_y) = (self.max_x(), self.max_y());
 
         if length < 0.75 {
-            self.splat(to.0, to.1, streak.color, streak.intensity);
+            let (x, y) = (to.0.clamp(0.0, max_x), to.1.clamp(0.0, max_y));
+            self.splat_inside(x, y, streak.color, streak.intensity);
             return;
         }
 
@@ -164,12 +224,9 @@ impl Canvas {
             let t = i as f32 / steps as f32;
             // `from` is the tail, `to` the head: ramp brightness along it.
             let ramp = TAIL_BRIGHTNESS + (1.0 - TAIL_BRIGHTNESS) * t;
-            self.splat(
-                from.0 + dx * t,
-                from.1 + dy * t,
-                streak.color,
-                per_sample * ramp,
-            );
+            let x = (from.0 + dx * t).clamp(0.0, max_x);
+            let y = (from.1 + dy * t).clamp(0.0, max_y);
+            self.splat_inside(x, y, streak.color, per_sample * ramp);
         }
     }
 
@@ -350,6 +407,40 @@ mod tests {
         let mut canvas = Canvas::new(8, 8);
         canvas.splat(3.25, 4.75, [1.0, 0.0, 0.0], 2.0);
         assert!((total_light(&canvas) - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_last_row_and_column_have_no_neighbours_to_spill_into() {
+        // The fast path folds the `+1` taps back onto the pixel itself rather
+        // than testing for them. That is only sound because a point can sit on
+        // the last column or row solely when its fraction is zero — so nothing
+        // is folded in, and the weight neither leaks nor doubles.
+        for (x, y) in [(7.0, 7.0), (7.0, 3.5), (3.5, 7.0), (0.0, 7.0), (7.0, 0.0)] {
+            let mut canvas = Canvas::new(8, 8);
+            canvas.splat(x, y, [1.0, 1.0, 1.0], 3.0);
+            assert!(
+                (total_light(&canvas) - 9.0).abs() < 1e-5,
+                "({x}, {y}) deposited {} instead of 3 across 3 channels",
+                total_light(&canvas) / 3.0
+            );
+        }
+        // And the corner really is the corner, not the pixel before it.
+        let mut canvas = Canvas::new(8, 8);
+        canvas.splat(7.0, 7.0, [1.0, 1.0, 1.0], 3.0);
+        assert_eq!(canvas.buf[7 * 8 + 7][0], 3.0);
+    }
+
+    #[test]
+    fn a_streak_with_nothing_to_add_adds_nothing() {
+        // A NaN is not less than or equal to zero, so an unguarded intensity
+        // used to walk a line of them across the buffer, and no later pass
+        // recovers a pixel that is not a number.
+        let mut canvas = Canvas::new(32, 32);
+        for intensity in [0.0, -1.0, f32::NAN] {
+            canvas.draw_streak(&Streak { intensity, ..streak((2.0, 2.0), (28.0, 20.0)) });
+        }
+        assert_eq!(total_light(&canvas), 0.0);
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 
     #[test]
