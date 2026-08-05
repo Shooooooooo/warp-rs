@@ -18,8 +18,11 @@ use std::io::{self, Write};
 
 /// Upper half block: foreground paints the top pixel, background the bottom.
 const HALF_BLOCK: char = '\u{2580}';
-/// Brightness ramp for terminals that cannot do colour at all.
-const ASCII_RAMP: &[u8] = b" .,:;-=+*oO#%@";
+/// Brightness ramp for terminals that cannot do colour at all. Visible to
+/// the crate because the panel picks its ASCII face partly to avoid it: with
+/// no colour to separate glass from sky, an instrument drawn in a character
+/// the starfield also uses is one the eye cannot pick out.
+pub(crate) const ASCII_RAMP: &[u8] = b" .,:;-=+*oO#%@";
 
 /// How much colour the terminal can be trusted with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +248,21 @@ impl Screen {
         (self.cols, self.rows)
     }
 
+    /// How much colour this screen is being drawn with. The instrument panel
+    /// asks, because a terminal that cannot be sent colour is generally one
+    /// that cannot be sent box-drawing characters either.
+    pub fn color_mode(&self) -> ColorMode {
+        self.mode
+    }
+
+    /// Whether a colour set on a cell will actually be emitted. In
+    /// [`ColorMode::Ascii`] every cell is colourless, so sending the codes at
+    /// all — even the resets — puts escape sequences on a terminal that asked
+    /// not to be sent any.
+    fn colored(&self) -> bool {
+        self.mode != ColorMode::Ascii
+    }
+
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let (cols, rows) = (cols.max(1), rows.max(1));
         if (cols, rows) == (self.cols, self.rows) {
@@ -386,6 +404,7 @@ impl Screen {
     /// Emit every cell that differs from what the terminal is showing, and
     /// remember that it is showing them now.
     fn diff<W: Write>(&mut self, mut sink: Sink<W>) -> io::Result<()> {
+        let colored = self.colored();
         let mut last_fg: Option<Option<(u8, u8, u8)>> = None;
         let mut last_bg: Option<Option<(u8, u8, u8)>> = None;
         // Where the terminal's cursor sits, if we know it.
@@ -402,11 +421,11 @@ impl Screen {
                 if cursor_at != Some((col, row)) {
                     sink.move_to(col, row)?;
                 }
-                if last_fg != Some(cell.fg) {
+                if colored && last_fg != Some(cell.fg) {
                     sink.set_color(cell.fg, Ground::Foreground)?;
                     last_fg = Some(cell.fg);
                 }
-                if last_bg != Some(cell.bg) {
+                if colored && last_bg != Some(cell.bg) {
                     sink.set_color(cell.bg, Ground::Background)?;
                     last_bg = Some(cell.bg);
                 }
@@ -454,22 +473,26 @@ impl Screen {
     }
 
     fn plain_into<W: Write>(&self, mut sink: Sink<W>) -> io::Result<()> {
+        let colored = self.colored();
         for row in 0..self.rows {
             let (mut last_fg, mut last_bg) = (None, None);
             for col in 0..self.cols {
                 let cell = self.back[row * self.cols + col];
-                if last_fg != Some(cell.fg) {
+                if colored && last_fg != Some(cell.fg) {
                     sink.set_color(cell.fg, Ground::Foreground)?;
                     last_fg = Some(cell.fg);
                 }
-                if last_bg != Some(cell.bg) {
+                if colored && last_bg != Some(cell.bg) {
                     sink.set_color(cell.bg, Ground::Background)?;
                     last_bg = Some(cell.bg);
                 }
                 sink.glyph(cell.ch)?;
             }
-            sink.set_color(None, Ground::Foreground)?;
-            sink.set_color(None, Ground::Background)?;
+            // Nothing was coloured, so there is nothing to hand back.
+            if colored {
+                sink.set_color(None, Ground::Foreground)?;
+                sink.set_color(None, Ground::Background)?;
+            }
             sink.glyph('\n')?;
         }
         Ok(())
@@ -867,6 +890,60 @@ mod tests {
         screen.write_plain(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text.lines().count(), 3);
+    }
+
+    #[test]
+    fn ascii_mode_puts_no_escape_sequences_on_the_wire() {
+        // Regression: every row of plain output opened and closed with
+        // `\x1b[39m\x1b[49m` — four SGR sequences a row — in the one mode that
+        // exists because the terminal cannot be sent colour. On a `TERM=dumb`
+        // terminal those arrive as visible garbage.
+        let mut screen = Screen::new(12, 3, ColorMode::Ascii);
+        let mut px = pixels(12, 3, [0, 0, 0]);
+        px[5] = [255, 255, 255]; // something for the ramp to bite on
+        screen.compose(&px);
+        screen.overlay(0, 0, "THR", (255, 255, 255));
+
+        let mut plain = Vec::new();
+        screen.write_plain(&mut plain).unwrap();
+        assert!(
+            !plain.contains(&0x1b),
+            "plain output carried an escape: {:?}",
+            String::from_utf8_lossy(&plain)
+        );
+        assert!(plain.is_ascii(), "plain output left ASCII");
+
+        // The interactive path may still position the cursor — it has no other
+        // way to paint a grid — but it has no business setting colours either.
+        screen.force_redraw();
+        screen.compose(&px);
+        let mut frame = Vec::new();
+        screen.flush(&mut frame).unwrap();
+        let text = String::from_utf8(frame).unwrap();
+        for sequence in text.split('\u{1b}').skip(1) {
+            let body = sequence.strip_prefix('[').expect("a CSI sequence");
+            let end = body
+                .find(|c: char| !c.is_ascii_digit() && c != ';')
+                .expect("a final byte");
+            assert_eq!(
+                &body[end..end + 1],
+                "H",
+                "only cursor moves belong on an ascii terminal: {sequence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn colour_modes_that_have_colour_still_send_it() {
+        // The guard above is on the mode, not on the cell, so the modes that
+        // do carry colour must be untouched by it.
+        for mode in [ColorMode::Truecolor, ColorMode::Ansi256] {
+            let mut screen = Screen::new(8, 2, mode);
+            screen.compose(&pixels(8, 2, [10, 20, 30]));
+            let mut out = Vec::new();
+            screen.write_plain(&mut out).unwrap();
+            assert!(out.contains(&0x1b), "{mode:?} stopped emitting colour");
+        }
     }
 
     #[test]

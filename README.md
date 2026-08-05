@@ -153,6 +153,12 @@ Where truecolor is not available it degrades — to the xterm 256-colour palette
 and past that to a plain ASCII brightness ramp. `--color` forces the choice if
 detection guesses wrong.
 
+`--color ascii` is for a terminal that cannot be sent colour, so it is not sent
+any: no escape codes beyond the cursor moves the grid is painted with, and an
+instrument panel that swaps its box rules, block bars and degree signs for
+characters a 1970s terminal would recognise. Piped rather than displayed, that
+mode is plain text and nothing else.
+
 Only cells that changed are re-emitted each frame, and colour codes are only
 re-sent when they differ from the last cell written.
 
