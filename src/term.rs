@@ -282,12 +282,24 @@ impl Screen {
 
     /// Render the frame as plain text plus ANSI colour, for piping somewhere
     /// that is not an interactive terminal.
+    ///
+    /// Colours are re-sent only when they change, the same way `flush` does it:
+    /// a cell carries about 40 bytes of escape codes, and a starfield is mostly
+    /// long runs of black. Each row still ends on a reset, so a row is
+    /// self-contained and never inherits state from the one above it.
     pub fn write_plain(&self, out: &mut impl Write) -> io::Result<()> {
         for row in 0..self.rows {
+            let (mut last_fg, mut last_bg) = (None, None);
             for col in 0..self.cols {
                 let cell = self.back[row * self.cols + col];
-                out.queue(SetForegroundColor(to_color(cell.fg)))?;
-                out.queue(SetBackgroundColor(to_color(cell.bg)))?;
+                if last_fg != Some(cell.fg) {
+                    out.queue(SetForegroundColor(to_color(cell.fg)))?;
+                    last_fg = Some(cell.fg);
+                }
+                if last_bg != Some(cell.bg) {
+                    out.queue(SetBackgroundColor(to_color(cell.bg)))?;
+                    last_bg = Some(cell.bg);
+                }
                 out.queue(Print(cell.ch))?;
             }
             out.queue(SetForegroundColor(Color::Reset))?;
@@ -605,5 +617,43 @@ mod tests {
         screen.write_plain(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text.lines().count(), 3);
+    }
+
+    #[test]
+    fn plain_output_only_re_sends_a_colour_when_it_changes() {
+        // Regression: every cell carried its own pair of escape codes, so a
+        // frame cost about 40 bytes a cell no matter what was on it — around
+        // half a megabyte for a 200x60 terminal, most of it identical black.
+        let mut screen = Screen::new(40, 4, ColorMode::Truecolor);
+        screen.compose(&pixels(40, 4, [10, 20, 30]));
+        let mut out = Vec::new();
+        screen.write_plain(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // One pair of codes per row is all a uniform frame needs.
+        assert_eq!(text.matches("38;2;10;20;30").count(), 4, "foreground repeated");
+        assert_eq!(text.matches("48;2;10;20;30").count(), 4, "background repeated");
+        assert_eq!(text.lines().count(), 4);
+    }
+
+    #[test]
+    fn every_plain_row_stands_on_its_own() {
+        // Rows reset at the end, so the run-length state must not carry over:
+        // a row that opens with the colour the previous one ended on still has
+        // to say so, or it inherits the reset instead.
+        let mut screen = Screen::new(2, 2, ColorMode::Truecolor);
+        let mut px = pixels(2, 2, [7, 8, 9]);
+        px[0] = [1, 2, 3]; // only the very first subpixel differs
+        screen.compose(&px);
+        let mut out = Vec::new();
+        screen.write_plain(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        for (i, line) in text.lines().enumerate() {
+            assert!(
+                line.starts_with('\u{1b}'),
+                "row {i} opened without setting a colour: {line:?}"
+            );
+        }
     }
 }

@@ -65,12 +65,23 @@ struct Args {
     fps: u32,
 
     /// Fly on autopilot for this many seconds, then exit. Needs no keyboard.
-    #[arg(long, num_args = 0..=1, default_missing_value = "45", value_name = "SECS")]
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "45",
+        value_name = "SECS",
+        // Unchecked, `--demo=-5` quit before drawing a single frame and
+        // `--demo=nan` never reached its deadline at all — a screensaver
+        // without the any-key-quits contract that makes one safe to use.
+        value_parser = positive,
+        // Both fly themselves, but only one of them has a deadline.
+        conflicts_with = "screensaver",
+    )]
     demo: Option<f32>,
 
     /// Screensaver: fly on autopilot indefinitely and quit on *any* key, so it
     /// can be dropped straight into tmux's `lock-command`.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "headless")]
     screensaver: bool,
 
     /// Print frames to stdout instead of taking over the terminal.
@@ -78,7 +89,7 @@ struct Args {
     headless: bool,
 
     /// Frames to print in headless mode.
-    #[arg(long, default_value_t = 1, value_name = "N")]
+    #[arg(long, default_value_t = 1, value_name = "N", requires = "headless")]
     frames: u32,
 
     /// Colour depth. Auto-detected from COLORTERM and TERM by default.
@@ -107,17 +118,17 @@ struct Args {
 
     /// Write a PNG of one frame and exit. The instrument panel is not drawn.
     #[cfg(feature = "snapshot")]
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", conflicts_with = "headless")]
     snapshot: Option<std::path::PathBuf>,
 
     /// Frames to simulate before taking the snapshot.
     #[cfg(feature = "snapshot")]
-    #[arg(long, default_value_t = 300, value_name = "N")]
+    #[arg(long, default_value_t = 300, value_name = "N", requires = "snapshot")]
     warmup: u32,
 
     /// Magnification of the snapshot image.
     #[cfg(feature = "snapshot")]
-    #[arg(long, default_value_t = 3, value_name = "N")]
+    #[arg(long, default_value_t = 3, value_name = "N", requires = "snapshot")]
     scale: usize,
 }
 
@@ -581,6 +592,45 @@ mod tests {
     fn demo_takes_an_optional_duration() {
         assert_eq!(args_for(&["--demo"]).demo, Some(45.0));
         assert_eq!(args_for(&["--demo", "12.5"]).demo, Some(12.5));
+    }
+
+    #[test]
+    fn a_demo_has_to_last_a_positive_length_of_time() {
+        // Regression: `--demo` was the one number that went unchecked. A
+        // negative deadline is already past on the first frame, so the flight
+        // ended before it drew anything; a NaN one is never reached, so the
+        // flag silently became an indefinite autopilot instead.
+        for bad in ["-5", "0", "nan", "inf", "-inf", "banana"] {
+            assert!(
+                Args::try_parse_from(["warp", &format!("--demo={bad}")]).is_err(),
+                "`--demo={bad}` should not parse"
+            );
+        }
+        assert_eq!(args_for(&["--demo", "0.5"]).demo, Some(0.5));
+    }
+
+    #[test]
+    fn flags_that_contradict_each_other_are_refused() {
+        // Each of these used to be accepted, with one flag quietly winning:
+        // `--demo` capped the screensaver, `--headless` ignored it entirely,
+        // and `--frames` did nothing at all outside headless mode.
+        assert!(Args::try_parse_from(["warp", "--demo", "--screensaver"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--screensaver", "--headless"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--frames", "10"]).is_err());
+
+        // The combinations that mean something still do.
+        assert!(Args::try_parse_from(["warp", "--headless", "--frames", "10"]).is_ok());
+        assert!(Args::try_parse_from(["warp", "--headless", "--demo"]).is_ok());
+        assert!(Args::try_parse_from(["warp", "--screensaver"]).is_ok());
+    }
+
+    #[cfg(feature = "snapshot")]
+    #[test]
+    fn the_snapshot_flags_need_a_snapshot_to_take() {
+        assert!(Args::try_parse_from(["warp", "--warmup", "10"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--scale", "2"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--snapshot", "a.png", "--headless"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--snapshot", "a.png", "--warmup", "10"]).is_ok());
     }
 
     #[test]
