@@ -128,6 +128,43 @@ impl Lens {
         near(from) || near(to)
     }
 
+    /// Whether the straight line between two points passes inside the Einstein
+    /// ring. Point-to-segment distance, and no trigonometry: this is asked once
+    /// per sample of every streak in the pool.
+    fn crosses_the_ring(&self, from: (f32, f32), to: (f32, f32)) -> bool {
+        let (ax, ay) = (from.0 - self.center.0, from.1 - self.center.1);
+        let (bx, by) = (to.0 - self.center.0, to.1 - self.center.1);
+        let (dx, dy) = (bx - ax, by - ay);
+        let len_sq = dx * dx + dy * dy;
+        // Where along the segment the nearest point to the centre falls, held
+        // to the segment itself rather than the whole line it lies on.
+        let t = if len_sq > f32::MIN_POSITIVE {
+            (-(ax * dx + ay * dy) / len_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (nx, ny) = (ax + dx * t, ay + dy * t);
+        nx * nx + ny * ny < self.radius * self.radius
+    }
+
+    /// How sharply the lens is bending things at `p`, as a 0..=1 ramp.
+    ///
+    /// The deflection falls off as the square of the distance, so a streak out
+    /// at the edge of the frame is displaced almost uniformly along its length
+    /// — which is to say not curved at all — and does not need chopping up.
+    /// This is what keeps a lensed frame close to the price of an unlensed one.
+    pub fn curvature(&self, p: (f32, f32)) -> f32 {
+        if !self.is_on() {
+            return 0.0;
+        }
+        let r_sq = (p.0 - self.center.0).powi(2) + (p.1 - self.center.1).powi(2);
+        let e_sq = self.radius * self.radius;
+        if !r_sq.is_finite() {
+            return 0.0;
+        }
+        e_sq / (r_sq + e_sq)
+    }
+
     /// Where `p` appears once the lens has had it, and by how much its
     /// brightness changes.
     ///
@@ -238,6 +275,17 @@ impl Lens {
     /// in polar coordinates instead follows the sweep. Away from the lens the
     /// angle barely moves and this adds nothing at all.
     pub fn arc_to(&self, from: (f32, f32), to: (f32, f32), out: &mut Vec<(f32, f32)>) {
+        // The expensive part of this is two `atan2`s and a `sin_cos` per point,
+        // and the great majority of pairs do not need it: two samples of a
+        // streak that is merely passing by are a fraction of a radian apart and
+        // a straight line between them is the arc to well under a subpixel.
+        // What has to be caught is the pair that *straddles* the sweep, and
+        // that shows up as a chord cutting inside the ring — where no primary
+        // image can be, so nothing legitimate is ever there to be cut.
+        if !self.crosses_the_ring(from, to) {
+            out.push(to);
+            return;
+        }
         let polar = |p: (f32, f32)| {
             let (dx, dy) = (p.0 - self.center.0, p.1 - self.center.1);
             (dx.hypot(dy), dy.atan2(dx))

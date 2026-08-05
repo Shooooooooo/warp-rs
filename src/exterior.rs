@@ -297,14 +297,21 @@ impl ExteriorField {
                 canvas.draw_streak(&streak);
                 continue;
             }
-            subdivide(&streak, &mut source);
+            subdivide(&streak, lens, &mut source);
             for image in [Image::Primary, Image::Secondary] {
                 // The head is where the star actually is, so its magnification
-                // is the one that speaks for the whole streak.
-                let gain = lens.map(streak.to, image).gain;
-                if gain < FAINTEST_COUNTER_IMAGE {
+                // is the one that speaks for the whole streak — and its
+                // position is what says whether there is anything to draw at
+                // all. Asking the bubble *first* is most of what makes this
+                // affordable: the counter-image of everything beyond about
+                // two-thirds of an Einstein radius lands inside the shadow, so
+                // without this check the great majority of the pool is
+                // subdivided, mapped and then thrown away.
+                let head = lens.map(streak.to, image);
+                if head.gain < FAINTEST_COUNTER_IMAGE || lens.shadowed(head.at) {
                     continue;
                 }
+                let gain = head.gain;
                 bent.clear();
                 let mut swallowed = false;
                 for p in &source {
@@ -361,12 +368,20 @@ fn band(half_width: f32, focal: f32, z: f32) -> f32 {
 
 /// Chop a streak into pieces short enough that bending each one straight still
 /// reads as a curve.
-fn subdivide(streak: &Streak, out: &mut Vec<(f32, f32)>) {
+///
+/// How finely depends on how hard the lens is bending things where the streak
+/// is, not merely on how long it is. Out at the edge of the frame the whole
+/// streak is displaced by much the same amount, which is a shift rather than a
+/// curve and needs no subdivision at all — and the edge of the frame is where
+/// nearly all of the sky is.
+fn subdivide(streak: &Streak, lens: &Lens, out: &mut Vec<(f32, f32)>) {
     out.clear();
     let (dx, dy) = (streak.to.0 - streak.from.0, streak.to.1 - streak.from.1);
     let length = dx.hypot(dy);
+    // The head, where the star actually is, speaks for the streak.
+    let bend = lens.curvature(streak.to).max(lens.curvature(streak.from));
     let pieces = if length.is_finite() {
-        ((length / ARC_STEP).ceil() as usize).clamp(1, MAX_ARCS)
+        ((length * bend / ARC_STEP).ceil() as usize).clamp(1, MAX_ARCS)
     } else {
         1
     };

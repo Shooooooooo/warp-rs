@@ -23,29 +23,43 @@ const WARMUP: usize = 300;
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let cases: Vec<(usize, usize, usize, bool)> = if argv.len() >= 3 {
+    let cases: Vec<(usize, usize, usize, bool, &str)> = if argv.len() >= 3 {
         let n = |i: usize| argv[i].parse().expect("expected: [cols] [rows] [stars]");
-        vec![(n(0), n(1), n(2), true)]
+        let view = argv
+            .get(3)
+            .map_or("cockpit", |v| if v == "side" { "side" } else { "cockpit" });
+        vec![(n(0), n(1), n(2), true, view)]
     } else {
         vec![
-            (80, 24, 0, false),
-            (80, 24, 0, true),
-            (200, 60, 0, true),
-            (200, 60, 20_000, true),
+            (80, 24, 0, false, "cockpit"),
+            (80, 24, 0, true, "cockpit"),
+            (200, 60, 0, true, "cockpit"),
+            (200, 60, 20_000, true, "cockpit"),
+            // The outside view at warp is the expensive frame in the program:
+            // every streak near the ship is chopped into arcs and drawn twice,
+            // once for each image the lens forms of it.
+            (200, 60, 0, true, "side"),
+            (200, 60, 20_000, true, "side"),
         ]
     };
 
     println!(
-        "{:>9}  {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>6}",
-        "size", "stars", "sim ms", "draw ms", "write ms", "total ms", "fps"
+        "{:>9}  {:>8}  {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>6}",
+        "size", "view", "stars", "sim ms", "draw ms", "write ms", "total ms", "fps"
     );
-    for (cols, rows, stars, warp) in cases {
-        run(cols, rows, stars, warp);
+    for (cols, rows, stars, warp, view) in cases {
+        run(cols, rows, stars, warp, view);
     }
 }
 
-fn run(cols: usize, rows: usize, stars: usize, warp: bool) {
-    let mut argv = vec!["warp".to_string(), "--seed".into(), "1".into()];
+fn run(cols: usize, rows: usize, stars: usize, warp: bool, view: &str) {
+    let mut argv = vec![
+        "warp".to_string(),
+        "--seed".into(),
+        "1".into(),
+        "--view".into(),
+        view.into(),
+    ];
     if stars > 0 {
         argv.extend(["--stars".to_string(), stars.to_string()]);
     }
@@ -82,8 +96,9 @@ fn run(cols: usize, rows: usize, stars: usize, warp: bool) {
     let ms = |total: f64| total * 1000.0 / FRAMES as f64;
     let total = ms(sim) + ms(draw) + ms(write);
     println!(
-        "{:>9}  {:>7}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}  {:>6.0}",
+        "{:>9}  {:>8}  {:>7}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}  {:>6.0}",
         format!("{cols}x{rows}"),
+        view,
         flight.stars(),
         ms(sim),
         ms(draw),
