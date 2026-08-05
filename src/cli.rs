@@ -261,6 +261,7 @@ mod tests {
         assert!(Args::try_parse_from(["warp", "--screensaver"]).is_ok());
     }
 
+    #[cfg(feature = "snapshot")]
     #[test]
     fn the_snapshot_flags_need_a_snapshot_to_take() {
         assert!(Args::try_parse_from(["warp", "--warmup", "10"]).is_err());
