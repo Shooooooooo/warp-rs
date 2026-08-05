@@ -33,6 +33,18 @@ const AUTO_MAX_STARS: usize = 20_000;
 /// Fallback canvas size when there is no terminal to measure.
 const FALLBACK_SIZE: (u16, u16) = (160, 48);
 
+/// Ceiling on the canvas, in terminal cells. A cell costs about 54 bytes across
+/// the four buffers a frame needs — two subpixels of HDR float, two of resolved
+/// RGB, and a front and back cell — so this is roughly 110 MB. Far past any real
+/// terminal, and small enough that it allocates instead of aborting.
+const MAX_CELLS: usize = 2_000_000;
+/// And no single dimension past this, so the error names the obvious mistake
+/// rather than quoting a product.
+const MAX_DIM: u16 = 10_000;
+/// Ceiling on `--stars`, fifty times the automatic maximum. A `Star` is 40
+/// bytes, so this is 40 MB of pool.
+const MAX_STARS: usize = 1_000_000;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "warp",
@@ -41,7 +53,11 @@ const FALLBACK_SIZE: (u16, u16) = (160, 48);
 )]
 struct Args {
     /// How many stars to keep in flight. 0 suits the count to the terminal.
-    #[arg(long, default_value_t = 0)]
+    #[arg(
+        long,
+        default_value_t = 0,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(0..=MAX_STARS as u64)
+    )]
     stars: usize,
 
     /// Frame rate cap.
@@ -133,9 +149,22 @@ fn parse_size(text: &str) -> Result<(u16, u16), String> {
         s.trim()
             .parse::<u16>()
             .map_err(|_| format!("`{s}` is not a valid number of {what}"))
-            .and_then(|v| if v == 0 { Err(format!("{what} must not be zero")) } else { Ok(v) })
+            .and_then(|v| match v {
+                0 => Err(format!("{what} must not be zero")),
+                v if v > MAX_DIM => Err(format!("{v} {what} is past the limit of {MAX_DIM}")),
+                v => Ok(v),
+            })
     };
-    Ok((parse(w, "columns")?, parse(h, "rows")?))
+    let (cols, rows) = (parse(w, "columns")?, parse(h, "rows")?);
+    // Checked as a product too: each dimension can be reasonable while the area
+    // is not, and it is the area that decides how much gets allocated.
+    if cols as usize * rows as usize > MAX_CELLS {
+        return Err(format!(
+            "{cols}x{rows} is {} cells, past the limit of {MAX_CELLS}",
+            cols as usize * rows as usize
+        ));
+    }
+    Ok((cols, rows))
 }
 
 fn unit_interval(text: &str) -> Result<f32, String> {
@@ -183,7 +212,12 @@ struct Flight {
     field: StarField,
     renderer: Renderer,
     autopilot: Autopilot,
-    time: f32,
+    /// Wall time since launch, in seconds. `f64` because it only ever grows and
+    /// a screensaver is expected to be left running: as an `f32` accumulator it
+    /// stopped advancing altogether after about six days, freezing the twinkle
+    /// and the shake it drives. The accumulator below stays `f32` — it is
+    /// bounded by one sim step and never drifts.
+    time: f64,
     accumulator: f32,
 }
 
@@ -204,7 +238,7 @@ impl Flight {
 
     /// Advance by `dt` of wall time, in fixed physics steps.
     fn advance(&mut self, dt: f32) {
-        self.time += dt;
+        self.time += dt as f64;
         self.accumulator += dt;
         while self.accumulator >= SIM_STEP {
             self.ship.update(SIM_STEP);
@@ -277,10 +311,13 @@ struct Autopilot {
 
 impl Autopilot {
     /// Length of one full run-up-and-drop-out cycle, in seconds.
-    const CYCLE: f32 = 46.0;
+    const CYCLE: f64 = 46.0;
 
-    fn update(&mut self, ship: &mut Ship, elapsed: f32) {
-        let t = elapsed % Self::CYCLE;
+    /// `elapsed` is `f64` for the same reason `Flight::time` is: a screensaver
+    /// runs for days, and this has to keep cycling for all of them.
+    fn update(&mut self, ship: &mut Ship, elapsed: f64) {
+        // Inside one cycle, so everything downstream is small enough for `f32`.
+        let t = (elapsed % Self::CYCLE) as f32;
         let phase = match t {
             t if t < 6.0 => 0,  // sublight, easing the throttle up
             t if t < 32.0 => 1, // at warp
@@ -310,9 +347,10 @@ impl Autopilot {
             0 => ship.throttle = (0.15 + t * 0.10).min(0.80),
             1 => {
                 ship.throttle = (0.55 + (t - 6.0) * 0.025).min(1.0);
-                // A slow weave, so the view is never quite static.
-                ship.nudge_yaw((elapsed * 0.31).sin() * 0.003);
-                ship.nudge_pitch((elapsed * 0.19).cos() * 0.002);
+                // A slow weave, so the view is never quite static. Evaluated in
+                // `f64` so the argument reduction stays exact indefinitely.
+                ship.nudge_yaw((elapsed * 0.31).sin() as f32 * 0.003);
+                ship.nudge_pitch((elapsed * 0.19).cos() as f32 * 0.002);
             }
             2 => ship.throttle = (ship.throttle - 0.004).max(0.25),
             _ => ship.throttle = (ship.throttle - 0.002).max(0.15),
@@ -370,11 +408,18 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     // Not `terminal::size()` directly: tmux runs a `lock-command` against a
     // tty whose window size is not set yet, so it can report zero.
     let (cols, rows) = resolved_size(args);
+
+    // Built before the terminal is taken over. This is the only thing here that
+    // allocates in bulk, and a failed allocation aborts the process outright —
+    // no unwind, no `Drop`, no panic hook — so anything installed first would
+    // never be undone, and the user would be left in raw mode on the alternate
+    // screen with an invisible cursor and no shell prompt.
+    let mut flight = Flight::new(args, cols as usize, rows as usize);
+
     let _guard = RawGuard::new()?;
     let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
     out.queue(terminal::Clear(terminal::ClearType::All))?;
 
-    let mut flight = Flight::new(args, cols as usize, rows as usize);
     let mut paused = false;
     let mut fps = args.fps as f32;
     let frame_budget = Duration::from_secs_f32(1.0 / args.fps as f32);
@@ -411,11 +456,11 @@ fn run_interactive(args: &Args) -> io::Result<()> {
             }
         }
 
-        let elapsed = start.elapsed().as_secs_f32();
+        let elapsed = start.elapsed().as_secs_f64();
         // `--demo` flies itself and then stops; a screensaver flies itself
         // until something interrupts it.
         if let Some(limit) = args.demo {
-            if elapsed >= limit {
+            if elapsed >= limit as f64 {
                 break 'flying;
             }
         }
@@ -452,7 +497,7 @@ fn run_headless(args: &Args) -> io::Result<()> {
 
     for frame in 0..args.frames {
         if args.demo.is_some() {
-            flight.autopilot.update(&mut flight.ship, frame as f32 * dt);
+            flight.autopilot.update(&mut flight.ship, frame as f64 * dt as f64);
         }
         flight.advance(dt);
         flight.draw(args.fps as f32, false, true);
@@ -469,7 +514,7 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
 
     for frame in 0..args.warmup {
         if args.demo.is_some() {
-            flight.autopilot.update(&mut flight.ship, frame as f32 * dt);
+            flight.autopilot.update(&mut flight.ship, frame as f64 * dt as f64);
         }
         flight.advance(dt);
     }
@@ -490,10 +535,28 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
 /// The size to render at: whatever was asked for, else the terminal's, else a
 /// sensible default for a process with no terminal at all.
 fn resolved_size(args: &Args) -> (u16, u16) {
-    args.size
+    let (cols, rows) = args
+        .size
         .or_else(|| terminal::size().ok())
         .filter(|(c, r)| *c > 0 && *r > 0)
-        .unwrap_or(FALLBACK_SIZE)
+        .unwrap_or(FALLBACK_SIZE);
+    // `--size` was vetted at parse time, but an ioctl answer arrives unvetted,
+    // and a terminal that claims to be enormous should not be believed to the
+    // point of exhausting memory over it.
+    clamp_size(cols, rows)
+}
+
+/// Bring a size inside `MAX_DIM` and `MAX_CELLS`. Both axes scale by the same
+/// factor, so clamping shrinks the view without squashing the field.
+fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
+    let (cols, rows) = (cols.clamp(1, MAX_DIM), rows.clamp(1, MAX_DIM));
+    let cells = cols as usize * rows as usize;
+    if cells <= MAX_CELLS {
+        return (cols, rows);
+    }
+    let shrink = (MAX_CELLS as f64 / cells as f64).sqrt();
+    let scaled = |v: u16| ((v as f64 * shrink).floor() as u16).max(1);
+    (scaled(cols), scaled(rows))
 }
 
 #[cfg(test)]
@@ -537,6 +600,98 @@ mod tests {
         assert!(Args::try_parse_from(["warp", "--fps", "0"]).is_err());
         assert!(Args::try_parse_from(["warp", "--fps", "999"]).is_err());
         assert!(Args::try_parse_from(["warp", "--throttle", "0.5"]).is_ok());
+    }
+
+    #[test]
+    fn size_and_star_counts_are_bounded() {
+        // Regression: neither was bounded. `--stars 500000000` asked for 20 GB
+        // and `--size 60000x60000` for 86 GB, and a failed allocation aborts
+        // the process — no unwind, no `Drop`, no panic hook — so interactively
+        // it left the terminal in raw mode on the alternate screen.
+        assert!(Args::try_parse_from(["warp", "--stars", "500000000"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--stars", "1000001"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--stars", "1000000"]).is_ok());
+        assert!(Args::try_parse_from(["warp", "--stars", "0"]).is_ok(), "0 still means auto");
+
+        assert!(parse_size("60000x60000").is_err());
+        assert!(parse_size("20000x10").is_err(), "past the per-dimension limit");
+        // Each dimension legal on its own, but the area is what gets allocated.
+        assert!(parse_size("10000x10000").is_err());
+        assert!(parse_size("2000x1000").is_ok(), "exactly the cell ceiling");
+        assert!(parse_size("2000x1001").is_err(), "one row past it");
+    }
+
+    #[test]
+    fn a_preposterous_terminal_is_clamped_rather_than_believed() {
+        // `--size` is vetted when it is parsed, but an ioctl answer is not, and
+        // a terminal claiming to be 65535 square would ask for about 100 GB.
+        for (cols, rows) in [
+            (0, 0),
+            (1, 1),
+            (80, 24),
+            (u16::MAX, u16::MAX),
+            (u16::MAX, 1),
+            (1, u16::MAX),
+            (10_000, 10_000),
+            (3000, 900),
+        ] {
+            let (c, r) = clamp_size(cols, rows);
+            let cells = c as usize * r as usize;
+            assert!(c >= 1 && r >= 1, "{cols}x{rows} clamped to a zero dimension");
+            assert!(c <= MAX_DIM && r <= MAX_DIM, "{cols}x{rows} -> {c}x{r}");
+            assert!(cells <= MAX_CELLS, "{cols}x{rows} -> {c}x{r}, which is {cells} cells");
+        }
+        assert_eq!(clamp_size(80, 24), (80, 24), "a sane size is left alone");
+    }
+
+    #[test]
+    fn a_flight_that_has_been_up_for_days_still_advances() {
+        // Regression: `time` was an `f32` accumulator. At 1/60 s steps it
+        // stopped moving entirely at t = 524288 s — a little over six days —
+        // taking the twinkle and the shake with it, which is precisely the
+        // situation a tmux screensaver is left in.
+        let args = args_for(&["--seed", "3", "--stars", "400"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let dt = 1.0 / 60.0;
+
+        for start in [0.0f64, 3_600.0, 86_400.0, 524_288.0, 10_000_000.0] {
+            let days = start / 86_400.0;
+            flight.time = start;
+            flight.advance(dt);
+            assert!(flight.time > start, "the clock stopped at {start} s ({days:.1} days)");
+
+            // The counter moving is not enough on its own: the phase it drives
+            // has to still differ from one frame to the next.
+            flight.ship.shake = 1.0;
+            let a = flight.renderer.camera(&flight.ship, start);
+            let b = flight.renderer.camera(&flight.ship, start + dt as f64);
+            assert!(
+                (a.cx - b.cx).abs() + (a.cy - b.cy).abs() > 1e-6,
+                "the shake froze at {start} s ({days:.1} days)"
+            );
+        }
+    }
+
+    #[test]
+    fn the_autopilot_still_cycles_after_days_aloft() {
+        // Same clock, same problem: `elapsed % CYCLE` needs the resolution to
+        // land in distinct phases one frame apart.
+        let dt = 1.0 / 60.0f64;
+        for start in [0.0f64, 86_400.0, 604_800.0, 10_000_000.0] {
+            let mut ship = Ship::new();
+            let mut autopilot = Autopilot::default();
+            let (mut peak, mut engaged) = (0.0f32, false);
+
+            for frame in 0..(2.0 * Autopilot::CYCLE / dt) as usize {
+                autopilot.update(&mut ship, start + frame as f64 * dt);
+                ship.update(dt as f32);
+                peak = peak.max(ship.velocity_c());
+                engaged |= ship.warp_engaged;
+            }
+            let days = start / 86_400.0;
+            assert!(engaged, "the drive never lit {days:.1} days in");
+            assert!(peak > 100.0, "never got up to speed {days:.1} days in: {peak} c");
+        }
     }
 
     #[test]
@@ -609,9 +764,8 @@ mod tests {
         let mut peak: f32 = 0.0;
         let mut engaged_at_some_point = false;
 
-        for frame in 0..(Autopilot::CYCLE / dt) as usize {
-            let t = frame as f32 * dt;
-            autopilot.update(&mut ship, t);
+        for frame in 0..(Autopilot::CYCLE / dt as f64) as usize {
+            autopilot.update(&mut ship, frame as f64 * dt as f64);
             ship.update(dt);
             peak = peak.max(ship.velocity_c());
             engaged_at_some_point |= ship.warp_engaged;
@@ -673,9 +827,9 @@ mod tests {
         let mut peak_per_cycle = vec![];
         for cycle in 0..4 {
             let mut peak: f32 = 0.0;
-            let start = cycle as f32 * Autopilot::CYCLE;
-            for frame in 0..(Autopilot::CYCLE / dt) as usize {
-                autopilot.update(&mut ship, start + frame as f32 * dt);
+            let start = cycle as f64 * Autopilot::CYCLE;
+            for frame in 0..(Autopilot::CYCLE / dt as f64) as usize {
+                autopilot.update(&mut ship, start + frame as f64 * dt as f64);
                 ship.update(dt);
                 peak = peak.max(ship.velocity_c());
             }
@@ -823,7 +977,7 @@ mod tests {
         let mut flight = Flight::new(&args, 60, 20);
         let mut autopilot = Autopilot::default();
         for frame in 0..3000 {
-            autopilot.update(&mut flight.ship, frame as f32 / 60.0);
+            autopilot.update(&mut flight.ship, frame as f64 / 60.0);
             flight.advance(1.0 / 60.0);
         }
         flight.draw(60.0, false, true);

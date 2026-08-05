@@ -61,22 +61,24 @@ impl Renderer {
     }
 
     /// Build the camera for this instant, including shake and bank.
-    pub fn camera(&self, ship: &Ship, time: f32) -> Camera {
+    pub fn camera(&self, ship: &Ship, time: f64) -> Camera {
         let (w, h) = self.canvas.dims();
         let mut cam = Camera::new(w, h);
         if ship.shake > 0.0 {
             // Two incommensurate frequencies so the wobble never looks like a
-            // clean sine, without needing a noise table.
+            // clean sine, without needing a noise table. Evaluated in `f64`:
+            // there are only four of them per frame, and it means the argument
+            // reduction stays exact however long the process has been up.
             let amp = h as f32 * SHAKE_AMPLITUDE * ship.shake;
-            cam.cx += amp * ((time * 31.0).sin() + (time * 17.3).sin() * 0.6);
-            cam.cy += amp * ((time * 27.7).cos() + (time * 13.1).sin() * 0.6);
+            cam.cx += amp * ((time * 31.0).sin() + (time * 17.3).sin() * 0.6) as f32;
+            cam.cy += amp * ((time * 27.7).cos() + (time * 13.1).sin() * 0.6) as f32;
         }
         cam.bank = ship.bank;
         cam
     }
 
     /// Draw one frame into the cell grid. Nothing reaches the terminal yet.
-    pub fn render(&mut self, field: &StarField, ship: &Ship, cam: &Camera, time: f32, hud: &Readout) {
+    pub fn render(&mut self, field: &StarField, ship: &Ship, cam: &Camera, time: f64, hud: &Readout) {
         let warp = ship.warp_intensity();
 
         self.canvas.clear();
@@ -257,12 +259,12 @@ mod tests {
             renderer.resize(cols, rows);
             let (w, h) = renderer.canvas_dims();
             assert_eq!((w, h), (cols.max(1), (rows * 2).max(1)));
-            let cam = renderer.camera(&ship, i as f32);
+            let cam = renderer.camera(&ship, i as f64);
             field.retarget(&cam);
             for _ in 0..30 {
                 ship.update(1.0 / 60.0);
                 field.update(1.0 / 60.0, ship.speed, 0.2, 0.0, &cam);
-                renderer.render(&field, &ship, &cam, i as f32, &readout(&ship));
+                renderer.render(&field, &ship, &cam, i as f64, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();
         }
