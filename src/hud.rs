@@ -28,14 +28,14 @@ const THROTTLE_BAR: usize = 16;
 /// Control hints, widest first: the first that fits is the one drawn, so a
 /// narrow window sheds detail rather than losing the line entirely.
 const HINTS: [&str; 3] = [
-    "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  P pause  R reset  ESC quit",
+    "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  ESC quit",
     "SPACE warp  WASD steer  QE roll  ESC quit",
 ];
 
 /// The same hints without the arrows, for a terminal being drawn in ASCII.
 const ASCII_HINTS: [&str; 3] = [
-    "SPACE warp  UP/DN throttle  WASD steer  QE roll  P pause  R reset  ESC quit",
+    "SPACE warp  UP/DN throttle  WASD steer  QE roll  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  UP/DN throttle  WASD steer  QE roll  ESC quit",
     "SPACE warp  WASD steer  QE roll  ESC quit",
 ];
@@ -510,6 +510,15 @@ mod tests {
             assert!(
                 widths.last().is_some_and(|w| w + 2 <= MIN_COLS),
                 "the shortest hint does not fit the narrowest panel: {widths:?}"
+            );
+            // The camera and the hangar are on the widest tier only. Putting
+            // them on every tier would take the shortest one past the panel's
+            // own minimum width, and that line has to keep fitting the
+            // terminals it exists for.
+            assert!(
+                set[0].contains("C view") && set[0].contains("M ships"),
+                "the widest hint does not name the camera: {:?}",
+                set[0]
             );
         }
     }
