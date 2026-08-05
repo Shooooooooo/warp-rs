@@ -265,11 +265,15 @@ impl StarField {
         &'a self,
         cam: &'a Camera,
         warp: f32,
-        time: f32,
+        time: f64,
     ) -> impl Iterator<Item = Streak> + 'a {
         let stretch = 1.0 + warp * warp * 5.0;
         let doppler = warp * 0.9;
         let twinkle_amt = (1.0 - warp * 3.0).clamp(0.0, 1.0) * 0.22;
+        // Folded into a single turn once per frame, in `f64`, so the per-star
+        // `sin` below can stay `f32` without the phase going coarse — and
+        // eventually static — once the process has been up for days.
+        let twinkle_phase = (time * 2.3).rem_euclid(std::f64::consts::TAU) as f32;
 
         self.stars.iter().filter_map(move |star| {
             let to = cam.project(star.pos)?;
@@ -291,7 +295,7 @@ impl StarField {
             // star swung past the far plane by a turn simply stays dark until
             // it is close enough to matter again.
             let depth = (1.0 - (z - Z_NEAR) / (Z_FAR - Z_NEAR)).clamp(0.0, 1.0);
-            let twinkle = 1.0 + twinkle_amt * (time * 2.3 + star.phase).sin();
+            let twinkle = 1.0 + twinkle_amt * (twinkle_phase + star.phase).sin();
             let intensity =
                 class.luminosity * star.magnitude * depth.powf(DEPTH_FALLOFF) * twinkle;
             if intensity <= 0.0 {
@@ -310,12 +314,16 @@ impl StarField {
     }
 }
 
-/// Which depth a respawned star should appear at.
+/// Which depth a new star should appear at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DepthRule {
-    /// Anywhere in the volume — used when refilling the sides mid-turn.
+    /// Anywhere in the volume: for filling a fresh field, and for topping one
+    /// up when the pool grows. Both want a sky that is already populated in
+    /// depth — a batch of stars all arriving at the far plane together would
+    /// read as a curtain sweeping in rather than as space.
     Anywhere,
-    /// Out at the far plane, the normal fate of a star that has flown past.
+    /// Out at the far plane, the only honest place for a star that has just
+    /// left the view, and the fate of every star recycled by `update`.
     FarPlane,
 }
 
@@ -464,6 +472,30 @@ mod tests {
             .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
             .sum();
         assert!(moving > 100.0, "warp should streak: {moving}");
+    }
+
+    #[test]
+    fn the_twinkle_still_moves_after_days_of_flight() {
+        // Regression: the twinkle phase was `(time * 2.3 + phase)` computed in
+        // `f32` from an `f32` clock. It went coarse within hours and stopped
+        // advancing entirely after a few days, freezing the sky solid.
+        let cam = cam();
+        let mut field = StarField::new(400, 3, &cam);
+        for _ in 0..10 {
+            field.update(1.0 / 60.0, 20.0, 0.0, 0.0, &cam);
+        }
+        let sample = |time: f64| -> Vec<f32> {
+            field.streaks(&cam, 0.0, time).map(|s| s.intensity).collect()
+        };
+
+        for t in [0.0f64, 3_600.0, 86_400.0, 524_288.0, 10_000_000.0] {
+            let (a, b) = (sample(t), sample(t + 1.0 / 60.0));
+            assert!(
+                a.iter().zip(&b).any(|(x, y)| x != y),
+                "the twinkle froze at {t} s ({:.1} days)",
+                t / 86_400.0
+            );
+        }
     }
 
     #[test]
