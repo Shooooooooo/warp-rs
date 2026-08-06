@@ -225,11 +225,11 @@ impl Flight {
     /// step at a time.
     ///
     /// One function for the three axes rather than three, because they arrive
-    /// together and are held together: [`Orbit::held`] wraps the two that go
-    /// all the way round and clamps the one that stops. As with the zoom it is
-    /// the *target* that is held, not the eased value — and unlike the zoom the
-    /// step is additive, since an angle has no far end to be shoved about and
-    /// every part of a turn is worth the same.
+    /// together and are held together: [`Orbit::held`] folds all three onto a
+    /// single turn, and none of them stops. As with the zoom it is the *target*
+    /// that is held, not the eased value — and unlike the zoom the step is
+    /// additive, since an angle has no far end to be shoved about and every
+    /// part of a turn is worth the same.
     pub fn nudge_orbit(&mut self, azimuth: f32, elevation: f32, roll: f32) {
         self.orbit_target = Orbit {
             azimuth: self.orbit_target.azimuth + azimuth * view::ORBIT_STEP,
@@ -339,20 +339,21 @@ impl Flight {
             // reference frame by an ulp.
             self.zoom +=
                 (self.zoom_target - self.zoom) * (1.0 - (-view::ZOOM_EASE * SIM_STEP).exp());
-            // And the same for the orbit, with one difference: two of its three
-            // angles wrap, so each chases its target the short way round rather
+            // And the same for the orbit, with one difference: all three of its
+            // angles go round, so each chases its target the short way rather
             // than unwinding three hundred and fifty degrees to reach a target
-            // ten degrees away. `wrap_signed` of an exact zero is an exact zero,
-            // so a flight nobody is swinging the camera on still adds nothing at
-            // all here.
+            // ten degrees away. Taking the raw difference on an axis that wraps
+            // is the bug this is written to avoid, and the elevation had it
+            // until the elevation stopped being clamped.
+            //
+            // `wrap_signed` of an exact zero is an exact zero, so a flight
+            // nobody is swinging the camera on still adds nothing at all here.
             let ease = 1.0 - (-view::ORBIT_EASE * SIM_STEP).exp();
+            let chase = |from: f32, to: f32| from + wrap_signed(to - from) * ease;
             self.orbit = Orbit {
-                azimuth: self.orbit.azimuth
-                    + wrap_signed(self.orbit_target.azimuth - self.orbit.azimuth) * ease,
-                elevation: self.orbit.elevation
-                    + (self.orbit_target.elevation - self.orbit.elevation) * ease,
-                roll: self.orbit.roll
-                    + wrap_signed(self.orbit_target.roll - self.orbit.roll) * ease,
+                azimuth: chase(self.orbit.azimuth, self.orbit_target.azimuth),
+                elevation: chase(self.orbit.elevation, self.orbit_target.elevation),
+                roll: chase(self.orbit.roll, self.orbit_target.roll),
             }
             .held();
             match self.view {
@@ -2056,45 +2057,62 @@ mod tests {
     }
 
     #[test]
-    fn the_camera_goes_all_the_way_round_and_stays_finite() {
-        // Two of the three angles wrap, which is the whole reason they can be
-        // `f32` beside a `time` that has to be `f64`: a key leaned on for a
-        // week accumulates nothing, because every step is folded back into a
-        // single turn. The elevation stops at the pole instead, and stopping is
-        // not the same as sticking — it comes back.
+    fn holding_a_camera_key_never_stops() {
+        // The three angles wrap, which is the whole reason they can be `f32`
+        // beside a `time` that has to be `f64`: a key leaned on for a week
+        // accumulates nothing, because every step is folded back onto a single
+        // turn.
+        //
+        // And none of them parks. `W` used to stop dead at the quarter turn,
+        // which is what a clamp does and is not what a hand holding the key is
+        // asking for; over the top and round is.
         let args = args_for(&["--stars", "200", "--size", "60x20"]);
         let mut flight = outside(&args);
         let mut paused = false;
 
+        // A full loop of the elevation on its own, watched the whole way. The
+        // camera has to pass the top rather than arrive at it: `> 0` for a
+        // while, then `< 0` once it is over, then home.
+        let mut over_the_top = false;
+        let mut been_under = false;
+        for _ in 0..40 {
+            for _ in 0..3 {
+                handle_key(press(KeyCode::Char('w')), &mut flight, &args, &mut paused);
+            }
+            flight.advance(1.0 / 60.0);
+            let e = flight.orbit().elevation;
+            assert!(e.is_finite() && e.abs() <= std::f32::consts::PI, "{e}");
+            if e.abs() > std::f32::consts::FRAC_PI_2 {
+                over_the_top = true;
+            }
+            if over_the_top && e < 0.0 {
+                been_under = true;
+            }
+        }
+        assert!(
+            over_the_top,
+            "the camera never got past the quarter turn: {:?}",
+            flight.orbit()
+        );
+        assert!(
+            been_under,
+            "the camera went over the top and stuck there: {:?}",
+            flight.orbit()
+        );
+
+        // And the other two, leaned on together for a long time.
         for _ in 0..4000 {
             handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
-            handle_key(press(KeyCode::Char('w')), &mut flight, &args, &mut paused);
             handle_key(press(KeyCode::Char('q')), &mut flight, &args, &mut paused);
             flight.advance(1.0 / 60.0);
         }
         let o = flight.orbit();
-        assert!(
-            o.azimuth.is_finite() && o.elevation.is_finite() && o.roll.is_finite(),
-            "the camera came apart: {o:?}"
-        );
-        assert!(
-            o.azimuth.abs() <= std::f32::consts::PI && o.roll.abs() <= std::f32::consts::PI,
-            "an angle got away: {o:?}"
-        );
-        assert!(
-            (o.elevation - view::ELEVATION_LIMIT).abs() < 1e-3,
-            "the elevation should be sat on the pole: {o:?}"
-        );
-        // And it comes back off it.
-        for _ in 0..60 {
-            handle_key(press(KeyCode::Char('s')), &mut flight, &args, &mut paused);
-            flight.advance(1.0 / 60.0);
+        for angle in [o.azimuth, o.elevation, o.roll] {
+            assert!(
+                angle.is_finite() && angle.abs() <= std::f32::consts::PI,
+                "the camera came apart: {o:?}"
+            );
         }
-        assert!(
-            flight.orbit().elevation < view::ELEVATION_LIMIT - 0.1,
-            "the camera stuck at the pole: {:?}",
-            flight.orbit()
-        );
         flight.draw(60.0, false, true);
     }
 

@@ -17,7 +17,7 @@
 //! is being looked at.
 
 use crate::ship::wrap_signed;
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{PI, TAU};
 
 /// Focal length of the side camera, as a multiple of the canvas height. Longer
 /// than the cockpit's 0.85: a long lens flattens the hull into a profile, which
@@ -110,16 +110,6 @@ const _: () = assert!(
     "the near and far ends of the zoom have been swapped"
 );
 
-/// How far up over the hull, or down under it, the camera may be swung.
-///
-/// A quarter turn is looking straight down on the ship, and there is nothing
-/// past it that a turn of [`Orbit::azimuth`] does not already reach — going
-/// over the top would arrive at the same picture upside down. It is a clamp
-/// rather than a wrap for that reason, and unlike the flight model's
-/// `PITCH_LIMIT` it may sit exactly on the quarter: the basis below does not
-/// go singular there, because the screen-right axis does not depend on this
-/// angle at all.
-pub const ELEVATION_LIMIT: f32 = FRAC_PI_2;
 /// One press of a camera key. Sixty of them go all the way round, which is a
 /// visible nudge on a single tap and about two seconds of auto-repeat for a
 /// full turn — the same bargain the zoom strikes with its fourteen notches.
@@ -159,6 +149,15 @@ fn turn_of(angle: f32) -> f32 {
 /// points and the band of sky streams along that track — so the way to look at
 /// the ship from somewhere else is to go somewhere else, and these three say
 /// where. The ship goes on flying dead ahead through all of them.
+///
+/// All three go all the way round, and none of them stops. The elevation used
+/// to stop at the quarter turn, on the argument that a turn of the azimuth
+/// already reaches everything past it — which is true about *coverage* and
+/// says nothing about how a camera behaves under a held key. A control that
+/// stops dead halfway through the gesture that is being made with it is a
+/// control that has failed, whatever the reachable set looks like. Going over
+/// the top turns the picture upside down and keeps turning, because that is
+/// what going over the top is.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Orbit {
     /// Round the ship, about its own down axis. Zero is dead abeam to
@@ -168,7 +167,12 @@ pub struct Orbit {
     pub azimuth: f32,
     /// Up over the hull and down under it, about the track. Zero is level with
     /// it, positive lifts the camera, and a quarter turn is the plan view.
-    /// Clamped at [`ELEVATION_LIMIT`].
+    /// Wraps, so half a turn is the view from the far beam, inverted.
+    ///
+    /// The flight model's `PITCH_LIMIT` does stop short of straight up, and the
+    /// contrast is the point rather than an inconsistency: a *ship* pitched
+    /// past the vertical has no way back over the top, and a camera swung past
+    /// it has nothing to recover from.
     pub elevation: f32,
     /// The camera's own roll, about the axis it is looking down. Turns the
     /// picture — hull and sky together — rather than anything in it. Wraps.
@@ -194,19 +198,26 @@ impl Orbit {
         self == Self::LEVEL
     }
 
-    /// This orbit, held to the range the geometry allows.
+    /// This orbit, folded onto a single turn on all three axes, and sent home
+    /// outright if any of them is not a number.
     ///
-    /// Wrapped where it goes round and clamped where it stops, and sent home
-    /// outright if any of the three is not a number — `clamp` passes a NaN
-    /// straight out the other side, and a NaN angle here is a frame with no
-    /// sky in it at all rather than a frame drawn slightly wrong.
+    /// The NaN case is the reason this is not three calls to `clamp`: `clamp`
+    /// passes a NaN straight out the other side, and a NaN angle here is not a
+    /// frame drawn slightly wrong, it is a frame with no sky in it at all.
+    ///
+    /// Nothing is clamped any more, and nothing needs to be. The basis below is
+    /// orthonormal and right-handed at every angle on every axis — there is no
+    /// pole for it to go singular at, because the screen-right axis does not
+    /// depend on the elevation at all — so the only thing a limit ever bought
+    /// was a smaller set of numbers to think about, at the price of a camera
+    /// that stopped dead under a held key.
     pub fn held(self) -> Self {
         if !self.azimuth.is_finite() || !self.elevation.is_finite() || !self.roll.is_finite() {
             return Self::LEVEL;
         }
         Self {
             azimuth: turn_of(self.azimuth),
-            elevation: self.elevation.clamp(-ELEVATION_LIMIT, ELEVATION_LIMIT),
+            elevation: turn_of(self.elevation),
             roll: turn_of(self.roll),
         }
     }
@@ -365,6 +376,7 @@ impl ViewMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::FRAC_PI_2;
 
     #[test]
     fn the_cycle_comes_all_the_way_round() {
@@ -522,54 +534,57 @@ mod tests {
     }
 
     #[test]
-    fn the_camera_goes_all_the_way_round_and_the_poles_stop_it() {
-        // Two of the three angles wrap and the third clamps, and the reason is
-        // geometric rather than a taste for symmetry: a turn of azimuth reaches
-        // every direction the elevation could go past the pole to reach, so
-        // going over the top would only arrive at a picture already reachable,
-        // upside down.
-        let turn = |n: i32| {
-            Orbit {
+    fn the_camera_goes_all_the_way_round_on_every_axis() {
+        // All three angles wrap and none of them stops. The elevation used to
+        // clamp at the quarter turn, on the argument that a turn of azimuth
+        // already reaches everything past it — which is a fact about the
+        // reachable set and not about the control, and the control is what a
+        // hand on the key is using. Holding `W` now carries the camera over the
+        // top rather than parking it there.
+        for n in [-1000, -7, 0, 7, 1000] {
+            let o = Orbit {
                 azimuth: n as f32 * 0.7,
-                elevation: 0.0,
+                elevation: n as f32 * 0.5,
                 roll: n as f32 * -0.9,
             }
-            .held()
-        };
-        for n in [-1000, -7, 0, 7, 1000] {
-            let o = turn(n);
-            assert!(
-                o.azimuth.abs() <= PI && o.roll.abs() <= PI,
-                "a camera swung {n} steps kept {o:?}"
-            );
-        }
-        for e in [-9.0f32, -FRAC_PI_2, 0.0, FRAC_PI_2, 9.0] {
-            let held = Orbit {
-                azimuth: 0.0,
-                elevation: e,
-                roll: 0.0,
-            }
             .held();
-            assert!(
-                held.elevation.abs() <= ELEVATION_LIMIT,
-                "an elevation of {e} was believed"
-            );
+            for (name, angle) in [
+                ("azimuth", o.azimuth),
+                ("elevation", o.elevation),
+                ("roll", o.roll),
+            ] {
+                assert!(
+                    angle.abs() <= PI,
+                    "a camera swung {n} steps kept {angle} on the {name}"
+                );
+            }
         }
-        // The poles are reachable exactly, and the basis does not go singular
-        // there — which is what lets the limit sit on the quarter turn where
-        // the flight model's `PITCH_LIMIT` has to stop short of it.
-        for e in [-ELEVATION_LIMIT, ELEVATION_LIMIT] {
-            let b = Orbit {
-                azimuth: 0.0,
+
+        // Over the top is a *turn*, not a stop and not a jump: the basis is
+        // periodic in the elevation, so a quarter turn past the pole and the
+        // same angle short of it differ by a rotation rather than by a seam.
+        // Stated as the thing that would break — a discontinuity here would
+        // read as the sky tearing as the camera crossed the top.
+        for step in 0..24 {
+            let e = step as f32 * TAU / 24.0;
+            let here = Orbit {
+                azimuth: 0.3,
                 elevation: e,
                 roll: 0.0,
             }
+            .held()
             .basis();
-            for row in b {
-                let len = (row[0] * row[0] + row[1] * row[1] + row[2] * row[2]).sqrt();
+            let round = Orbit {
+                azimuth: 0.3,
+                elevation: e + TAU,
+                roll: 0.0,
+            }
+            .held()
+            .basis();
+            for (a, b) in here.iter().flatten().zip(round.iter().flatten()) {
                 assert!(
-                    (len - 1.0).abs() < 1e-5,
-                    "the basis went slack at {e}: {b:?}"
+                    (a - b).abs() < 1e-5,
+                    "a full turn of elevation did not come back: {here:?} against {round:?}"
                 );
             }
         }
@@ -591,8 +606,14 @@ mod tests {
         }
         // And every angle it does accept produces a basis worth projecting
         // through: orthonormal, right-handed, and finite.
+        //
+        // Swept past the quarter turn on the elevation as well, which is newly
+        // reachable and is the reason this matters more than it reads.
+        // `models::plates` decides which way a plate faces from the *sign* of
+        // its projected area, so a basis that went left-handed anywhere in here
+        // would invert every facing test in the hangar and go on looking lit.
         for az in [-3.0f32, -0.4, 0.0, 1.2, 3.0] {
-            for el in [-FRAC_PI_2, -0.3, 0.0, 1.1, FRAC_PI_2] {
+            for el in [-3.0f32, -FRAC_PI_2, -0.3, 0.0, 1.1, FRAC_PI_2, 2.4, 3.0] {
                 for roll in [-3.0f32, 0.0, 2.5] {
                     let b = Orbit {
                         azimuth: az,
@@ -649,7 +670,7 @@ mod tests {
         let cam = renderer.exterior_camera(&Ship::new(), 0.0);
         for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
             let want = ship_half_on_screen(cam.height, zoom);
-            for elevation in [-FRAC_PI_2, -0.9, 0.0, 0.4, FRAC_PI_2] {
+            for elevation in [-3.0, -FRAC_PI_2, -0.9, 0.0, 0.4, FRAC_PI_2, 2.2, 3.0] {
                 let orbit = Orbit {
                     azimuth: 0.0,
                     elevation,

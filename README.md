@@ -150,10 +150,11 @@ tell you.
 The camera rides with the ship rather than with the sky, and out here the stick
 flies the camera. `W` and `S` lift it up over the hull and drop it under, `A`
 and `D` walk it round toward the tail and the nose, and `Q` and `E` roll it.
-There are no stops: the swing goes all the way round in both directions and a
-quarter turn either way looks straight down on the ship or straight up at it.
-Dead ahead is the nose coming at you; dead astern is the drive coming at you.
-`R` puts the camera back on the beam.
+There are no stops on any of them. A quarter turn of `W` looks straight down on
+the ship, and holding it carries the camera on over the top, past an upside-down
+view from the far beam and back round to where it started — one continuous loop,
+the same as `A` and `D` make horizontally. Dead ahead is the nose coming at you;
+dead astern is the drive coming at you. `R` puts the camera back on the beam.
 
 Pointing the nose is something you do from behind it, so out here that is not
 what the stick is for. A turn of the *hull* moves nothing an eye can see — the

@@ -543,12 +543,22 @@ mod tests {
         );
         // Three angles, and the third is the camera's own roll.
         assert!(!args_for(&["--orbit", "0,0,30"]).orbit.is_level());
-        // Past the pole it is held rather than believed, and it wraps the two
-        // that go all the way round rather than refusing them.
+        // Wound round several times on every axis, it is folded rather than
+        // refused: all three angles go all the way round, so there is no
+        // number here to reject, only one to fold.
         let over = args_for(&["--orbit", "720,400,-900"]).orbit;
-        assert!(over.elevation <= crate::view::ELEVATION_LIMIT);
-        assert!(over.azimuth.abs() <= std::f32::consts::PI);
-        assert!(over.roll.abs() <= std::f32::consts::PI);
+        for angle in [over.azimuth, over.elevation, over.roll] {
+            assert!(
+                angle.abs() <= std::f32::consts::PI,
+                "an angle got away: {over:?}"
+            );
+        }
+        // And 400 degrees of elevation is 40, not a quarter turn: the fold has
+        // to keep the angle it was given rather than stop at the top.
+        assert!(
+            (over.elevation - 40.0f32.to_radians()).abs() < 1e-5,
+            "the elevation was clipped rather than folded: {over:?}"
+        );
 
         // And behind the ship, which is where half the range is and where a
         // leading minus sign would otherwise be read as a flag.

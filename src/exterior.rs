@@ -718,6 +718,11 @@ mod tests {
             (std::f32::consts::FRAC_PI_2, 0.0, 0.0),
             (2.6, 0.9, 1.4),
             (-0.8, -1.3, -2.2),
+            // Over the top, where the vertical fold and the wall recycle have
+            // never been: an elevation past the quarter turn was unreachable
+            // until the clamp came off.
+            (0.0, 2.4, 0.0),
+            (0.7, -2.9, 1.1),
         ] {
             let orbit = Orbit {
                 azimuth: az,

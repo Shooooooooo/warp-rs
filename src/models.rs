@@ -1186,14 +1186,19 @@ mod tests {
     }
 
     /// A spread of camera angles to fly a property through, in degrees: the
-    /// shot as it opens, both poles, head-on and dead astern, the view from
-    /// port, and two corners with all three angles off zero at once.
+    /// shot as it opens, both poles and past them, head-on and dead astern, the
+    /// view from port, and corners with all three angles off zero at once.
     ///
     /// The ends are the point. Head-on is where the bubble stops being
     /// elongated and the hull presents its cross-section instead of its
     /// profile; the poles are where the hull's beam swings into the frame's
     /// vertical; and the corners are the only place the outline is turned off
     /// the horizontal at all.
+    ///
+    /// Past the poles as well, since the elevation stopped being clamped. Those
+    /// angles are the same *views* as ones already here — an elevation past the
+    /// quarter turn is the far beam inverted — but they reach them by a
+    /// different path through `basis`, and it is the path that would break.
     fn orbits() -> Vec<Orbit> {
         vec![
             Orbit::LEVEL,
@@ -1202,10 +1207,14 @@ mod tests {
             orbit(180.0, 0.0, 0.0),
             orbit(0.0, 90.0, 0.0),
             orbit(0.0, -90.0, 0.0),
+            orbit(0.0, 135.0, 0.0),
+            orbit(0.0, -135.0, 0.0),
+            orbit(0.0, 180.0, 0.0),
             orbit(0.0, 0.0, 137.0),
             orbit(55.0, 35.0, 20.0),
             orbit(-140.0, -62.0, -100.0),
             orbit(35.0, 89.0, 45.0),
+            orbit(115.0, 160.0, -70.0),
         ]
     }
 
