@@ -870,6 +870,68 @@ mod tests {
     }
 
     #[test]
+    fn pitching_about_inside_does_not_leave_the_ship_crooked_outside() {
+        // Regression, and the path the bug was found on: fly the nose around
+        // with `W`, press `C`, and the hull sat permanently nose-high while the
+        // band of sky streamed past it dead level. The profile was posed from
+        // `ship.pitch` — the accumulated attitude the panel reads out — and out
+        // there nothing is measured against it, because the ship flies where
+        // its nose points and the sky streams along that track.
+        //
+        // Stated as the property that was broken: once the stick has been let
+        // go and the rates have decayed, a flight that pitched about draws the
+        // same outside frame as one that never touched it. Compared on the
+        // pixels rather than the cells, because the *panel* is meant to differ
+        // — the compass has genuinely moved, and it should say so.
+        let args = args_for(&["--seed", "6", "--stars", "300", "--size", "80x24"]);
+        let frames = |pitched: bool| {
+            let mut flight = Flight::new(&args, 80, 24);
+            let mut paused = false;
+            let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+            for _ in 0..120 {
+                if pitched {
+                    handle_key(press(KeyCode::Char('w')), &mut flight, &args, &mut paused);
+                }
+                flight.advance(1.0 / 60.0);
+            }
+            // Ten seconds for the impulse to decay to nothing, keeping whatever
+            // attitude it flew the ship to.
+            for _ in 0..600 {
+                flight.advance(1.0 / 60.0);
+            }
+            if pitched {
+                assert!(
+                    flight.ship.pitch.abs() > 0.5,
+                    "the stick never moved the ship: {}",
+                    flight.ship.pitch
+                );
+            }
+
+            handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+            assert_eq!(flight.view(), ViewMode::Side);
+            let mut pixels = Vec::new();
+            for _ in 0..30 {
+                flight.advance(1.0 / 60.0);
+                flight.draw(60.0, false, true);
+                pixels.extend_from_slice(flight.renderer.pixels());
+            }
+            pixels
+        };
+
+        let (crooked, straight) = (frames(true), frames(false));
+        let differing = crooked
+            .iter()
+            .zip(&straight)
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "{differing} subpixels differ: the ship was left flying crooked"
+        );
+    }
+
+    #[test]
     fn the_outside_sky_is_only_built_when_it_is_asked_for() {
         // A cockpit-only run must pay nothing for the view it never opens —
         // not the pool, and not a draw from a generator that would have to come
