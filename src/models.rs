@@ -28,7 +28,7 @@
 //! is what sorts a nacelle against the engineering hull behind it.
 
 use crate::canvas::Canvas;
-use crate::ship::{Ship, MAX_YAW_RATE};
+use crate::ship::{Ship, MAX_PITCH_RATE, MAX_YAW_RATE};
 use crate::starfield::Camera;
 use crate::view::SHIP_DISTANCE;
 use std::sync::OnceLock;
@@ -69,10 +69,12 @@ const WARP_FLAME: [f32; 3] = [0.62, 0.80, 1.00];
 /// Lean the hull takes from a turn, in radians at full deflection. The camera
 /// rides with the ship, so this is the only thing that says a turn is happening.
 const YAW_LEAN: f32 = 0.35;
-/// How much of the ship's own pitch the profile shows, and the most it shows.
-/// Full deflection is 76 degrees, which side-on reads as flying sideways.
-const PITCH_LEAN: f32 = 0.40;
-const PITCH_LIMIT: f32 = 0.55;
+/// Lean the hull takes from a pull on the stick, in radians at full deflection.
+/// A little under the yaw's, because the two are not equally visible from here:
+/// pitch turns the hull in the plane of the screen, where every degree of it
+/// shows, while a yaw mostly swings the nose toward the camera and needs the
+/// wider angle to read as anything at all.
+const PITCH_LEAN: f32 = 0.30;
 
 /// A glowing engine bell.
 #[derive(Debug, Clone, Copy)]
@@ -520,16 +522,25 @@ fn to_camera(v: [f32; 3]) -> [f32; 3] {
 
 /// The attitude the hull is holding, as roll, pitch and yaw in radians.
 ///
-/// Roll is taken as flown: the camera does not roll with the ship, so `Q` and
-/// `E` read as a barrel roll against a level sky, which is the best thing in
-/// this view. Pitch is scaled down and capped — the flight model allows 76
-/// degrees, and a profile at 76 degrees reads as a ship flying sideways — and
-/// yaw is a transient lean out of the turn rate rather than an accumulated
-/// heading, because a camera bolted to the ship's beam would otherwise end up
-/// looking at its transom.
+/// Roll is taken as flown: it turns the ship about the very axis it is flying
+/// along, so it moves the profile without moving the nose, and the camera does
+/// not roll with it — `Q` and `E` read as a barrel roll against a level sky,
+/// which is the best thing in this view.
+///
+/// Pitch and yaw are leans out of the *rates*, and deliberately not out of the
+/// accumulated attitude the panel reads out. Out here the direction of travel
+/// is the one thing that cannot move: the ship flies where its nose points, the
+/// band of sky streams along that track, and there is no horizon for an
+/// accumulated angle to be measured against — `heading` and `pitch` are a
+/// compass, not a bearing off some fixed frame. Posing the hull from one tips
+/// it off the track it is visibly flying along and then leaves it there, which
+/// is what pitching about in the cockpit and stepping outside used to look
+/// like: nose permanently high, stars still streaming dead level past it. A
+/// rate, being a transient, says the pilot is on the stick *now* and hands the
+/// ship back to its track the moment it is let go.
 fn attitude(ship: &Ship) -> (f32, f32, f32) {
     let roll = ship.roll + ship.bank;
-    let pitch = (ship.pitch * PITCH_LEAN).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    let pitch = (ship.pitch_rate / MAX_PITCH_RATE).clamp(-1.0, 1.0) * PITCH_LEAN;
     let yaw = (ship.yaw_rate / MAX_YAW_RATE).clamp(-1.0, 1.0) * YAW_LEAN;
     (roll, pitch, yaw)
 }
@@ -858,7 +869,11 @@ mod tests {
             for step in 0..12 {
                 let mut ship = Ship::new();
                 ship.roll = step as f32 / 12.0 * std::f32::consts::TAU - std::f32::consts::PI;
-                ship.pitch = if step % 2 == 0 { 1.2 } else { -1.2 };
+                ship.pitch_rate = if step % 2 == 0 {
+                    MAX_PITCH_RATE
+                } else {
+                    -MAX_PITCH_RATE
+                };
                 ship.yaw_rate = if step % 3 == 0 { MAX_YAW_RATE } else { 0.0 };
                 let (lit, _) = footprint(model, &ship, 120, 36);
                 assert!(
@@ -1071,7 +1086,7 @@ mod tests {
 
     #[test]
     fn the_hull_leans_with_the_stick_but_never_loses_its_profile() {
-        // Roll is taken as flown, pitch is scaled down, and yaw is a transient.
+        // Roll is taken as flown; pitch and yaw are transients off the rates.
         // Between them, no input can turn the ship to face the camera.
         let mut ship = Ship::new();
         ship.roll = 2.0;
@@ -1082,16 +1097,28 @@ mod tests {
             "roll is not flown as flown: {roll}"
         );
 
-        for pitch in [-1.4f32, -0.3, 0.0, 0.9, 1.4] {
-            for rate in [-MAX_YAW_RATE, 0.0, MAX_YAW_RATE] {
+        // Past full deflection on both axes, which the impulses cannot reach
+        // but a clamp that was quietly dropped would let through.
+        for pitch in [-2.0f32, -MAX_PITCH_RATE, 0.0, MAX_PITCH_RATE, 2.0] {
+            for yaw in [-2.0f32, -MAX_YAW_RATE, 0.0, MAX_YAW_RATE, 2.0] {
                 let mut ship = Ship::new();
-                ship.pitch = pitch;
-                ship.yaw_rate = rate;
+                ship.pitch_rate = pitch;
+                ship.yaw_rate = yaw;
                 let (_, p, y) = attitude(&ship);
-                assert!(p.abs() <= PITCH_LIMIT + 1e-6, "pitch ran away to {p}");
+                assert!(p.abs() <= PITCH_LEAN + 1e-6, "pitch ran away to {p}");
                 assert!(y.abs() <= YAW_LEAN + 1e-6, "yaw ran away to {y}");
             }
         }
+
+        // And the stick has to actually do something, or the clamps above are
+        // satisfied by a hull that never leans at all.
+        let mut ship = Ship::new();
+        ship.pitch_rate = MAX_PITCH_RATE;
+        let (_, p, _) = attitude(&ship);
+        assert!(
+            (p - PITCH_LEAN).abs() < 1e-6,
+            "full deflection should lean the hull the whole way: {p}"
+        );
     }
 
     #[test]
@@ -1105,7 +1132,7 @@ mod tests {
         assert!((nose.1 - tail.1).abs() < 0.5, "level flight is not level");
 
         let mut down = Ship::new();
-        down.pitch = 1.0; // positive is nose-down, per the flight model
+        down.pitch_rate = MAX_PITCH_RATE; // positive is nose-down, per the flight model
         let pose = attitude(&down);
         let nose = cam.project(place([0.0, 0.0, 1.0], pose)).unwrap();
         let tail = cam.project(place([0.0, 0.0, -1.0], pose)).unwrap();
@@ -1127,5 +1154,48 @@ mod tests {
             top[1].abs() < 0.2,
             "and it should no longer be above anything: {top:?}"
         );
+    }
+
+    #[test]
+    fn a_ship_flown_off_the_stick_still_points_where_it_is_going() {
+        // Regression: the profile was posed from `ship.pitch`, the accumulated
+        // attitude the panel reads out. Nothing out here is measured against
+        // that — the ship flies where its nose points and the band of sky
+        // streams along that track — so a few seconds of `W` in the cockpit
+        // left the hull nose-high for the rest of the flight, against stars
+        // still streaming dead level past it. The lean comes off the rate now,
+        // so the nose goes back on the track the moment the stick is let go.
+        let mut ship = Ship::new();
+        for _ in 0..120 {
+            ship.nudge_pitch(-1.0);
+            ship.update(1.0 / 60.0);
+        }
+        for _ in 0..600 {
+            ship.update(1.0 / 60.0);
+        }
+        assert!(
+            ship.pitch.abs() > 0.5,
+            "the stick never moved the ship, so there is nothing to be wrong: {}",
+            ship.pitch
+        );
+
+        let (_, cam) = cam(120, 36, &ship);
+        let pose = attitude(&ship);
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose)).unwrap();
+        let tail = cam.project(place([0.0, 0.0, -1.0], pose)).unwrap();
+        assert!(nose.0 > tail.0, "the ship is flying backwards");
+        assert!(
+            (nose.1 - tail.1).abs() < 0.5,
+            "a ship that pitched about is still flying {:.1} subpixels crooked",
+            nose.1 - tail.1
+        );
+
+        // While the stick is *being* worked it does lean, or the fix above is
+        // just a hull that ignores the pilot.
+        ship.nudge_pitch(-1.0);
+        let pose = attitude(&ship);
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose)).unwrap();
+        let tail = cam.project(place([0.0, 0.0, -1.0], pose)).unwrap();
+        assert!(nose.1 < tail.1 - 1.0, "pulling up did not raise the nose");
     }
 }

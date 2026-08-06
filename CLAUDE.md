@@ -339,6 +339,20 @@ they are the only place the *running program* writes the controls down — and s
 does `README.md`, whose `Flying` table annotates pitch and yaw "Cockpit only"
 and says it again in prose further down.
 
+**The hull points along the track, and `models::attitude` is where that is
+kept.** Out there the direction of travel is the one thing that cannot move:
+the ship flies where its nose points, `ExteriorField` streams the sky along
+that track and takes no steering argument at all, and there is no horizon for
+an angle to be measured against. So `heading` and `pitch` are a *compass* — an
+instrument reading, and the panel's business — not a bearing off some fixed
+frame, and posing the hull from either tips it off the track and leaves it
+there. That was a real bug: a few seconds of `W` inside, then `C`, and the ship
+sat nose-high for the rest of the flight against stars streaming dead level.
+Pitch and yaw are leans off the *rates* for that reason, so they say the pilot
+is on the stick now and hand the ship back to its track when it is let go. Roll
+is the exception and is taken as flown, because it turns the ship about the
+very axis it is flying along and so moves the profile without moving the nose.
+
 **`--color ascii` emits no escape codes beyond cursor moves, and no byte
 outside printable ASCII.** Not even a reset — on a `TERM=dumb` terminal even
 `\x1b[39m` arrives as visible garbage, and there is a regression test for it.
