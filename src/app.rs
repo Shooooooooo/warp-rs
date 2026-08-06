@@ -512,12 +512,17 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     Ok(())
 }
 
-/// Render frames to stdout with a fixed timestep. No raw mode, no alternate
-/// screen — the same seed always produces the same bytes.
-fn run_headless(args: &Args) -> io::Result<()> {
+/// Fly `args.frames` frames on a fixed timestep, writing each one out as a
+/// self-contained block of text. All of `--headless` except where it goes.
+///
+/// Public, and split out from the loop below, because the reference frames in
+/// `tests/golden` are of exactly these bytes. Until this was reachable the only
+/// thing in the tree that could produce them was the binary, so the check that
+/// they had not moved lived in CI alone — and a green `cargo test` said nothing
+/// at all about whether an edit had repainted the whole sky.
+pub fn render_headless(args: &Args, out: &mut impl Write) -> io::Result<()> {
     let (cols, rows) = resolved_size(args);
     let mut flight = Flight::new(args, cols as usize, rows as usize);
-    let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
     let dt = 1.0 / args.fps as f32;
 
     for frame in 0..args.frames {
@@ -528,8 +533,16 @@ fn run_headless(args: &Args) -> io::Result<()> {
         }
         flight.advance(dt);
         flight.draw(args.fps as f32, false, true);
-        flight.present_plain(&mut out)?;
+        flight.present_plain(out)?;
     }
+    Ok(())
+}
+
+/// Render frames to stdout with a fixed timestep. No raw mode, no alternate
+/// screen — the same seed always produces the same bytes.
+fn run_headless(args: &Args) -> io::Result<()> {
+    let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
+    render_headless(args, &mut out)?;
     out.flush()
 }
 
