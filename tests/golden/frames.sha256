@@ -1,4 +1,4 @@
-# Reference output for the headless renderer, checked by CI.
+# Reference output for the headless renderer.
 #
 # `--headless` runs on a fixed timestep with no terminal control, so a fixed
 # seed produces the same bytes every time. Checking those bytes against a
@@ -6,14 +6,44 @@
 # run-to-run comparison beside it only says a flight is repeatable, and a
 # change that quietly alters every frame is repeatable too.
 #
+# Checked two ways, from one file. `cargo test --test golden` reproduces the
+# bytes in process, so a renderer that has drifted fails on the machine that
+# drifted it; the `headless` CI job produces the same files from a release
+# binary and runs `sha256sum -c` over this, which also proves the two agree.
+#
+# Four flights, sharing
+#
+#     --headless --frames 120 --seed 1 --size 120x36
+#
+# and differing in what they ask the renderer to draw:
+#
+#     truecolor.txt   --demo --color truecolor
+#     ascii.txt       --demo --color ascii
+#     warp.txt        --engage --throttle 1.0 --color truecolor
+#     side.txt        --engage --throttle 1.0 --view side --color truecolor
+#
+# The last two are here because the first two turned out to cover very little.
+# `--demo` spends its opening six seconds easing the throttle up, and 120 frames
+# at 60 fps is two of them — so the pinned sky was sublight throughout, peaking
+# at a quarter of light speed with the drive cold. Every warp path in the
+# renderer sat outside it: the streak ramp, the tunnel glare, the flash, the
+# Doppler shift, and the whole view from outside with it — the star band, the
+# lens, the arcs and the hulls. A change to any of those could repaint the sky
+# and this file would not have noticed.
+#
 # Regenerate deliberately, with the diff in hand to say what moved:
 #
 #     cargo build --release
-#     flags="--headless --frames 120 --seed 1 --size 120x36 --demo"
-#     ./target/release/warp $flags --color truecolor > truecolor.txt
-#     ./target/release/warp $flags --color ascii     > ascii.txt
-#     sha256sum truecolor.txt ascii.txt > tests/golden/frames.sha256
+#     common="--headless --frames 120 --seed 1 --size 120x36"
+#     ./target/release/warp $common --demo --color truecolor > truecolor.txt
+#     ./target/release/warp $common --demo --color ascii     > ascii.txt
+#     ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
+#     ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
+#     sha256sum truecolor.txt ascii.txt warp.txt side.txt > tests/golden/frames.sha256
 #     # and put this comment block back
+#
+# The case list lives here, in `tests/golden.rs` and in the `headless` CI job.
+# Adding a flight means adding it to all three.
 #
 # The hashes hold across build profiles and rustc versions — checked against
 # 1.85 and 1.94, debug and release — but not across platforms: sin, cos, exp
@@ -23,3 +53,5 @@
 # regenerated once.
 11657665e6209ff99110aee459b41f8a28049b25c094e05e331a77c07833486c  truecolor.txt
 bc4cab10a85c757b06247749fde5fd1d4718e830b9d3d011d703117599cad177  ascii.txt
+f6b85468b61a4a55ed5128aa5c318f54e3fc85017196ca1c6b7413b9359cde75  warp.txt
+2171765da72a1790ede21e5c6e9f30480afdbaece8de2723cab75d7be9b0e7d8  side.txt

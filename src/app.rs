@@ -26,6 +26,16 @@ use std::time::{Duration, Instant};
 const SIM_STEP: f32 = 1.0 / 120.0;
 /// A stalled process must not fast-forward the universe on the next frame.
 const MAX_FRAME_DT: f32 = 0.25;
+/// The widest step [`Flight::advance`] will take, whatever it is handed.
+///
+/// Deliberately looser than `MAX_FRAME_DT`, which is the interactive loop's own
+/// limit and is tight because a frame on a real terminal is never a quarter of a
+/// second. This one sits underneath *every* caller, so it has to leave the
+/// legitimate ones alone: headless and snapshot step at `1.0 / --fps` and
+/// `--fps` is floored at 1, so a second is the longest step anything in the tree
+/// asks for. Past that it is not a frame, and the fixed-step loop below would
+/// grind through a hundred and twenty simulation steps for every second of it.
+const MAX_STEP_DT: f32 = 1.0;
 /// Stars per subpixel when the count is chosen automatically.
 const AUTO_DENSITY: f32 = 0.05;
 const AUTO_MIN_STARS: usize = 300;
@@ -174,6 +184,19 @@ impl Flight {
     /// update, so a field coming back after a spell out of view draws a proper
     /// short streak on its first frame rather than one long scratch.
     pub fn advance(&mut self, dt: f32) {
+        // Held to something a frame could plausibly be *here*, rather than at
+        // the one call site that used to do it. This is public, and `lib.rs`
+        // offers a flight to any program that cares to fly one, so the guard
+        // belongs with the loop it protects. Both ways an unchecked step goes
+        // wrong are quiet ones: an enormous `dt` is unbounded work, and a NaN
+        // one is worse than that — it poisons the accumulator, `NaN >=
+        // SIM_STEP` is never true again, and the flight goes on drawing frames
+        // for the rest of its life without simulating another one.
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, MAX_STEP_DT)
+        } else {
+            0.0
+        };
         self.time += dt as f64;
         self.accumulator += dt;
         while self.accumulator >= SIM_STEP {
@@ -489,12 +512,17 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     Ok(())
 }
 
-/// Render frames to stdout with a fixed timestep. No raw mode, no alternate
-/// screen — the same seed always produces the same bytes.
-fn run_headless(args: &Args) -> io::Result<()> {
+/// Fly `args.frames` frames on a fixed timestep, writing each one out as a
+/// self-contained block of text. All of `--headless` except where it goes.
+///
+/// Public, and split out from the loop below, because the reference frames in
+/// `tests/golden` are of exactly these bytes. Until this was reachable the only
+/// thing in the tree that could produce them was the binary, so the check that
+/// they had not moved lived in CI alone — and a green `cargo test` said nothing
+/// at all about whether an edit had repainted the whole sky.
+pub fn render_headless(args: &Args, out: &mut impl Write) -> io::Result<()> {
     let (cols, rows) = resolved_size(args);
     let mut flight = Flight::new(args, cols as usize, rows as usize);
-    let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
     let dt = 1.0 / args.fps as f32;
 
     for frame in 0..args.frames {
@@ -505,8 +533,16 @@ fn run_headless(args: &Args) -> io::Result<()> {
         }
         flight.advance(dt);
         flight.draw(args.fps as f32, false, true);
-        flight.present_plain(&mut out)?;
+        flight.present_plain(out)?;
     }
+    Ok(())
+}
+
+/// Render frames to stdout with a fixed timestep. No raw mode, no alternate
+/// screen — the same seed always produces the same bytes.
+fn run_headless(args: &Args) -> io::Result<()> {
+    let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
+    render_headless(args, &mut out)?;
     out.flush()
 }
 
@@ -573,6 +609,67 @@ mod tests {
                 "the shake froze at {start} s ({days:.1} days)"
             );
         }
+    }
+
+    #[test]
+    fn a_step_that_is_not_a_step_does_not_end_the_flight() {
+        // Regression: `advance` is public and took whatever it was given. A NaN
+        // `dt` poisoned the accumulator — `NaN >= SIM_STEP` is false forever —
+        // so the flight went on drawing and never simulated another step. The
+        // interactive loop clamps before it calls in, which is the only reason
+        // the binary never met this; nothing else in the tree was covered.
+        let args = args_for(&["--seed", "3", "--stars", "300", "--size", "60x20"]);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, -0.0] {
+            let mut flight = Flight::new(&args, 60, 20);
+            flight.ship.throttle = 1.0;
+            for _ in 0..30 {
+                flight.advance(1.0 / 60.0);
+            }
+
+            flight.advance(bad);
+            assert!(
+                flight.time.is_finite(),
+                "{bad} made the clock {}",
+                flight.time
+            );
+            assert!(
+                flight.accumulator.is_finite(),
+                "{bad} poisoned the accumulator"
+            );
+
+            // And the frames after it still move the ship and the clock.
+            let (clock, speed) = (flight.time, flight.ship.speed);
+            for _ in 0..60 {
+                flight.advance(1.0 / 60.0);
+            }
+            assert!(flight.time > clock, "the clock stopped after {bad}");
+            assert!(flight.ship.speed > speed, "the flight froze after {bad}");
+        }
+    }
+
+    #[test]
+    fn an_enormous_step_is_bounded_work_rather_than_a_hang() {
+        // The simulation steps at 1/120 s, so an unclamped `advance` grinds
+        // through a hundred and twenty of them for every second handed to it:
+        // `advance(10_000.0)` was five seconds of work inside a frame that had
+        // sixteen milliseconds. Asserted on the clock rather than on a
+        // stopwatch, which is the same property without the flake.
+        let args = args_for(&["--stars", "100", "--size", "40x12"]);
+        let mut flight = Flight::new(&args, 40, 12);
+        for huge in [1.0e3f32, 1.0e9, f32::MAX] {
+            let before = flight.time;
+            flight.advance(huge);
+            let stepped = flight.time - before;
+            assert!(
+                stepped <= MAX_STEP_DT as f64,
+                "{huge} advanced the clock by {stepped}"
+            );
+        }
+        // A step inside the ceiling is still taken in full, or the clamp has
+        // quietly become a cap on the frame rate.
+        let before = flight.time;
+        flight.advance(MAX_STEP_DT);
+        assert!((flight.time - before - MAX_STEP_DT as f64).abs() < 1e-6);
     }
 
     #[test]
