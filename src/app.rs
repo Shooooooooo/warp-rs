@@ -40,7 +40,7 @@ const MAX_FRAME_DT: f32 = 0.25;
 /// of it.
 const MAX_STEP_DT: f32 = 1.0;
 /// Stars per subpixel when the count is chosen automatically.
-const AUTO_DENSITY: f32 = 0.05;
+const AUTO_DENSITY: f32 = 0.02;
 const AUTO_MIN_STARS: usize = 300;
 const AUTO_MAX_STARS: usize = 20_000;
 /// Mixed into `--seed` for the outside view's sky, so the two fields are
