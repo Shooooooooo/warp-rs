@@ -51,7 +51,7 @@
 # turns a one-ulp difference into a different sky. So this is checked on
 # ubuntu-latest only, and a runner image moving to a new glibc may need it
 # regenerated once.
-11657665e6209ff99110aee459b41f8a28049b25c094e05e331a77c07833486c  truecolor.txt
-bc4cab10a85c757b06247749fde5fd1d4718e830b9d3d011d703117599cad177  ascii.txt
-f6b85468b61a4a55ed5128aa5c318f54e3fc85017196ca1c6b7413b9359cde75  warp.txt
-62257eb841a6f971669475fc4d0fc54f68aecdf1940f1550bab88d537a192c5c  side.txt
+dbd77f751ca09625f68f43d092adb3ade0bb2a4751aeb8891e4f7afcf7e98046  truecolor.txt
+38ab01bf301f47a2200644ff65a54819981f866fd63efb6da8a818b5c538d118  ascii.txt
+b1bf6b01e246a956645090d9ec8eeeaa67af98bf69d6c638a55e493cc62fb6a4  warp.txt
+b6fdb2081e419f504338d32530d69d00d531e5f6990d42560b92078d6259c518  side.txt
