@@ -260,6 +260,12 @@ pub fn models() -> &'static [ShipModel] {
 }
 
 /// The one flown when nothing has said otherwise: the first in the list.
+///
+/// It does not *supply* that default — `--ship` carries the name as a string,
+/// because clap wants one and an index would be a poor thing to type. This is
+/// what the picker opens on, and
+/// `the_view_and_the_ship_can_be_chosen_at_the_command_line` in `cli.rs` is
+/// what holds the two of them together.
 pub const DEFAULT_MODEL: usize = 0;
 
 /// Look a ship up by the name `--ship` and the picker use.
@@ -597,9 +603,13 @@ fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32)) -> Vec<Plate> 
     let mut plates: Vec<Plate> = Vec::with_capacity(model.faces.len());
     for face in &model.faces {
         // A plate with a vertex behind the near plane cannot be measured, let
-        // alone drawn. Nothing should reach that — the hull sits four units
-        // clear of it — but `project` answers with an `Option`, and a rolled
-        // fin is exactly the thing that would find out.
+        // alone drawn. Nothing should reach that — the whole hull sits well
+        // clear of it, at `SHIP_DISTANCE` less at most `HULL_REACH` against a
+        // near plane of `starfield::Z_NEAR` — but `project` answers with an
+        // `Option`, and a rolled fin is exactly the thing that would find out.
+        // Stated as the constants rather than as the gap between them, which
+        // is what it was: that gap has moved every time `SHIP_SCREEN_FRAC`
+        // did, and the number written here had stopped following it.
         let Some(points) = face
             .iter()
             .map(|i| screen[*i as usize])

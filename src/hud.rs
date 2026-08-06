@@ -110,8 +110,15 @@ impl Glyphs {
     /// Chosen against [`crate::term`]'s brightness ramp as much as against the
     /// alphabet: in this mode the panel has no colour to set it apart from the
     /// starfield, so a glyph the ramp also draws — `#`, `.`, `+`, `*` — reads
-    /// as a bright star rather than as an instrument. The bar and the reticle,
-    /// which are shapes rather than words, avoid the ramp entirely.
+    /// as a bright star rather than as an instrument.
+    ///
+    /// That rule binds the *shapes* and not the words, and only the shapes:
+    /// the bar, the rules and the reticle keep out of the ramp entirely, and
+    /// `the_ascii_shapes_stay_clear_of_the_brightness_ramp` is what holds them
+    /// there. The frame corners and the degree sign are `+` and `*`, both of
+    /// which are in it — a corner is read from the box it closes and a degree
+    /// sign from the number in front of it, so neither is mistakable for a
+    /// star the way a bar of `#` against a sky of `#` would be.
     const ASCII: Glyphs = Glyphs {
         frame_top: '+',
         frame_bottom: '+',
@@ -808,8 +815,12 @@ mod tests {
 
     #[test]
     fn the_hints_shed_detail_rather_than_vanishing() {
-        // The full hint needs 63 columns. Below that a shorter one still has
-        // to name the keys that matter, down to the panel's own minimum.
+        // Each tier needs its own width plus the two columns that keep it off
+        // the right-hand edge, so the widest fits only a wide terminal and
+        // most of this range gets a shorter one. Whichever is chosen still has
+        // to name the keys that matter, down to the panel's own minimum. Said
+        // as the rule rather than as a column count, which is what it was and
+        // had outlived the hints it was counting by nearly thirty columns.
         let ship = Ship::new();
         let rows = 24;
         for cols in MIN_COLS..=120 {

@@ -381,8 +381,9 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char('q' | 'Q') => flight.ship.nudge_roll(-1.0),
         KeyCode::Char('e' | 'E') => flight.ship.nudge_roll(1.0),
 
-        // The throttle is the arrows, which is where it has always been: only
-        // its letters went to the stick.
+        // The throttle is the up and down arrows, which is where it has
+        // always been: only its letters went to the stick. The other two
+        // arrows are yaw, four lines above.
         KeyCode::Up => flight.ship.nudge_throttle(1.0),
         KeyCode::Down => flight.ship.nudge_throttle(-1.0),
 

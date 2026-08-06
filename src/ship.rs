@@ -1,10 +1,15 @@
 //! Flight model: throttle, the warp drive, steering, and the transient effects
 //! that make a change of speed feel like something actually happened.
 //!
-//! Terminals report key *presses*, not releases, so every control here is
-//! impulse-driven: a keypress nudges a value and the value decays back on its
-//! own. Holding a key down produces auto-repeat, which reads as sustained
-//! input without needing a key-up event.
+//! Terminals report key *presses*, and all but a few report nothing when a key
+//! comes back up, so every control here is impulse-driven: a keypress nudges a
+//! value and the value decays back on its own. Holding a key down produces
+//! auto-repeat, which reads as sustained input without needing a key-up event.
+//!
+//! "All but a few" rather than "none": terminals speaking the kitty protocol do
+//! send releases, and `app::handle_key` discards them, because acting on one
+//! counts a single press twice. Which is the same design either way — a model
+//! that needs a key-up would be wrong on every other terminal.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
