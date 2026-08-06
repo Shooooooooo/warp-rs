@@ -33,7 +33,7 @@ pub enum ViewMode {
     /// the one everything that is not interactive still flies in.
     #[default]
     Cockpit,
-    /// Off the ship's port beam: the hull in profile with the sky streaming
+    /// Off the ship's starboard beam: the hull in profile with the sky streaming
     /// astern, and — once the drive is lit — bending around it.
     Side,
 }

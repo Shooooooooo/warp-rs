@@ -361,14 +361,15 @@ to carry two pixels, `pixel_pair` averages both subpixels into one ramp glyph.
 `MIN_ROWS` (12), `draw_compact` runs instead and drops the reticle, the nav
 panel and the hints rather than squeezing them.
 
-### A known inconsistency
+### Which beam the camera is on
 
-The comments disagree about which beam the outside camera sits on.
-`src/models.rs:515` and the README say **starboard**, and the code agrees —
-`to_camera` is `(x, y, z) → (z, y, −x)`, which puts the starboard side toward
-the camera. `src/render.rs:99` and `src/view.rs:36` say "port". The README also
-still calls the picker a list of "five hulls" when there are six. None of this
-affects behaviour; just do not take the wrong one as your source of truth.
+**Starboard**, and the arithmetic is the thing to check rather than the prose:
+`to_camera` is `(x, y, z) → (z, y, −x)`, a quarter turn about the ship's own
+down axis that puts the nose to screen right and the starboard side toward the
+camera. Determinant one, so face winding survives it — the mirror image
+`(z, y, x)` looks almost the same and inverts every facing test. Two doc
+comments said "port" for a while and neither changed what was drawn, so if you
+find prose and geometry disagreeing again, `to_camera` is the answer.
 
 ## Conventions
 

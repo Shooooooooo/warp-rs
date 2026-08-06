@@ -96,8 +96,8 @@ impl Renderer {
         cam
     }
 
-    /// Build the camera for the view from outside: parked off the ship's port
-    /// beam, looking across its track.
+    /// Build the camera for the view from outside: parked off the ship's
+    /// starboard beam, looking across its track.
     ///
     /// The shake is spelled out again rather than shared with [`Self::camera`].
     /// That function's arithmetic is pinned byte for byte by the reference
