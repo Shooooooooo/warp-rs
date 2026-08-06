@@ -119,7 +119,7 @@ already, and moving through the list flies each ship rather than naming it:
 | `beetle` | Gunship. Built round its own armour. |
 | `trident` | Line warship. Three drives, one spine. |
 
-The default is a wireframe bow to the ship every warp drive since has been drawn
+The default is a bow to the ship every warp drive since has been drawn
 against — saucer, neck, engineering hull, two nacelles on swept pylons. It is
 built as a *profile*, because that is the only view this camera gives, and the
 profile is three masses stacked in a particular order: saucer highest and
@@ -127,11 +127,15 @@ furthest forward, nacelles below and well aft, engineering hull slung underneath
 Get the stacking wrong and every line is still in the right place while the ship
 stops being that ship.
 
-Each hull is a closed solid of a few dozen plates, drawn as a wireframe with the
-far side culled, so the silhouette reads rather than the cage. There is no depth
-buffer anywhere: the star band's near wall sits well beyond the ship, so nothing
-can pass in front of it, and a plate pointing away from the camera is simply not
-drawn.
+Each hull is a closed solid of a few dozen plates, drawn opaque: the plates
+cover the sky rather than adding to it, so a star never shines through a
+starship. There is still no depth buffer and still no need of one. The star band
+starts well beyond the hull, so nothing can come between it and the camera; the
+far side of each plate is dropped on the sign of its projected area; and what is
+left is painted far to near, which is what settles a nacelle passing in front of
+an engineering hull. One lamp and a Lambert term do the shading — at a
+resolution where a plate is a handful of subpixels, anything subtler is spent
+where nobody can see it.
 
 ## As a tmux screensaver
 

@@ -16,10 +16,16 @@
 //!
 //! The second is that every model is *closed*, with no zero-thickness plates.
 //! That is what makes the sign of a face's projected area a complete answer to
-//! which way it points, so the far side of a hull can be culled without a depth
-//! buffer — and it is why a fin here is a thin box rather than a single quad. A
-//! quad has no outside, so it would wink out of existence every time the ship
-//! rolled it edge-on.
+//! which way it points, and it is why a fin here is a thin box rather than a
+//! single quad. A quad has no outside, so it would wink out of existence every
+//! time the ship rolled it edge-on.
+//!
+//! Hulls are drawn opaque, which means the plates cover what is behind them
+//! instead of adding to it — the one place in the renderer where light is not
+//! accumulated. There is still no depth buffer. Three things stand in for one:
+//! the star band starts well beyond the ship, so nothing can be in front of it;
+//! plates facing away are culled; and the rest are painted far to near, which
+//! is what sorts a nacelle against the engineering hull behind it.
 
 use crate::canvas::Canvas;
 use crate::ship::{Ship, MAX_YAW_RATE};
@@ -27,13 +33,35 @@ use crate::starfield::Camera;
 use crate::view::SHIP_DISTANCE;
 use std::sync::OnceLock;
 
-/// How hard the stroked edges are drawn. Restrained on purpose: the canvas is
-/// additive and a hull is a great many overlapping lines, so ink that looks
-/// right for one edge saturates every crease into a white blob.
-const EDGE_INK: f32 = 0.42;
-/// How much nearer plates outshine further ones. Small on purpose: it is there
-/// to say which side of the hull is which, not to light the ship.
-const DEPTH_INK: f32 = 1.5;
+/// How much nearer plates outshine further ones.
+///
+/// This carries more weight than it looks like it should. One lamp says which
+/// *way* a plate faces, and says nothing at all about two plates that face the
+/// same way — a slung container against the flank it is slung from, both of
+/// them flat to the camera — so without depth in the shading a boxy hull comes
+/// out as one undifferentiated mass. Range is the only thing left that tells
+/// them apart.
+const DEPTH_SHADE: f32 = 1.2;
+
+/// The direction of the light *from* the hull, in the camera's space: over the
+/// viewer's shoulder and a good way above. Unit length; `x` is to screen right,
+/// `y` is down, `z` is away from the eye.
+///
+/// One lamp and a Lambert term is the whole lighting model. At this size a
+/// plate is a handful of subpixels, and anything subtler than "which way is
+/// this pointing" is spent where nobody can see it.
+const LIGHT: [f32; 3] = [0.26, -0.90, -0.35];
+/// What a plate facing away from the lamp still shows. Not zero: unlit is not
+/// the same as absent, and a hull against a black sky needs its dark side to
+/// still read as hull.
+const AMBIENT: f32 = 0.13;
+const DIFFUSE: f32 = 0.95;
+/// How much the warp bubble lights the ship it is wrapped around, at full
+/// warp. The glow inside the bubble is drawn behind the hull, so without this
+/// the ship gets steadily darker than its own backdrop as the drive spools and
+/// ends up a murky silhouette against it — which is the wrong way round for
+/// something sitting *inside* the light.
+const BUBBLE_LIGHT: f32 = 0.45;
 /// Colour of a lit engine at impulse, and at warp.
 const IMPULSE_FLAME: [f32; 3] = [1.00, 0.62, 0.28];
 const WARP_FLAME: [f32; 3] = [0.62, 0.80, 1.00];
@@ -64,8 +92,8 @@ pub struct ShipModel {
     /// Convex faces, wound anticlockwise seen from *outside* the hull.
     pub faces: Vec<Vec<u16>>,
     pub engines: Vec<Engine>,
-    /// The ink the hull is stroked in.
-    pub trim: [f32; 3],
+    /// What the plates are painted, before the light gets to them.
+    pub hull: [f32; 3],
 }
 
 /// A cross-section of a hull: a rectangle on a plane across the ship.
@@ -194,7 +222,7 @@ impl Builder {
         self,
         name: &'static str,
         blurb: &'static str,
-        trim: [f32; 3],
+        hull: [f32; 3],
         engines: Vec<Engine>,
     ) -> ShipModel {
         ShipModel {
@@ -203,7 +231,7 @@ impl Builder {
             verts: self.verts,
             faces: self.faces,
             engines,
-            trim,
+            hull,
         }
     }
 }
@@ -236,8 +264,8 @@ pub fn by_name(name: &str) -> Option<usize> {
     models().iter().position(|m| m.name == name)
 }
 
-/// Saucer, neck, engineering hull, two nacelles on swept pylons — a wireframe
-/// bow to the ship every warp drive since has been drawn against.
+/// Saucer, neck, engineering hull, two nacelles on swept pylons — a bow to the
+/// ship every warp drive since has been drawn against.
 ///
 /// It is designed as a *profile*, because that is the only view this camera
 /// gives, and the profile is three masses stacked in a particular order: the
@@ -306,7 +334,7 @@ fn enterprise() -> ShipModel {
     b.finish(
         "enterprise",
         "Heavy cruiser. Saucer, neck, and two nacelles.",
-        [0.82, 0.90, 1.00],
+        [0.21, 0.24, 0.31],
         vec![
             engine([-0.42, -0.06, -0.92], 0.11),
             engine([0.42, -0.06, -0.92], 0.11),
@@ -341,7 +369,7 @@ fn dart() -> ShipModel {
     b.finish(
         "dart",
         "Interceptor. All nose and engine.",
-        [0.78, 0.90, 1.00],
+        [0.19, 0.22, 0.28],
         vec![
             engine([-0.24, 0.0, -0.78], 0.13),
             engine([0.24, 0.0, -0.78], 0.13),
@@ -377,7 +405,7 @@ fn hauler() -> ShipModel {
     b.finish(
         "hauler",
         "Bulk freighter. Slow, and does not care.",
-        [1.00, 0.86, 0.60],
+        [0.24, 0.21, 0.17],
         vec![
             engine([-0.17, -0.06, -1.02], 0.11),
             engine([0.17, -0.06, -1.02], 0.11),
@@ -408,7 +436,7 @@ fn needle() -> ShipModel {
     b.finish(
         "needle",
         "Survey probe. Mostly sensor.",
-        [0.68, 0.94, 1.00],
+        [0.18, 0.21, 0.25],
         vec![engine([0.0, 0.0, -0.96], 0.15)],
     )
 }
@@ -438,7 +466,7 @@ fn beetle() -> ShipModel {
     b.finish(
         "beetle",
         "Gunship. Built round its own armour.",
-        [1.00, 0.72, 0.52],
+        [0.25, 0.20, 0.20],
         vec![
             engine([-0.16, 0.06, -0.82], 0.17),
             engine([0.16, 0.06, -0.82], 0.17),
@@ -471,7 +499,7 @@ fn trident() -> ShipModel {
     b.finish(
         "trident",
         "Line warship. Three drives, one spine.",
-        [0.86, 0.88, 1.00],
+        [0.20, 0.21, 0.27],
         vec![
             engine([0.0, -0.30, -0.90], 0.12),
             engine([0.0, 0.0, -0.92], 0.13),
@@ -523,23 +551,39 @@ fn place(v: [f32; 3], (roll, pitch, yaw): (f32, f32, f32)) -> [f32; 3] {
     to_camera([x, y, z])
 }
 
-/// Draw the hull over whatever is already on the canvas.
+/// One plate of a hull, ready to draw: where it is on screen, how far off it
+/// is, and how much light it is catching.
+struct Plate {
+    points: Vec<(f32, f32)>,
+    depth: f32,
+    shade: f32,
+}
+
+/// Work out which plates of a hull are facing the camera, and in what order
+/// they have to be painted.
 ///
-/// There is no depth buffer, and there does not need to be one: the star band
-/// starts well beyond the ship, so nothing can be in front of it, and the far
-/// side of the hull is culled on the sign of each face's projected area. That
-/// works because every model is a closed, consistently wound solid — which is
-/// what the tests below are for.
-pub fn draw(canvas: &mut Canvas, cam: &Camera, ship: &Ship, model: &ShipModel) {
-    let pose = attitude(ship);
+/// Two things are settled here. Facing comes from the sign of a plate's
+/// projected area: the screen's `y` runs downward, which flips the usual sign,
+/// so a plate whose outward normal points away from the camera comes out
+/// positive — and those are the far side of the hull. That works only because
+/// every model is a closed, consistently wound solid, which is what the tests
+/// below are for.
+///
+/// Order comes from the depth sort. Culling alone is enough for a *single*
+/// convex solid, whose front faces cannot overlap each other; these hulls are
+/// assemblies of half a dozen separate solids, and a nacelle passing in front
+/// of an engineering hull is two front-facing plates fighting over the same
+/// subpixels. Painting far to near settles it without a depth buffer.
+fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32)) -> Vec<Plate> {
     let placed: Vec<[f32; 3]> = model.verts.iter().map(|v| place(*v, pose)).collect();
     let screen: Vec<Option<(f32, f32)>> = placed.iter().map(|v| cam.project(*v)).collect();
 
+    let mut plates: Vec<Plate> = Vec::with_capacity(model.faces.len());
     for face in &model.faces {
-        // A face with a vertex behind the near plane cannot be measured, let
+        // A plate with a vertex behind the near plane cannot be measured, let
         // alone drawn. Nothing should reach that — the hull sits four units
-        // clear of it — but `project` answers with an `Option` and a rolled fin
-        // is exactly the thing that would find out.
+        // clear of it — but `project` answers with an `Option`, and a rolled
+        // fin is exactly the thing that would find out.
         let Some(points) = face
             .iter()
             .map(|i| screen[*i as usize])
@@ -547,9 +591,6 @@ pub fn draw(canvas: &mut Canvas, cam: &Camera, ship: &Ship, model: &ShipModel) {
         else {
             continue;
         };
-        // The screen's `y` runs downward, which flips the usual sign: a face
-        // whose outward normal points away from the camera comes out positive.
-        // Those are the far side of the hull, and they are what is dropped.
         if signed_area(&points) >= 0.0 {
             continue;
         }
@@ -560,15 +601,70 @@ pub fn draw(canvas: &mut Canvas, cam: &Camera, ship: &Ship, model: &ShipModel) {
             .sum::<f32>()
             .max(f32::MIN_POSITIVE)
             / face.len() as f32;
-        // Nearer plates read a little brighter, which is what separates the
-        // near side of the hull from the far one now that both are lines.
-        let ink = EDGE_INK * (SHIP_DISTANCE / depth).powf(DEPTH_INK);
-        for i in 0..points.len() {
-            canvas.draw_line(points[i], points[(i + 1) % points.len()], model.trim, ink);
+        let normal = normal_of(&placed, face);
+        // Lambert, and nothing more: one light, no falloff, no specular. The
+        // job is to say which way a plate is pointing, and at this resolution
+        // anything subtler is spent on a subpixel nobody can see.
+        let facing = normal[0] * LIGHT[0] + normal[1] * LIGHT[1] + normal[2] * LIGHT[2];
+        plates.push(Plate {
+            points,
+            depth,
+            shade: AMBIENT + DIFFUSE * facing.clamp(0.0, 1.0),
+        });
+    }
+    plates.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+    plates
+}
+
+/// Draw the hull over whatever is already on the canvas.
+///
+/// The plates are opaque: they cover the sky rather than adding to it, which is
+/// what makes the ship a ship and not a hologram of one. There is still no
+/// depth buffer and there still does not need to be one — the star band starts
+/// well beyond the hull, so nothing can come between it and the camera, and the
+/// hull sorts against itself.
+pub fn draw(canvas: &mut Canvas, cam: &Camera, ship: &Ship, model: &ShipModel) {
+    let pose = attitude(ship);
+    let bubble = ship.warp_intensity() * BUBBLE_LIGHT;
+    for plate in plates(model, cam, pose) {
+        // Nearer plates read a shade brighter. It is a small effect on purpose:
+        // the lighting says which way a plate faces, and this only says which
+        // of two plates facing the same way is the closer.
+        let near = (SHIP_DISTANCE / plate.depth).powf(DEPTH_SHADE);
+        let paint = (plate.shade + bubble) * near;
+        let mut lit = [0.0; 3];
+        for (channel, base) in lit.iter_mut().zip(model.hull) {
+            *channel = base * paint;
         }
+        canvas.fill_convex(&plate.points, lit);
     }
 
     draw_engines(canvas, cam, ship, model, pose);
+}
+
+/// A face's outward normal, unit length, in the camera's space.
+fn normal_of(placed: &[[f32; 3]], face: &[u16]) -> [f32; 3] {
+    let v = |i: usize| placed[face[i] as usize];
+    let (o, a, b) = (v(0), v(1), v(face.len() - 1));
+    let (u, w) = (
+        [a[0] - o[0], a[1] - o[1], a[2] - o[2]],
+        [b[0] - o[0], b[1] - o[1], b[2] - o[2]],
+    );
+    // `u × w`, with `w` running back around the face rather than on to the
+    // next vertex. Faces are wound anticlockwise seen from outside, so this
+    // points out of the hull — which the test below pins, because getting it
+    // backwards inverts every light in the scene and still looks lit.
+    let n = [
+        u[1] * w[2] - u[2] * w[1],
+        u[2] * w[0] - u[0] * w[2],
+        u[0] * w[1] - u[1] * w[0],
+    ];
+    let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if length > f32::MIN_POSITIVE {
+        [n[0] / length, n[1] / length, n[2] / length]
+    } else {
+        [0.0, 0.0, -1.0]
+    }
 }
 
 /// The glow out of the bells: amber on impulse, blue-white at warp, and out
@@ -776,79 +872,125 @@ mod tests {
 
     #[test]
     fn the_far_side_of_a_hull_is_not_drawn() {
-        // Back-face culling is the whole of the hidden-line removal here. With
-        // it off, a hull is a cage of crossing lines; the test for that is that
-        // dropping the cull lights up meaningfully more of the frame.
+        // Back-face culling is half of the hidden-surface removal here, and
+        // the cheap half: a plate pointing away from the camera is dropped on
+        // the sign of its projected area, before anything is painted.
         //
         // Measured off the beam rather than square on it. A symmetric ship in
         // exact profile hides its own far side for free — port and starboard
-        // project onto the same lines — so it is the moment the ship rolls or
+        // project onto the same outline — so it is the moment the ship rolls or
         // crabs out of profile that the cull earns its keep.
         let mut ship = Ship::new();
         ship.roll = 0.8;
         ship.yaw_rate = MAX_YAW_RATE * 0.8;
-        let model = &models()[0];
-        let (renderer, cam) = cam(120, 36, &ship);
-        let (w, h) = renderer.canvas_dims();
+        let (_, cam) = cam(120, 36, &ship);
 
-        let mut culled = Canvas::new(w, h);
-        draw(&mut culled, &cam, &ship, model);
+        for model in models() {
+            let facing = plates(model, &cam, attitude(&ship));
+            assert!(
+                facing.len() < model.faces.len() * 3 / 4,
+                "{}: only {} of {} plates were culled",
+                model.name,
+                model.faces.len() - facing.len(),
+                model.faces.len()
+            );
+            for plate in &facing {
+                assert!(
+                    signed_area(&plate.points) < 0.0,
+                    "{}: a plate pointing away survived the cull",
+                    model.name
+                );
+                assert!(plate.shade.is_finite() && plate.shade >= AMBIENT - 1e-6);
+            }
+        }
+    }
 
-        let mut caged = Canvas::new(w, h);
-        let pose = attitude(&ship);
-        for face in &model.faces {
-            let points: Vec<(f32, f32)> = face
-                .iter()
-                .filter_map(|i| cam.project(place(model.verts[*i as usize], pose)))
-                .collect();
-            for i in 0..points.len() {
-                caged.draw_line(
-                    points[i],
-                    points[(i + 1) % points.len()],
-                    model.trim,
-                    EDGE_INK,
+    #[test]
+    fn a_faces_normal_points_out_of_the_hull() {
+        // Every lamp in the scene hangs off this, and getting it backwards is
+        // invisible: the ship comes out lit either way, just lit from the wrong
+        // side, with the plates facing the light dark and the ones facing away
+        // bright. Checked on a plain box, where which way is out is not a
+        // matter of opinion.
+        let mut b = Builder::default();
+        b.shell(&[Section::at(-0.5, 0.3, 0.2), Section::at(0.5, 0.3, 0.2)]);
+        let box_ = b.finish("box", "a box", [1.0; 3], vec![]);
+
+        let mut checked = 0;
+        for face in &box_.faces {
+            let corners: Vec<[f32; 3]> = face.iter().map(|i| box_.verts[*i as usize]).collect();
+            let mut centre = [0.0f32; 3];
+            for c in &corners {
+                for i in 0..3 {
+                    centre[i] += c[i] / corners.len() as f32;
+                }
+            }
+            let normal = normal_of(&box_.verts, face);
+            // A box is centred on the origin, so out is simply away from it.
+            let outward: f32 = (0..3).map(|i| centre[i] * normal[i]).sum();
+            assert!(
+                outward > 0.0,
+                "a face at {centre:?} claims a normal of {normal:?}, which points inward"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 6, "a box has six sides");
+    }
+
+    #[test]
+    fn plates_are_painted_far_to_near() {
+        // The other half of the hidden-surface removal, and the half culling
+        // cannot do: these hulls are assemblies of separate solids, so a
+        // nacelle passing in front of an engineering hull is two plates that
+        // both face the camera and both want the same subpixels.
+        let mut ship = Ship::new();
+        ship.roll = 0.5;
+        let (_, cam) = cam(120, 36, &ship);
+        for model in models() {
+            let painted = plates(model, &cam, attitude(&ship));
+            for pair in painted.windows(2) {
+                assert!(
+                    pair[0].depth >= pair[1].depth,
+                    "{}: {} was painted before {}, and it is nearer",
+                    model.name,
+                    pair[0].depth,
+                    pair[1].depth
                 );
             }
         }
-
-        // Total light rather than lit subpixels: the far side of a hull lands
-        // close to the near side on screen, so the cage covers much the same
-        // ground — it just draws it twice over, and the canvas adds.
-        let light = |c: &Canvas| -> f32 {
-            (0..h)
-                .flat_map(|y| (0..w).map(move |x| (x, y)))
-                .map(|(x, y)| c.light_at(x, y))
-                .sum()
-        };
-        assert!(
-            light(&culled) < light(&caged) * 0.8,
-            "culling dropped nothing: {} against {}",
-            light(&culled),
-            light(&caged)
-        );
-
-        // And what it dropped is the far side: a good share of the hull's
-        // plates are pointing away at any one time.
-        let pose = attitude(&ship);
-        let facing = model
-            .faces
-            .iter()
-            .filter(|face| {
-                let points: Vec<(f32, f32)> = face
-                    .iter()
-                    .filter_map(|i| cam.project(place(model.verts[*i as usize], pose)))
-                    .collect();
-                signed_area(&points) < 0.0
-            })
-            .count();
-        assert!(
-            facing < model.faces.len() * 3 / 4,
-            "only {} of {} plates were culled",
-            model.faces.len() - facing,
-            model.faces.len()
-        );
     }
 
+    #[test]
+    fn a_hull_hides_the_sky_behind_it() {
+        // What "opaque" means, stated in the one way that cannot be faked: the
+        // canvas adds light everywhere else, so a subpixel that came out
+        // *darker* than the sky it started as can only have been covered.
+        let sky = 0.9f32;
+        let mut ship = Ship::new();
+        ship.throttle = 0.5;
+        let (renderer, cam) = cam(200, 56, &ship);
+        let (w, h) = renderer.canvas_dims();
+
+        for model in models() {
+            let mut canvas = Canvas::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    canvas.splat(x as f32, y as f32, [1.0; 3], sky);
+                }
+            }
+            draw(&mut canvas, &cam, &ship, model);
+
+            let covered = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .filter(|(x, y)| canvas.light_at(*x, *y) < sky * 3.0 - 1e-3)
+                .count();
+            assert!(
+                covered > 200,
+                "{} let the sky through: only {covered} subpixels were covered",
+                model.name
+            );
+        }
+    }
     #[test]
     fn the_ships_do_not_look_like_one_another() {
         // Five ships is only a feature if they read as five ships. Compared as

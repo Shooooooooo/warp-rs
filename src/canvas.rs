@@ -244,39 +244,6 @@ impl Canvas {
         }
     }
 
-    /// Draw a straight segment at an even brightness, end to end.
-    ///
-    /// A streak ramps from tail to head because that is what a moving point
-    /// leaves behind. A hull edge is not moving anywhere, so it gets neither
-    /// the ramp nor the length falloff: a long spar and a short one are the
-    /// same piece of metal, and dimming the long one would read as a lighting
-    /// cue that is not there.
-    pub fn draw_line(&mut self, from: (f32, f32), to: (f32, f32), color: [f32; 3], intensity: f32) {
-        if intensity.is_nan() || intensity <= 0.0 {
-            return;
-        }
-        let Some((from, to)) = self.clip(from, to) else {
-            return;
-        };
-        let (max_x, max_y) = (self.max_x(), self.max_y());
-        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-        let length = (dx * dx + dy * dy).sqrt();
-        if length < 0.75 {
-            let (x, y) = (to.0.clamp(0.0, max_x), to.1.clamp(0.0, max_y));
-            self.splat_inside(x, y, color, intensity);
-            return;
-        }
-
-        let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
-        let inv_steps = 1.0 / steps as f32;
-        for i in 0..=steps {
-            let t = i as f32 * inv_steps;
-            let x = (from.0 + dx * t).clamp(0.0, max_x);
-            let y = (from.1 + dy * t).clamp(0.0, max_y);
-            self.splat_inside(x, y, color, intensity);
-        }
-    }
-
     /// Draw a streak that has been bent into a curve: the same light a
     /// [`Canvas::draw_streak`] would lay down, following a polyline instead of
     /// a straight segment.
@@ -342,6 +309,65 @@ impl Canvas {
                 }
             }
             travelled += span;
+        }
+    }
+
+    /// Paint a convex polygon flat, covering whatever was under it.
+    ///
+    /// The one thing in this module that does not add light. Everything else
+    /// here accumulates, because everything else is light: a hundred streaks
+    /// crossing a subpixel should pile up. A hull is not light, it is a solid
+    /// object, and a star shining through a starship reads as a fault rather
+    /// than as glass — so this writes rather than adds, and what was behind it
+    /// stays behind it.
+    ///
+    /// Convex is the caller's promise, and it is what lets a row of the polygon
+    /// be filled between the outermost two edge crossings without sorting them.
+    pub fn fill_convex(&mut self, points: &[(f32, f32)], color: [f32; 3]) {
+        if points.len() < 3
+            || !color.iter().all(|c| c.is_finite())
+            || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite())
+        {
+            return;
+        }
+        let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+        for p in points {
+            top = top.min(p.1);
+            bottom = bottom.max(p.1);
+        }
+        let (max_x, max_y) = (self.max_x(), self.max_y());
+        if bottom < 0.0 || top > max_y {
+            return;
+        }
+        let first = top.round().max(0.0) as usize;
+        let last = (bottom.round().min(max_y)).max(0.0) as usize;
+
+        for y in first..=last {
+            let row = y as f32;
+            // Where the polygon's outline crosses this row. Convexity means
+            // there are at most two crossings that matter, so the extremes are
+            // the span — no sorting, no parity rule.
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for i in 0..points.len() {
+                let (a, b) = (points[i], points[(i + 1) % points.len()]);
+                let (upper, lower) = if a.1 <= b.1 { (a, b) } else { (b, a) };
+                let span = lower.1 - upper.1;
+                if row < upper.1 || row > lower.1 || span <= f32::EPSILON {
+                    continue;
+                }
+                let x = upper.0 + (lower.0 - upper.0) * (row - upper.1) / span;
+                lo = lo.min(x);
+                hi = hi.max(x);
+            }
+            if lo > hi || hi < 0.0 || lo > max_x {
+                continue;
+            }
+            // Rounded rather than floored and ceiled, so a plate seen almost
+            // edge-on still covers the one column it is standing in instead of
+            // falling through the gap between two of them.
+            let start = lo.round().max(0.0) as usize;
+            let end = (hi.round().min(max_x)).max(0.0) as usize;
+            self.buf[y * self.width + start..=y * self.width + end].fill(color);
         }
     }
 
@@ -603,34 +629,67 @@ mod tests {
     }
 
     #[test]
-    fn a_line_is_as_bright_at_one_end_as_the_other() {
-        // The opposite of a streak, and the reason it is a separate call: a
-        // wireframe hull drawn with the streak ramp looks lit from one side.
-        let mut canvas = Canvas::new(128, 8);
-        canvas.draw_line((10.0, 4.0), (110.0, 4.0), [1.0, 1.0, 1.0], 1.0);
-        let head = canvas.buf[4 * 128 + 108][0];
-        let tail = canvas.buf[4 * 128 + 12][0];
-        assert!(
-            (head - tail).abs() < 1e-5,
-            "head {head} against tail {tail}"
+    fn a_fill_covers_what_was_under_it_rather_than_adding_to_it() {
+        // The only thing here that is not light. A hull painted additively over
+        // a starfield is a hologram of a hull: the bright streak behind it goes
+        // on shining through, and the eye reads glass.
+        let mut canvas = Canvas::new(32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                canvas.splat(x as f32, y as f32, [1.0; 3], 4.0);
+            }
+        }
+        let square = [(8.0, 8.0), (20.0, 8.0), (20.0, 20.0), (8.0, 20.0)];
+        canvas.fill_convex(&square, [0.25, 0.25, 0.25]);
+
+        assert_eq!(
+            canvas.buf[14 * 32 + 14],
+            [0.25; 3],
+            "the fill did not cover"
         );
-        // And it does not dim as it gets longer, the way a smear does.
-        let mut short = Canvas::new(128, 8);
-        short.draw_line((10.0, 4.0), (20.0, 4.0), [1.0, 1.0, 1.0], 1.0);
-        assert!((short.buf[4 * 128 + 15][0] - head).abs() < 1e-5);
+        assert_eq!(
+            canvas.buf[2 * 32 + 2],
+            [4.0; 3],
+            "it covered the wrong thing"
+        );
+        assert!(
+            total_light(&canvas) < 32.0 * 32.0 * 3.0 * 4.0,
+            "an opaque fill has to be able to take light away"
+        );
     }
 
     #[test]
-    fn a_line_off_the_canvas_draws_nothing_and_stays_in_bounds() {
-        let mut canvas = Canvas::new(64, 32);
-        for pair in [
-            ((-100.0, -100.0), (-50.0, -80.0)),
-            ((f32::NAN, 0.0), (10.0, 10.0)),
-            ((1e9, 1e9), (-1e9, -1e9)),
-        ] {
-            canvas.draw_line(pair.0, pair.1, [1.0; 3], 1.0);
+    fn a_fill_stays_inside_its_own_outline() {
+        let mut canvas = Canvas::new(64, 64);
+        let triangle = [(10.0, 10.0), (50.0, 12.0), (30.0, 45.0)];
+        canvas.fill_convex(&triangle, [1.0, 0.0, 0.0]);
+        // Inside, and outside on each side of it.
+        assert_eq!(canvas.buf[20 * 64 + 30][0], 1.0);
+        for (x, y) in [(2usize, 2usize), (60, 60), (12, 40), (50, 40), (30, 60)] {
+            assert_eq!(canvas.buf[y * 64 + x][0], 0.0, "it leaked to ({x}, {y})");
         }
-        assert_eq!(canvas.buf.len(), 64 * 32);
+    }
+
+    #[test]
+    fn a_fill_of_nonsense_paints_nothing_and_panics_at_nothing() {
+        let mut canvas = Canvas::new(32, 16);
+        for points in [
+            vec![],
+            vec![(1.0, 1.0)],
+            vec![(1.0, 1.0), (5.0, 5.0)],
+            vec![(f32::NAN, 0.0), (5.0, 5.0), (1.0, 8.0)],
+            vec![(1e9, 1e9), (-1e9, 4.0), (2.0, 2.0)],
+            vec![(-50.0, -50.0), (-10.0, -50.0), (-30.0, -20.0)],
+            vec![(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
+        ] {
+            canvas.fill_convex(&points, [1.0; 3]);
+        }
+        canvas.fill_convex(&[(1.0, 1.0), (9.0, 1.0), (5.0, 9.0)], [f32::NAN; 3]);
+        assert_eq!(canvas.buf.len(), 32 * 16, "the buffer must not have grown");
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
+
+        // A polygon hanging off every edge covers what it should and no more.
+        canvas.fill_convex(&[(-20.0, -20.0), (60.0, -20.0), (60.0, 40.0)], [0.5; 3]);
         assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 
