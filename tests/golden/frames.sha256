@@ -54,12 +54,27 @@
 #     sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
 #     # and put this comment block back
 #
-# `side.txt` last moved when the stick was given to the camera out here. Only
-# its hint line changed: with the old `QE roll` text restored and every other
-# part of that change still in place, all four of the then-committed hashes
-# matched, so the camera basis, the star band's vector travel, the Doppler axis
-# and the bubble's projected outline are bit-for-bit a re-expression of what was
-# there before. The panel names the controls, and the controls changed.
+# `side.txt` and `orbit.txt` last moved when the hull's outline started being
+# measured on a grid inside each subpixel rather than at its centre. Those two
+# are the flights with a ship in them and the only two that moved: the three
+# cockpit flights above them came back bit-for-bit identical, which is what says
+# the change reached the hull and nothing else. Anything that moves one of those
+# three has leaked out of the rasteriser it was meant to be in.
+#
+# These are recorded at `--aa`'s default. `--aa 1` measures the outline at the
+# subpixel's centre, which is what the rasteriser this replaced did, and it
+# reproduces all five of the *previous* hashes exactly — that reduction is
+# checked in `canvas.rs` against the old code kept there as its oracle, and it
+# is the reason this file could be regenerated with any confidence about what
+# had changed.
+#
+# Before that, `side.txt` moved when the stick was given to the camera out here.
+# Only its hint line changed: with the old `QE roll` text restored and every
+# other part of that change still in place, all four of the then-committed
+# hashes matched, so the camera basis, the star band's vector travel, the
+# Doppler axis and the bubble's projected outline are bit-for-bit a
+# re-expression of what was there before. The panel names the controls, and the
+# controls changed.
 #
 # The case list lives here, in `tests/golden.rs` and in the `headless` CI job.
 # Adding a flight means adding it to all three.
@@ -73,5 +88,5 @@
 dbd77f751ca09625f68f43d092adb3ade0bb2a4751aeb8891e4f7afcf7e98046  truecolor.txt
 38ab01bf301f47a2200644ff65a54819981f866fd63efb6da8a818b5c538d118  ascii.txt
 b1bf6b01e246a956645090d9ec8eeeaa67af98bf69d6c638a55e493cc62fb6a4  warp.txt
-95ee5280921b47bd9aa971e5f86d944dab82f074d55326a0843fb3d8c35f3bce  side.txt
-55c5d5abc88b7546c7ddc9a070e50f5e1a7f22ac1c85ee14acc5652ba350d433  orbit.txt
+6b0968d0f6e00909615078532f2b15e1b5d33508a3e2b7f02666c9c492be959c  side.txt
+df073c8295ccc072fb79ac2813207b5ec0c65ad661824e1dd081329f12937aa7  orbit.txt

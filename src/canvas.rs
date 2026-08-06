@@ -21,6 +21,39 @@ const TAIL_BRIGHTNESS: f32 = 0.32;
 /// Backstop on samples per streak; clipping already bounds this in practice.
 const MAX_SAMPLES: usize = 4096;
 
+/// How finely a hull's outline is measured, per subpixel and per axis, when
+/// `--aa` is left alone. Nine samples, so ten levels of coverage.
+///
+/// Square rather than tall, because a canvas subpixel is roughly square — a
+/// cell is about one by two and holds two subpixel rows — and a three-by-two
+/// grid would sharpen the ship along one axis while softening it along the
+/// other. Odd, so the grid contains the subpixel's own centre: that is the one
+/// sample the rasteriser this replaced took, which keeps the brightest part of
+/// a hairline plate on the subcolumn the old fill would have chosen.
+///
+/// Two is not enough. Four levels, no centre sample, and the tonemap makes the
+/// *first* rung the biggest — a quarter of a hull colour already resolves to
+/// about half the hull's brightness, so an edge fading in still arrives as a
+/// step, where a ninth lands a third of the way up.
+///
+/// Four was compared against three on the shot this ships pictures of, and it
+/// is very slightly the smoother: sixteen levels, and a first rung gentler
+/// again. It was not taken, because what it buys at the bottom of the ramp it
+/// pays for by dropping the centre sample, and because the difference between
+/// three and four is a fraction of the difference between one and three. The
+/// margin is small enough to be a matter of taste rather than of fact, which is
+/// most of why `--aa` takes a number instead of an on and an off.
+pub const HULL_SAMPLES: usize = 3;
+
+/// Ceiling on `--aa`. It enters squared, like `--scale` does: the band is
+/// `width * n * n` samples. Past a handful there is nothing left to buy.
+pub const MAX_HULL_SAMPLES: usize = 8;
+
+const _: () = assert!(
+    HULL_SAMPLES >= 1 && HULL_SAMPLES <= MAX_HULL_SAMPLES,
+    "the default sample count is outside the range the command line admits"
+);
+
 /// The curve `LENGTH_FALLOFF` describes, in one place.
 ///
 /// `draw_streak` measures the length it passes here *after* clipping and
@@ -93,10 +126,91 @@ fn saturation_point(exposure: f32, gamma: f32) -> f32 {
     }
 }
 
+/// One face of a hull, ready to paint: where its outline lies on the canvas,
+/// and what colour it came out.
+///
+/// Everything else a [`crate::models`] plate carries — its depth, its shade —
+/// is the caller's business, and settled by the time it gets here. Faces arrive
+/// as a slice rather than one at a time, which is the whole of the design
+/// rather than a convenience; the essay is on [`Canvas::fill_hull`].
+pub struct Facet<'a> {
+    pub points: &'a [(f32, f32)],
+    pub color: [f32; 3],
+}
+
+/// One subsample of the band: what colour landed on it, and whether anything
+/// did at all.
+///
+/// A flag rather than a test for black. Nothing in the fleet paints a plate
+/// exactly zero — `AMBIENT` of any hull colour is not — but that is a
+/// relationship nothing checks, and the failure mode of leaning on it is a hole
+/// through the shadowed side of a ship.
+#[derive(Clone, Copy)]
+struct Sample {
+    color: [f32; 3],
+    covered: bool,
+}
+
+impl Sample {
+    const EMPTY: Self = Self {
+        color: [0.0; 3],
+        covered: false,
+    };
+}
+
+/// A face moved into sample space and ready for the band loop: its outline's
+/// slice of the flattened point buffer, the colour to write, and the sample
+/// rows it can reach — which lets a band skip a face it cannot see in two
+/// comparisons rather than by walking its edges.
+struct BandFace {
+    at: (usize, usize),
+    color: [f32; 3],
+    rows: (f32, f32),
+}
+
+/// Where a convex outline crosses one sample row: the outermost two crossings,
+/// which convexity makes the whole span — no sorting, no parity rule.
+///
+/// A crossing is worked out from the edge's own two endpoints taken in the
+/// order their `y` puts them in, rather than the order the face happens to walk
+/// them. Two faces sharing an edge therefore evaluate the identical expression
+/// on the identical floats and agree to the bit about where it crosses a row,
+/// so the seam between two plates of one hull cannot open a crack that neither
+/// of them fills.
+fn crossings(points: &[(f32, f32)], row: f32) -> Option<(f32, f32)> {
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    for i in 0..points.len() {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        let (upper, lower) = if a.1 <= b.1 { (a, b) } else { (b, a) };
+        let span = lower.1 - upper.1;
+        if row < upper.1 || row > lower.1 || span <= f32::EPSILON {
+            continue;
+        }
+        let x = upper.0 + (lower.0 - upper.0) * (row - upper.1) / span;
+        lo = lo.min(x);
+        hi = hi.max(x);
+    }
+    (lo <= hi).then_some((lo, hi))
+}
+
 pub struct Canvas {
     width: usize,
     height: usize,
     buf: Vec<[f32; 3]>,
+    /// How finely [`Self::fill_hull`] measures an outline, per axis.
+    hull_samples: usize,
+    /// One output row of subpixels, `hull_samples` sample rows deep: the whole
+    /// of what `fill_hull` has in flight at once. It grows with the width alone
+    /// and not with the area, which is the point of banding — the hull's
+    /// bounding box can be the whole canvas, and at the largest terminal the
+    /// flags admit that would be half a gigabyte to draw a ship eighteen
+    /// subpixels long.
+    band: Vec<Sample>,
+    /// The hull's outline in sample space, flattened, with one `BandFace` per
+    /// face naming its slice of it. Rebuilt every call and kept between them
+    /// because a side-view frame does this forty times a second.
+    hull_points: Vec<(f32, f32)>,
+    hull_faces: Vec<BandFace>,
 }
 
 impl Canvas {
@@ -106,11 +220,24 @@ impl Canvas {
             width,
             height,
             buf: vec![[0.0; 3]; width * height],
+            hull_samples: HULL_SAMPLES,
+            band: vec![Sample::EMPTY; width * HULL_SAMPLES * HULL_SAMPLES],
+            hull_points: Vec::new(),
+            hull_faces: Vec::new(),
         }
     }
 
     pub fn dims(&self) -> (usize, usize) {
         (self.width, self.height)
+    }
+
+    /// How finely [`Self::fill_hull`] measures an outline, in samples per
+    /// subpixel on each axis. One is the hard-edged rasteriser this replaced —
+    /// not approximately, exactly.
+    pub fn set_hull_samples(&mut self, samples: usize) {
+        self.hull_samples = samples.clamp(1, MAX_HULL_SAMPLES);
+        let band = self.width * self.hull_samples * self.hull_samples;
+        self.band.resize(band, Sample::EMPTY);
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {
@@ -124,6 +251,11 @@ impl Canvas {
             // is the renderer's habit, not something resize may lean on.
             self.buf.clear();
             self.buf.resize(width * height, [0.0; 3]);
+            // The band is cleared every time it is used, so stale samples are
+            // not the hazard here — its *length* is. A canvas narrowed with a
+            // band still sized for the old width indexes past the end of it.
+            let band = width * self.hull_samples * self.hull_samples;
+            self.band.resize(band, Sample::EMPTY);
         }
     }
 
@@ -351,62 +483,174 @@ impl Canvas {
         }
     }
 
-    /// Paint a convex polygon flat, covering whatever was under it.
+    /// Paint a hull: a set of opaque convex faces, covering whatever was under
+    /// them, with the outline measured finer than a subpixel.
     ///
     /// The one thing in this module that does not add light. Everything else
     /// here accumulates, because everything else is light: a hundred streaks
     /// crossing a subpixel should pile up. A hull is not light, it is a solid
     /// object, and a star shining through a starship reads as a fault rather
-    /// than as glass — so this writes rather than adds, and what was behind it
-    /// stays behind it.
+    /// than as glass — so this covers, and what was behind it stays behind it.
     ///
-    /// Convex is the caller's promise, and it is what lets a row of the polygon
-    /// be filled between the outermost two edge crossings without sorting them.
-    pub fn fill_convex(&mut self, points: &[(f32, f32)], color: [f32; 3]) {
-        if points.len() < 3
-            || !color.iter().all(|c| c.is_finite())
-            || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite())
+    /// A subpixel the hull only partly stands on is written in proportion,
+    /// `buf * (1 - cov) + colour * cov`, and that is the one place a hull and
+    /// the sky behind it are ever mixed. It is not a hole in the rule above:
+    /// the coverage is geometry rather than transparency, and it is counted in
+    /// whole samples and divided, so a fully covered subpixel comes out at
+    /// exactly one and exactly none of what was under it survives. It matters
+    /// here more than the arithmetic suggests, because the subject is tiny — at
+    /// the framing the shot opens on, a plate is one or two subpixels thick,
+    /// and a hard edge on one of those does not move when the ship rolls. It
+    /// sits still and then jumps a whole subpixel, which reads as crawling.
+    ///
+    /// **The whole hull arrives at once, and that is the design rather than a
+    /// convenience.** Coverage composes only once per sample. Blend the faces
+    /// in turn instead and every edge two of them share *inside* the hull is
+    /// blended twice: two plates each covering half of the subpixel their
+    /// shared edge runs down leave `(1 - ½)(1 - ½)` of the sky, in a line,
+    /// through the middle of the ship. There is no per-face fix — the
+    /// composition is what is wrong. Taken together, the far-to-near order the
+    /// caller has already sorted them into can be applied *between the samples*
+    /// of a subpixel, where it settles a seam the way it settles everything
+    /// else. The runner-up was a coverage mask walked near to far, paying for
+    /// each sample once; it costs less memory and inverts the painting order
+    /// this module's whole hidden-surface story is told in.
+    ///
+    /// Convex is the caller's promise, and it is what lets a row of a face be
+    /// filled between the outermost two edge crossings without sorting them.
+    /// The order is the caller's promise too, and it is far to near.
+    pub fn fill_hull(&mut self, faces: &[Facet<'_>]) {
+        let n = self.hull_samples;
+        let grid_w = self.width * n;
+        let (max_u, max_v) = ((grid_w - 1) as f32, (self.height * n - 1) as f32);
+        // `(x + 0.5) * n - 0.5`, spelled as a multiply and an add so that at
+        // one sample a subpixel it is a multiply by one and an add of zero —
+        // the identity for every finite float. That is what makes this *be* the
+        // rasteriser it replaced at `--aa 1` rather than merely agree with it,
+        // and `one_sample_a_subpixel_is_the_rasteriser_this_replaced` is what
+        // holds it. Everything below then runs the old span arithmetic against
+        // a grid `n` times finer, unchanged.
+        let shift = (n - 1) as f32 * 0.5;
+
+        self.hull_points.clear();
+        self.hull_faces.clear();
+        let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
+        for face in faces {
+            // A face that cannot be measured is dropped and the rest of the
+            // hull still drawn. Giving up on the whole ship because one plate
+            // came out NaN turns a wrong subpixel into a missing starship.
+            if face.points.len() < 3
+                || !face.color.iter().all(|c| c.is_finite())
+                || face
+                    .points
+                    .iter()
+                    .any(|p| !p.0.is_finite() || !p.1.is_finite())
+            {
+                continue;
+            }
+            let start = self.hull_points.len();
+            let (mut face_top, mut face_bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+            for p in face.points {
+                let (u, v) = (p.0 * n as f32 + shift, p.1 * n as f32 + shift);
+                self.hull_points.push((u, v));
+                face_top = face_top.min(v);
+                face_bottom = face_bottom.max(v);
+                left = left.min(u);
+                right = right.max(u);
+            }
+            top = top.min(face_top);
+            bottom = bottom.max(face_bottom);
+            self.hull_faces.push(BandFace {
+                at: (start, self.hull_points.len()),
+                color: face.color,
+                rows: (face_top, face_bottom),
+            });
+        }
+        if self.hull_faces.is_empty() || bottom < 0.0 || top > max_v || right < 0.0 || left > max_u
         {
             return;
         }
-        let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
-        for p in points {
-            top = top.min(p.1);
-            bottom = bottom.max(p.1);
-        }
-        let (max_x, max_y) = (self.max_x(), self.max_y());
-        if bottom < 0.0 || top > max_y {
+
+        // The sample columns the band is cleared over and — because they are
+        // the same two numbers — the only ones anything below may write to.
+        // `round` is monotone, so one row's span can never reach outside the
+        // hull's own bound; clamping into it states that rather than changes it.
+        let u_lo = left.round().max(0.0) as usize;
+        let u_hi = (right.round().min(max_u)).max(0.0) as usize;
+        if u_lo > u_hi {
             return;
         }
         let first = top.round().max(0.0) as usize;
-        let last = (bottom.round().min(max_y)).max(0.0) as usize;
+        let last = (bottom.round().min(max_v)).max(0.0) as usize;
+        let n2 = (n * n) as f32;
 
-        for y in first..=last {
-            let row = y as f32;
-            // Where the polygon's outline crosses this row. Convexity means
-            // there are at most two crossings that matter, so the extremes are
-            // the span — no sorting, no parity rule.
-            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-            for i in 0..points.len() {
-                let (a, b) = (points[i], points[(i + 1) % points.len()]);
-                let (upper, lower) = if a.1 <= b.1 { (a, b) } else { (b, a) };
-                let span = lower.1 - upper.1;
-                if row < upper.1 || row > lower.1 || span <= f32::EPSILON {
+        for y in (first / n)..=(last / n) {
+            for j in 0..n {
+                let base = j * grid_w;
+                self.band[base + u_lo..=base + u_hi].fill(Sample::EMPTY);
+            }
+            // Far to near, exactly as handed over: a sample belongs to the last
+            // face that reached it, which is the nearest one that did.
+            for face in &self.hull_faces {
+                for j in 0..n {
+                    let row = (y * n + j) as f32;
+                    if row < face.rows.0 || row > face.rows.1 {
+                        continue;
+                    }
+                    let (a, b) = face.at;
+                    let Some((lo, hi)) = crossings(&self.hull_points[a..b], row) else {
+                        continue;
+                    };
+                    if hi < 0.0 || lo > max_u {
+                        continue;
+                    }
+                    // Rounded rather than floored and ceiled, so a plate seen
+                    // almost edge-on still covers the one subcolumn it is
+                    // standing in instead of falling through the gap between
+                    // two of them. The old rule on a finer grid, and it is what
+                    // keeps honest coverage from being a new way to vanish: a
+                    // plate thinner than a sample comes out dim, never absent.
+                    let start = (lo.round().max(0.0) as usize).max(u_lo);
+                    let end = ((hi.round().min(max_u)).max(0.0) as usize).min(u_hi);
+                    if start > end {
+                        continue;
+                    }
+                    let base = j * grid_w;
+                    self.band[base + start..=base + end].fill(Sample {
+                        color: face.color,
+                        covered: true,
+                    });
+                }
+            }
+
+            for x in (u_lo / n)..=(u_hi / n) {
+                let (mut count, mut sum) = (0usize, [0.0f32; 3]);
+                for j in 0..n {
+                    let base = j * grid_w + x * n;
+                    for s in &self.band[base..base + n] {
+                        if s.covered {
+                            count += 1;
+                            for (channel, add) in sum.iter_mut().zip(s.color) {
+                                *channel += add;
+                            }
+                        }
+                    }
+                }
+                if count == 0 {
                     continue;
                 }
-                let x = upper.0 + (lower.0 - upper.0) * (row - upper.1) / span;
-                lo = lo.min(x);
-                hi = hi.max(x);
+                // Counted in whole samples and divided, rather than multiplied
+                // by a reciprocal: a fully covered subpixel has to come out at
+                // *exactly* one, or the sky behind the middle of the ship
+                // survives at a part in ten million and the rule at the top of
+                // this comment stops being true where it matters most.
+                let cov = count as f32 / n2;
+                let px = &mut self.buf[y * self.width + x];
+                for (channel, add) in px.iter_mut().zip(sum) {
+                    *channel = *channel * (1.0 - cov) + add / n2;
+                }
             }
-            if lo > hi || hi < 0.0 || lo > max_x {
-                continue;
-            }
-            // Rounded rather than floored and ceiled, so a plate seen almost
-            // edge-on still covers the one column it is standing in instead of
-            // falling through the gap between two of them.
-            let start = lo.round().max(0.0) as usize;
-            let end = (hi.round().min(max_x)).max(0.0) as usize;
-            self.buf[y * self.width + start..=y * self.width + end].fill(color);
         }
     }
 
@@ -840,8 +1084,18 @@ mod tests {
             }
         }
         let square = [(8.0, 8.0), (20.0, 8.0), (20.0, 20.0), (8.0, 20.0)];
-        canvas.fill_convex(&square, [0.25, 0.25, 0.25]);
+        canvas.fill_hull(&[Facet {
+            points: &square,
+            color: [0.25, 0.25, 0.25],
+        }]);
 
+        // Exact, and not by luck, now that a covered subpixel is the mean of
+        // `n²` samples rather than a value written straight in. The coverage is
+        // counted in whole samples and divided, so a full subpixel is at
+        // *exactly* one and takes exactly all of what was under it; and `n²`
+        // copies of a power of two sum and divide back exactly whatever `n` is.
+        // Which is worth saying out loud, so that the next person to move
+        // `HULL_SAMPLES` knows this assertion is holding for a reason.
         assert_eq!(
             canvas.buf[14 * 32 + 14],
             [0.25; 3],
@@ -856,14 +1110,71 @@ mod tests {
             total_light(&canvas) < 32.0 * 32.0 * 3.0 * 4.0,
             "an opaque fill has to be able to take light away"
         );
+
+        // And the honest general statement of the same thing: a colour that is
+        // not a power of two comes back within a rounding of itself. What is
+        // lost is an ulp, downstream of which sits a 1024-entry tonemap and a
+        // terminal with eight bits to say it in.
+        let mut canvas = Canvas::new(32, 32);
+        canvas.fill_hull(&[Facet {
+            points: &square,
+            color: [0.3, 0.7, 0.1],
+        }]);
+        for (got, want) in canvas.buf[14 * 32 + 14].iter().zip([0.3, 0.7, 0.1]) {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "a covered subpixel came out {got} rather than {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_partly_covered_subpixel_lands_between_the_hull_and_the_sky() {
+        // What has actually changed, and the one place a hull and the sky
+        // behind it are ever mixed. The edge used to fall on one side or the
+        // other of a subpixel and jump between them.
+        //
+        // Swept across the whole of subpixel 20 — which spans 19.5 to 20.5 —
+        // rather than parked at one position, so this says nothing about where
+        // the sample grid happens to sit.
+        let mut seen = Vec::new();
+        for step in 0..=12 {
+            let mut canvas = Canvas::new(32, 32);
+            for y in 0..32 {
+                for x in 0..32 {
+                    canvas.splat(x as f32, y as f32, [1.0; 3], 4.0);
+                }
+            }
+            let right = 19.5 + step as f32 / 12.0;
+            let square = [(8.0, 8.0), (right, 8.0), (right, 20.0), (8.0, 20.0)];
+            canvas.fill_hull(&[Facet {
+                points: &square,
+                color: [0.25; 3],
+            }]);
+            seen.push(canvas.buf[14 * 32 + 20][0]);
+        }
+        assert!(
+            seen.iter().any(|&v| v > 0.25 && v < 4.0),
+            "an edge crossing a subpixel never left it between the hull and \
+             the sky, so it is still landing on one side or the other: {seen:?}"
+        );
+        assert!(
+            seen.windows(2).all(|w| w[1] <= w[0]),
+            "a hull advancing over a subpixel did not darken it evenly: {seen:?}"
+        );
     }
 
     #[test]
     fn a_fill_stays_inside_its_own_outline() {
         let mut canvas = Canvas::new(64, 64);
         let triangle = [(10.0, 10.0), (50.0, 12.0), (30.0, 45.0)];
-        canvas.fill_convex(&triangle, [1.0, 0.0, 0.0]);
-        // Inside, and outside on each side of it.
+        canvas.fill_hull(&[Facet {
+            points: &triangle,
+            color: [1.0, 0.0, 0.0],
+        }]);
+        // Inside, and outside on each side of it. The outside probes are all
+        // fifteen subpixels or more clear of the nearest edge, so a fringe a
+        // subpixel wide has no bearing on them.
         assert_eq!(canvas.buf[20 * 64 + 30][0], 1.0);
         for (x, y) in [(2usize, 2usize), (60, 60), (12, 40), (50, 40), (30, 60)] {
             assert_eq!(canvas.buf[y * 64 + x][0], 0.0, "it leaked to ({x}, {y})");
@@ -882,14 +1193,273 @@ mod tests {
             vec![(-50.0, -50.0), (-10.0, -50.0), (-30.0, -20.0)],
             vec![(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
         ] {
-            canvas.fill_convex(&points, [1.0; 3]);
+            canvas.fill_hull(&[Facet {
+                points: &points,
+                color: [1.0; 3],
+            }]);
         }
-        canvas.fill_convex(&[(1.0, 1.0), (9.0, 1.0), (5.0, 9.0)], [f32::NAN; 3]);
+        let triangle = [(1.0, 1.0), (9.0, 1.0), (5.0, 9.0)];
+        canvas.fill_hull(&[Facet {
+            points: &triangle,
+            color: [f32::NAN; 3],
+        }]);
         assert_eq!(canvas.buf.len(), 32 * 16, "the buffer must not have grown");
         assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
 
         // A polygon hanging off every edge covers what it should and no more.
-        canvas.fill_convex(&[(-20.0, -20.0), (60.0, -20.0), (60.0, 40.0)], [0.5; 3]);
+        let corner = [(-20.0, -20.0), (60.0, -20.0), (60.0, 40.0)];
+        canvas.fill_hull(&[Facet {
+            points: &corner,
+            color: [0.5; 3],
+        }]);
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
+    }
+
+    #[test]
+    fn a_face_of_nonsense_does_not_take_the_rest_of_the_hull_with_it() {
+        // The whole hull arrives in one call now, so a face that cannot be
+        // measured has to be dropped on its own. Giving up on the call would
+        // turn one wrong subpixel into a missing starship.
+        let mut canvas = Canvas::new(32, 16);
+        let bad = [(f32::NAN, 1.0), (9.0, 1.0), (5.0, 9.0)];
+        let good = [(12.0, 2.0), (24.0, 2.0), (24.0, 12.0), (12.0, 12.0)];
+        canvas.fill_hull(&[
+            Facet {
+                points: &bad,
+                color: [1.0; 3],
+            },
+            Facet {
+                points: &good,
+                color: [0.5; 3],
+            },
+        ]);
+        assert_eq!(
+            canvas.buf[7 * 32 + 18],
+            [0.5; 3],
+            "the good face was lost with the bad one"
+        );
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
+    }
+
+    #[test]
+    fn one_sample_a_subpixel_is_the_rasteriser_this_replaced() {
+        // The property the whole design is arranged around, and the reason the
+        // sample grid is entered by scaling the coordinates rather than by
+        // offsetting them: at one sample the transform is a multiply by one and
+        // an add of zero, which is the identity for every finite float.
+        //
+        // The oracle below is the body of the `fill_convex` this replaced,
+        // copied out before it was deleted. It is kept here deliberately —
+        // removing a rasteriser must not also remove the thing it was being
+        // checked against.
+        fn fill_convex(canvas: &mut Canvas, points: &[(f32, f32)], color: [f32; 3]) {
+            if points.len() < 3
+                || !color.iter().all(|c| c.is_finite())
+                || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite())
+            {
+                return;
+            }
+            let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+            for p in points {
+                top = top.min(p.1);
+                bottom = bottom.max(p.1);
+            }
+            let (max_x, max_y) = (canvas.max_x(), canvas.max_y());
+            if bottom < 0.0 || top > max_y {
+                return;
+            }
+            let first = top.round().max(0.0) as usize;
+            let last = (bottom.round().min(max_y)).max(0.0) as usize;
+            for y in first..=last {
+                let row = y as f32;
+                let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                for i in 0..points.len() {
+                    let (a, b) = (points[i], points[(i + 1) % points.len()]);
+                    let (upper, lower) = if a.1 <= b.1 { (a, b) } else { (b, a) };
+                    let span = lower.1 - upper.1;
+                    if row < upper.1 || row > lower.1 || span <= f32::EPSILON {
+                        continue;
+                    }
+                    let x = upper.0 + (lower.0 - upper.0) * (row - upper.1) / span;
+                    lo = lo.min(x);
+                    hi = hi.max(x);
+                }
+                if lo > hi || hi < 0.0 || lo > max_x {
+                    continue;
+                }
+                let start = lo.round().max(0.0) as usize;
+                let end = (hi.round().min(max_x)).max(0.0) as usize;
+                let width = canvas.width;
+                canvas.buf[y * width + start..=y * width + end].fill(color);
+            }
+        }
+
+        let cases: [Vec<(f32, f32)>; 6] = [
+            // Axis-aligned, on the grid.
+            vec![(8.0, 8.0), (24.0, 8.0), (24.0, 20.0), (8.0, 20.0)],
+            // Slanted, and off it by fractions.
+            vec![(9.3, 6.7), (27.8, 11.2), (22.4, 21.9), (6.1, 17.5)],
+            // A plate one subpixel thick, seen almost edge-on: the case the
+            // round-to-nearest span rule exists for.
+            vec![(5.0, 4.2), (28.0, 5.9), (28.0, 6.3), (5.0, 4.6)],
+            // Hanging off two edges.
+            vec![(-6.0, -3.0), (14.0, -3.0), (14.0, 9.0), (-6.0, 9.0)],
+            // Hanging off the far corner.
+            vec![(20.0, 14.0), (40.0, 14.0), (40.0, 30.0), (20.0, 30.0)],
+            // Nowhere near the canvas at all.
+            vec![(-90.0, -90.0), (-70.0, -90.0), (-70.0, -70.0)],
+        ];
+        for points in &cases {
+            let color = [0.3, 0.55, 0.8];
+            let mut want = Canvas::new(32, 24);
+            fill_convex(&mut want, points, color);
+
+            let mut got = Canvas::new(32, 24);
+            got.set_hull_samples(1);
+            got.fill_hull(&[Facet { points, color }]);
+
+            assert_eq!(
+                got.buf, want.buf,
+                "at one sample a subpixel this has to be the old rasteriser, \
+                 not an approximation of it: {points:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_plates_that_share_an_edge_paint_the_rectangle_they_make() {
+        // The seam. Blended one at a time, two plates each covering half of the
+        // subpixel their shared edge runs down leave a quarter of the sky in a
+        // line through the middle of the ship; composed together at sample
+        // resolution they are indistinguishable from the single shape they add
+        // up to. Bit for bit, because there is nothing here to be approximate
+        // about — the same samples are covered either way.
+        let sky = |canvas: &mut Canvas| {
+            for y in 0..32 {
+                for x in 0..48 {
+                    canvas.splat(x as f32, y as f32, [1.0; 3], 3.0);
+                }
+            }
+        };
+        // A seam down the frame, one across it, and a slanted one — the last
+        // given to the two faces in opposite winding order, which is how a
+        // closed hull actually presents a shared edge. The split points sit
+        // exactly on the whole shape's own edges in every case, so the two
+        // sides really do add up to it rather than nearly.
+        /// The two halves and the shape they add up to.
+        type Split = ([(f32, f32); 4], [(f32, f32); 4], [(f32, f32); 4]);
+        let cases: [Split; 4] = [
+            (
+                [(8.0, 6.0), (21.5, 6.0), (21.5, 24.0), (8.0, 24.0)],
+                [(21.5, 6.0), (37.0, 6.0), (37.0, 24.0), (21.5, 24.0)],
+                [(8.0, 6.0), (37.0, 6.0), (37.0, 24.0), (8.0, 24.0)],
+            ),
+            (
+                [(8.0, 6.0), (37.0, 6.0), (37.0, 16.25), (8.0, 16.25)],
+                [(8.0, 16.25), (37.0, 16.25), (37.0, 24.0), (8.0, 24.0)],
+                [(8.0, 6.0), (37.0, 6.0), (37.0, 24.0), (8.0, 24.0)],
+            ),
+            (
+                [(8.0, 6.0), (20.0, 6.0), (24.0, 24.0), (8.0, 24.0)],
+                [(20.0, 6.0), (37.0, 6.0), (37.0, 24.0), (24.0, 24.0)],
+                [(8.0, 6.0), (37.0, 6.0), (37.0, 24.0), (8.0, 24.0)],
+            ),
+            (
+                [(8.0, 6.0), (20.0, 6.0), (24.0, 24.0), (8.0, 24.0)],
+                [(24.0, 24.0), (20.0, 6.0), (37.0, 6.0), (37.0, 24.0)],
+                [(8.0, 6.0), (37.0, 6.0), (37.0, 24.0), (8.0, 24.0)],
+            ),
+        ];
+        for (left, right, whole) in cases {
+            let color = [0.2, 0.24, 0.31];
+            let mut split = Canvas::new(48, 32);
+            sky(&mut split);
+            split.fill_hull(&[
+                Facet {
+                    points: &left,
+                    color,
+                },
+                Facet {
+                    points: &right,
+                    color,
+                },
+            ]);
+
+            let mut one = Canvas::new(48, 32);
+            sky(&mut one);
+            one.fill_hull(&[Facet {
+                points: &whole,
+                color,
+            }]);
+
+            assert_eq!(
+                split.buf, one.buf,
+                "the sky came through the seam between two plates of one hull"
+            );
+        }
+    }
+
+    #[test]
+    fn an_outline_that_moves_by_a_third_of_a_subpixel_moves_on_screen() {
+        // What anti-aliasing is *for*, stated as a property. Under the old
+        // rasteriser this sweep took two values and the step between them was
+        // the flicker: a plate one or two subpixels thick does not move when
+        // the ship rolls, it sits still and then jumps a whole subpixel.
+        let mut seen: Vec<f32> = Vec::new();
+        for step in 0..=12 {
+            // Across the whole of subpixel 10, which spans 9.5 to 10.5.
+            let edge = 9.5 + step as f32 / 12.0;
+            let mut canvas = Canvas::new(24, 8);
+            let quad = [(2.0, 1.0), (edge, 1.0), (edge, 6.0), (2.0, 6.0)];
+            canvas.fill_hull(&[Facet {
+                points: &quad,
+                color: [1.0; 3],
+            }]);
+            seen.push(canvas.buf[4 * 24 + 10][0]);
+        }
+        assert!(
+            seen.windows(2).all(|w| w[1] >= w[0]),
+            "an edge sweeping one way lit the subpixel unevenly: {seen:?}"
+        );
+        let mut distinct = seen.clone();
+        distinct.sort_by(f32::total_cmp);
+        distinct.dedup();
+        // One rung per sample, which is the most an `n` by `n` grid can offer
+        // and the whole of what the sample count buys.
+        assert!(
+            distinct.len() >= HULL_SAMPLES,
+            "a subpixel an edge crossed took {} values rather than \
+             {HULL_SAMPLES}, so the edge is still snapping rather than \
+             moving: {seen:?}",
+            distinct.len()
+        );
+    }
+
+    #[test]
+    fn a_hull_drawn_straight_after_a_resize_still_fits_the_canvas() {
+        // The band is sized from the width, so a canvas narrowed between two
+        // frames leaves it indexing past the end of itself.
+        let mut canvas = Canvas::new(96, 32);
+        let wide = [(0.0, 4.0), (95.0, 4.0), (95.0, 20.0), (0.0, 20.0)];
+        canvas.fill_hull(&[Facet {
+            points: &wide,
+            color: [0.5; 3],
+        }]);
+        canvas.resize(20, 12);
+        canvas.fill_hull(&[Facet {
+            points: &wide,
+            color: [0.5; 3],
+        }]);
+        assert_eq!(canvas.buf.len(), 20 * 12);
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
+
+        // And the other way, with the sample count moved under it as well.
+        canvas.set_hull_samples(MAX_HULL_SAMPLES);
+        canvas.resize(200, 60);
+        canvas.fill_hull(&[Facet {
+            points: &wide,
+            color: [0.5; 3],
+        }]);
         assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 

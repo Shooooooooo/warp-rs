@@ -6,6 +6,7 @@
 //! raw mode on the alternate screen. So the limits are enforced at parse time,
 //! where the answer is an error message instead.
 
+use crate::canvas;
 use crate::models;
 use crate::term::ColorMode;
 use crate::view::{Orbit, ViewMode};
@@ -141,6 +142,25 @@ pub struct Args {
     /// Tonemap exposure. Higher is brighter.
     #[arg(long, default_value_t = 1.9, value_parser = positive)]
     pub exposure: f32,
+
+    /// How finely a hull's outline is measured, in samples per subpixel on each
+    /// axis. `1` is the hard-edged rasteriser this replaced.
+    ///
+    /// Only the hull is affected, and only from outside. Everything else on the
+    /// canvas is laid down by a splat that already spreads its light over four
+    /// subpixels, so there is nothing here for it to do.
+    ///
+    /// A number rather than an on and an off, because the number is what
+    /// actually varies and because `1` is worth being able to ask for: it is
+    /// not an approximation of the old picture, it is the old picture.
+    #[arg(
+        long,
+        default_value_t = canvas::HULL_SAMPLES,
+        value_name = "N",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new()
+            .range(1..=canvas::MAX_HULL_SAMPLES as u64)
+    )]
+    pub aa: usize,
 
     /// Write a PNG of one frame and exit. The instrument panel is not drawn.
     #[cfg(feature = "snapshot")]
@@ -444,6 +464,19 @@ mod tests {
         assert!(Args::try_parse_from(["warp", "--fps", "0"]).is_err());
         assert!(Args::try_parse_from(["warp", "--fps", "999"]).is_err());
         assert!(Args::try_parse_from(["warp", "--throttle", "0.5"]).is_ok());
+
+        // `--aa` is a sample grid entered squared, so it is bounded like the
+        // rest. Zero is the interesting end: it is not "no anti-aliasing", it
+        // is a hull measured on no samples at all, and one is what means that.
+        assert!(Args::try_parse_from(["warp", "--aa", "0"]).is_err());
+        let past = (canvas::MAX_HULL_SAMPLES + 1).to_string();
+        assert!(Args::try_parse_from(["warp", "--aa", &past]).is_err());
+        assert!(Args::try_parse_from(["warp", "--aa", "1"]).is_ok());
+        assert_eq!(
+            args_for(&[]).aa,
+            canvas::HULL_SAMPLES,
+            "the flag's default and the canvas's have drifted apart"
+        );
     }
 
     #[test]

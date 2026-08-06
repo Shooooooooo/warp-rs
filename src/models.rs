@@ -27,7 +27,7 @@
 //! plates facing away are culled; and the rest are painted far to near, which
 //! is what sorts a nacelle against the engineering hull behind it.
 
-use crate::canvas::Canvas;
+use crate::canvas::{Canvas, Facet};
 use crate::ship::{Ship, MAX_PITCH_RATE, MAX_YAW_RATE};
 use crate::starfield::{self, Camera, Streak};
 use crate::view::{Eye, HULL_REACH, MIN_SHIP_DISTANCE};
@@ -817,6 +817,14 @@ fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32), eye: &Eye) -> 
 /// well beyond the hull at every zoom, so nothing can come between it and the
 /// camera, and the hull sorts against itself.
 ///
+/// The whole hull goes to the canvas in one call, still in the order it was
+/// sorted into. Handing the plates over one at a time is what a painter's
+/// algorithm suggests and it is wrong here: an outline measured finer than a
+/// subpixel has to compose its coverage once per sample, and a plate blended on
+/// its own leaves a share of the sky along every edge it holds in common with
+/// its neighbour — a line of it, down the middle of the ship. [`Canvas::fill_hull`]
+/// carries the argument in full.
+///
 /// `time` is here for the flame's gutter and nothing else. It is `f64` because
 /// a screensaver is left up for days and an `f32` phase goes coarse enough to
 /// stop advancing after about six of them, which would freeze the trails.
@@ -830,21 +838,30 @@ pub fn draw(
 ) {
     let pose = attitude(ship);
     let bubble = ship.warp_intensity() * BUBBLE_LIGHT;
-    for plate in plates(model, cam, pose, eye) {
-        // Nearer plates read a shade brighter. It is a small effect on purpose:
-        // the lighting says which way a plate faces, and this only says which
-        // of two plates facing the same way is the closer. Measured against the
-        // standoff in force rather than a fixed one, so the ratio stays centred
-        // on the hull's own middle — and flattens as the camera pulls back,
-        // which is what a longer standoff really does to a subject.
-        let near = (eye.distance / plate.depth).powf(DEPTH_SHADE);
-        let paint = (plate.shade + bubble) * near;
-        let mut lit = [0.0; 3];
-        for (channel, base) in lit.iter_mut().zip(model.hull) {
-            *channel = base * paint;
-        }
-        canvas.fill_convex(&plate.points, lit);
-    }
+    let plates = plates(model, cam, pose, eye);
+    let faces: Vec<Facet<'_>> = plates
+        .iter()
+        .map(|plate| {
+            // Nearer plates read a shade brighter. It is a small effect on
+            // purpose: the lighting says which way a plate faces, and this only
+            // says which of two plates facing the same way is the closer.
+            // Measured against the standoff in force rather than a fixed one,
+            // so the ratio stays centred on the hull's own middle — and
+            // flattens as the camera pulls back, which is what a longer
+            // standoff really does to a subject.
+            let near = (eye.distance / plate.depth).powf(DEPTH_SHADE);
+            let paint = (plate.shade + bubble) * near;
+            let mut lit = [0.0; 3];
+            for (channel, base) in lit.iter_mut().zip(model.hull) {
+                *channel = base * paint;
+            }
+            Facet {
+                points: &plate.points,
+                color: lit,
+            }
+        })
+        .collect();
+    canvas.fill_hull(&faces);
 
     draw_engines(canvas, cam, ship, model, pose, eye, time);
 }
@@ -879,7 +896,7 @@ fn normal_of(placed: &[[f32; 3]], face: &[u16]) -> [f32; 3] {
 ///
 /// Both are drawn here, after the plates, and that placement is the one thing
 /// in this function that is a decision rather than a number. Everything in
-/// `Canvas` accumulates except `fill_convex`, so an opaque write over a glow
+/// `Canvas` accumulates except `fill_hull`, so an opaque write over a glow
 /// erases it and the bells have always had to come last. The trail inherits
 /// that, and it is not free: the Enterprise's impulse engine is the one bell in
 /// the fleet that is not on the tail, and its plume clears the nacelle tops by
@@ -1640,6 +1657,154 @@ mod tests {
             assert!(
                 covered > 200,
                 "{} let the sky through: only {covered} subpixels were covered",
+                model.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_sky_never_shows_through_the_seams_of_a_hull() {
+        // Why the whole hull goes to the canvas in one call, asked of six real
+        // assemblies of solids rather than of two synthetic quads.
+        //
+        // Composed a plate at a time — which is what a painter's algorithm
+        // suggests, and what this used to do — every edge two plates share
+        // inside the hull is blended twice: each covers a share of the subpixel
+        // their common edge runs down, and `(1 - a)(1 - b)` of the sky lives
+        // through both. So the two paths are drawn side by side here, with one
+        // colour for every face so that a subpixel the hull fully covers is the
+        // hull colour and nothing else.
+        //
+        // Enclosed sky is deliberately *not* what is measured. The needle flies
+        // a hoop and you are meant to see stars through the middle of it.
+        let sky = 0.9f32;
+        let paint = [0.2, 0.24, 0.31];
+        let ship = Ship::new(); // cold, so the drive lays nothing over this
+        let (renderer, cam) = cam(200, 112, &ship);
+        let (w, h) = renderer.canvas_dims();
+
+        for model in models() {
+            // Summed over a few rolls rather than taken from one pose: where a
+            // shared edge falls between two samples is what decides whether it
+            // leaks at all, and one attitude can happen to put every edge of a
+            // simple hull on a sample boundary.
+            let seams: usize = (0..6)
+                .map(|step| {
+                    let mut turned = Ship::new();
+                    turned.roll = step as f32 * 0.21;
+                    let plates = plates(model, &cam, attitude(&turned), &abeam());
+                    let faces: Vec<Facet<'_>> = plates
+                        .iter()
+                        .map(|plate| Facet {
+                            points: &plate.points,
+                            color: paint,
+                        })
+                        .collect();
+                    let lay = |behind: f32, per_face: bool| {
+                        let mut canvas = Canvas::new(w, h);
+                        for y in 0..h {
+                            for x in 0..w {
+                                canvas.splat(x as f32, y as f32, [1.0; 3], behind);
+                            }
+                        }
+                        if per_face {
+                            for face in &faces {
+                                canvas.fill_hull(std::slice::from_ref(face));
+                            }
+                        } else {
+                            canvas.fill_hull(&faces);
+                        }
+                        canvas
+                    };
+                    // The same render over black says exactly how much of the
+                    // sky each path let through, with no threshold to argue
+                    // about: what a subpixel gained from the sky, and nothing
+                    // it gained from the hull.
+                    let survived = |per_face: bool| {
+                        let (over_sky, over_black) = (lay(sky, per_face), lay(0.0, per_face));
+                        (0..h)
+                            .flat_map(|y| (0..w).map(move |x| (x, y)))
+                            .map(|(x, y)| over_sky.light_at(x, y) - over_black.light_at(x, y))
+                            .collect::<Vec<_>>()
+                    };
+                    // Solid hull composed together, and leaking composed one at
+                    // a time. A silhouette subpixel is partly covered whichever
+                    // way round it is drawn and does not appear here.
+                    survived(false)
+                        .iter()
+                        .zip(&survived(true))
+                        .filter(|(together, apart)| **together <= 1e-6 && **apart > 1e-3)
+                        .count()
+                })
+                .sum();
+            assert!(
+                seams > 20,
+                "{}: only {seams} subpixels over six attitudes came out solid \
+                 hull composed together and let the sky through composed one \
+                 plate at a time, so this measured almost nothing",
+                model.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_hull_turned_by_less_than_a_subpixel_moves_by_less_than_a_subpixel() {
+        // What the finer measurement is for, at the fleet level. A plate is one
+        // or two subpixels thick at the framing the shot opens on, and under a
+        // rasteriser that puts an edge on one side of a subpixel or the other
+        // an outline that small does not move when the ship rolls — it sits
+        // still and then jumps a whole subpixel, which reads as crawling.
+        //
+        // So: rolls far too small to move any edge a whole subpixel, and both
+        // halves of the property. Most steps have to change *something*, or the
+        // outline is still snapping; and no subpixel may change by anything
+        // like the hull's own brightness in one step, which is the popping the
+        // first half would otherwise be satisfied by.
+        let ship = Ship::new(); // cold, so only the plates are drawn
+        let (renderer, cam) = cam(120, 72, &ship);
+        let (w, h) = renderer.canvas_dims();
+
+        for model in models() {
+            let frame = |roll: f32| {
+                let mut turned = Ship::new();
+                turned.roll = roll;
+                let mut canvas = Canvas::new(w, h);
+                draw(&mut canvas, &cam, &turned, model, &abeam(), 0.0);
+                (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (x, y)))
+                    .map(|(x, y)| canvas.light_at(x, y))
+                    .collect::<Vec<_>>()
+            };
+
+            // A hull is at most one unit from its own axis and about nine
+            // subpixels to the unit here, so a thousandth of a radian moves the
+            // furthest point of it by roughly a hundredth of a subpixel.
+            let step = 0.001;
+            let mut moved = 0;
+            let mut previous = frame(0.0);
+            for i in 1..=12 {
+                let current = frame(i as f32 * step);
+                let mut biggest = 0.0f32;
+                for (a, b) in previous.iter().zip(&current) {
+                    biggest = biggest.max((a - b).abs());
+                }
+                if biggest > 0.0 {
+                    moved += 1;
+                }
+                assert!(
+                    biggest < 0.3,
+                    "{}: a roll of a thousandth of a radian moved a subpixel \
+                     by {biggest}, which is a plate jumping rather than \
+                     sliding",
+                    model.name
+                );
+                previous = current;
+            }
+            assert!(
+                moved >= 8,
+                "{}: only {moved} of twelve hundredth-of-a-subpixel turns \
+                 changed the frame at all, so the outline is still snapping \
+                 from one subpixel to the next",
                 model.name
             );
         }
