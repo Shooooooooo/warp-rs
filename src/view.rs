@@ -250,8 +250,11 @@ mod tests {
                      zoomed {zoom}, against {want} at the other zooms"
                 );
                 // And it really does hold the ship, at every one of them.
+                // Asked of the bubble rather than of its radius, because the
+                // bubble is elongated and seated astern of the hull now, and a
+                // scalar could not see either.
                 assert!(
-                    lens.shadow() > half,
+                    lens.shadowed(nose),
                     "the hull is poking out of its own bubble at zoom {zoom}"
                 );
             }

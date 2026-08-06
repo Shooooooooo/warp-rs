@@ -607,20 +607,22 @@ mod tests {
         for _ in 0..120 {
             field.update(1.0 / 120.0, 300.0, &cam);
         }
-        let centre = (cam.cx, cam.cy);
-        let lens = Lens {
-            center: centre,
-            radius: 22.0,
-        };
+        // Built the way the renderer builds one, so it is seated astern of the
+        // ship as a real bubble is. Eleven subpixels of ship come out at the
+        // twenty-two the bands below are written against.
+        let lens = Lens::for_warp((cam.cx, cam.cy), 1.0, 11.0);
 
-        // Mean brightness over an annulus, not the total: the annuli compared
-        // below cover different areas, and the canvas clips the outer ones.
+        // Mean brightness over a band, not the total: the bands compared below
+        // cover different areas, and the canvas clips the outer ones. Measured
+        // in rings rather than in subpixels — the bubble is not round, so a
+        // circle drawn about its centre crosses the dark disc, the bright rim
+        // and the sky beyond it all at once.
         let light_within = |canvas: &Canvas, lo: f32, hi: f32| -> f32 {
             let (mut total, mut n) = (0.0, 0u32);
             for y in 0..100usize {
                 for x in 0..200usize {
-                    let r = (x as f32 - centre.0).hypot(y as f32 - centre.1);
-                    if r >= lo && r < hi {
+                    let m = lens.offset((x as f32, y as f32));
+                    if m >= lo && m < hi {
                         total += canvas.light_at(x, y);
                         n += 1;
                     }
@@ -638,18 +640,18 @@ mod tests {
         // merely displaced — a transparent lens would fill it right back up
         // with a demagnified copy of the whole sky.
         let (before, after) = (
-            light_within(&unbent, 0.0, 14.0),
-            light_within(&bent, 0.0, 14.0),
+            light_within(&unbent, 0.0, 0.636),
+            light_within(&bent, 0.0, 0.636),
         );
         assert_eq!(
             after, 0.0,
             "the bubble is still lit: {before} became {after}"
         );
-        // The ring: the light swept out of the middle piled up just outside the
-        // Einstein radius, where the magnification is highest.
+        // The ring: the light swept out of the middle piled up just outside it,
+        // where the magnification is highest.
         let (before, after) = (
-            light_within(&unbent, 22.0, 27.0),
-            light_within(&bent, 22.0, 27.0),
+            light_within(&unbent, 1.0, 1.227),
+            light_within(&bent, 1.0, 1.227),
         );
         assert!(
             after > before * 1.3,
@@ -660,16 +662,16 @@ mod tests {
         // frame the rim outshines the sky further out, which in the unlensed
         // frame it does not.
         let (rim, out) = (
-            light_within(&bent, 22.0, 27.0),
-            light_within(&bent, 36.0, 46.0),
+            light_within(&bent, 1.0, 1.227),
+            light_within(&bent, 1.636, 2.091),
         );
         assert!(
             rim > out * 1.1,
             "the rim does not stand out: {rim} against {out}"
         );
         let (rim, out) = (
-            light_within(&unbent, 22.0, 27.0),
-            light_within(&unbent, 36.0, 46.0),
+            light_within(&unbent, 1.0, 1.227),
+            light_within(&unbent, 1.636, 2.091),
         );
         assert!(
             (rim - out).abs() < out * 0.25,

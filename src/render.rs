@@ -210,15 +210,21 @@ impl Renderer {
         self.canvas.clear();
         field.draw(&mut self.canvas, cam, warp, time, &lens);
 
-        // A wash inside the shadow, so the disc the lens has swept clear reads
-        // as a bubble the ship is sitting in rather than as a hole punched in
-        // the sky.
+        // A wash inside the shadow, so the region the lens has swept clear
+        // reads as a bubble the ship is sitting in rather than as a hole
+        // punched in the sky. Drawn to the shadow's own two axes and about the
+        // bubble's own centre, both of which are now astern of the vanishing
+        // point: a round wash sitting in an elongated hole gives the shape away
+        // twice over, once at the ends where the hole runs on past the light
+        // and once at the waist where the light spills out of it.
         if lens.is_on() {
             let glare = warp * warp * warp;
-            self.canvas.add_glow(
-                cam.cx,
-                cam.cy,
-                lens.shadow() * 1.5,
+            let (rx, ry) = lens.shadow_axes();
+            self.canvas.add_glow_oval(
+                lens.center.0,
+                lens.center.1,
+                rx * 1.5,
+                ry * 1.5,
                 CORE_COLOR,
                 glare * 0.35,
             );
@@ -429,25 +435,31 @@ mod tests {
         // immediately around the hull is swept clear and piles up beyond it,
         // and at impulse the two read much the same.
         //
-        // The two rings are measured in *ships*, which is what they always
-        // were: written as fractions of the canvas height they only worked
-        // while the hull was a fixed fraction of it, and the inner one — the
-        // dark ring — would have come to straddle the bright Einstein ring the
-        // moment the framing moved. Said in the unit the geometry is actually
-        // in, they hold at any framing and at any zoom.
+        // The two bands are measured in *rings*, which is the third unit this
+        // has been written in and the last one it needs. Fractions of the canvas
+        // height only worked while the hull was a fixed fraction of it. Ships
+        // survived the zoom but not the shape: the bubble is elongated and
+        // seated astern now, so a circle drawn about the middle of the frame at
+        // 1.1 ship-halves passes through the swept-clear disc ahead of the ship
+        // and straight out through the bright rim above it. `Lens::offset` is
+        // the bubble's own metric, so a band in it means the same thing at any
+        // framing, any zoom and any shape the bubble is ever given.
         let sample = |engaged: bool| -> (f32, f32) {
             let renderer = fly_outside(120, 36, 0, engaged, 150, 2500);
             let (w, h) = renderer.canvas_dims();
             let px = renderer.pixels();
             let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
             let ship = view::ship_half_on_screen(h as f32, view::ZOOM_DEFAULT);
-            // Two rings: one just outside the hull, one well beyond it.
+            // The bubble a lit drive makes, used as the ruler for both frames:
+            // the point is to look at the same places in each, so this is built
+            // at full warp whether the drive in the frame is lit or not.
+            let bubble = Lens::for_warp((cx, cy), 1.0, ship);
             let mean = |lo: f32, hi: f32| {
                 let (mut total, mut n) = (0u64, 0u64);
                 for y in 0..h {
                     for x in 0..w {
-                        let r = (x as f32 - cx).hypot(y as f32 - cy);
-                        if r >= lo && r < hi {
+                        let m = bubble.offset((x as f32, y as f32));
+                        if m >= lo && m < hi {
                             let p = px[y * w + x];
                             total += (p[0] as u64 + p[1] as u64 + p[2] as u64) / 3;
                             n += 1;
@@ -456,12 +468,11 @@ mod tests {
                 }
                 total as f32 / n.max(1) as f32
             };
-            // Just outside the hull, which is inside the swept-clear disc; and
-            // well past the Einstein ring, where the sky it pushed out has
-            // piled up. The bubble is two ship-halves across and its shadow is
-            // 0.72 of that, so the first sits between the nose and the shadow's
-            // edge and the second starts beyond the ring entirely.
-            (mean(ship * 0.92, ship * 1.25), mean(ship * 2.3, ship * 3.1))
+            // Inside the shadow, which is where the hull sits; and out past the
+            // ring, where the sky the bubble pushed aside has piled up. The
+            // shadow is 0.72 of the way out, so the first band is well inside
+            // it and the second starts beyond the ring entirely.
+            (mean(0.46, 0.63), mean(1.15, 1.55))
         };
 
         let (near_hull, far_out) = sample(true);
