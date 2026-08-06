@@ -241,7 +241,12 @@ impl Ship {
 /// Fold an angle into `[-PI, PI)` — the range a bank indicator reads in, and
 /// the one that keeps a ship that has rolled the same way for an hour from
 /// accumulating an angle too coarse to steer with.
-fn wrap_signed(angle: f32) -> f32 {
+///
+/// Public because the camera outside has the same problem and no business
+/// growing a second copy of the answer: [`crate::view::Orbit`] swings all the
+/// way round twice over, and a held key is a held key whether it is turning a
+/// ship or an eye.
+pub fn wrap_signed(angle: f32) -> f32 {
     (angle + PI).rem_euclid(TAU) - PI
 }
 

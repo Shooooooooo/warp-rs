@@ -18,7 +18,7 @@
 use crate::canvas::Canvas;
 use crate::lens::{Image, Lens};
 use crate::starfield::{shift_color, Camera, Streak, CLASSES};
-use crate::view::{HULL_REACH, MAX_SHIP_DISTANCE};
+use crate::view::{Orbit, HULL_REACH, MAX_SHIP_DISTANCE};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::f32::consts::TAU;
@@ -87,18 +87,32 @@ pub struct ExteriorField {
     /// Half-extent of the band in screen space, margin included.
     bound: (f32, f32),
     focal: f32,
+    /// Where the camera was pointed when the pool was last stepped. Kept so
+    /// that a swing can be applied as the *difference*, which is what makes it
+    /// free when there is no swing.
+    orbit: Orbit,
+    /// And which way the ship is pointing in that camera's space, cached off it
+    /// because [`Self::streaks`] takes `&self` and the Doppler is measured
+    /// against the direction of travel rather than against the frame.
+    nose: [f32; 3],
     /// Scratch for bending a streak, reused across every star of every frame.
     source: Vec<(f32, f32)>,
     bent: Vec<(f32, f32)>,
 }
 
 impl ExteriorField {
-    pub fn new(count: usize, seed: u64, cam: &Camera) -> Self {
+    /// The orbit is where the camera already is, not where it starts from.
+    /// The band is laid out in the camera's own frustum and so does not depend
+    /// on it at all — but the first step would otherwise read a swing that
+    /// never happened and turn the whole pool through it.
+    pub fn new(count: usize, seed: u64, cam: &Camera, orbit: Orbit) -> Self {
         let mut field = Self {
             stars: Vec::with_capacity(count),
             rng: StdRng::seed_from_u64(seed),
             bound: bound_for(cam),
             focal: cam.focal.max(f32::MIN_POSITIVE),
+            orbit: orbit.held(),
+            nose: orbit.held().nose_in_camera(),
             source: Vec::with_capacity(MAX_ARCS + 1),
             bent: Vec::with_capacity(MAX_ARCS + 1),
         };
@@ -127,9 +141,10 @@ impl ExteriorField {
     pub fn retarget(&mut self, cam: &Camera) {
         self.bound = bound_for(cam);
         self.focal = cam.focal.max(f32::MIN_POSITIVE);
-        let (half_width, focal) = (self.bound.0, self.focal);
+        let (half_width, half_height, focal) = (self.bound.0, self.bound.1, self.focal);
         for star in &mut self.stars {
             star.pos[0] = fold(star.pos[0], band(half_width, focal, star.pos[2])).0;
+            star.pos[1] = fold(star.pos[1], band(half_height, focal, star.pos[2])).0;
             star.prev = None;
         }
     }
@@ -181,28 +196,108 @@ impl ExteriorField {
         CLASSES.len() - 1
     }
 
-    /// Fly the band past the camera.
+    /// Fly the band past the camera, from wherever the camera is watching.
     ///
     /// The ship's steering is deliberately not an argument. The camera rides
     /// with the ship rather than being bolted to the sky, so a turn swings the
     /// *hull* in frame and leaves the stars streaming the way they were — the
     /// view from a wingman's canopy, where the horizon does not tip because
     /// your neighbour rolled.
-    pub fn update(&mut self, dt: f32, speed: f32, cam: &Camera) {
-        let travel = speed * dt;
+    ///
+    /// The camera's own attitude is an argument, and is the exception that
+    /// proves it: swinging the *eye* round the ship has to take the sky with
+    /// it, because that is the only thing that distinguishes it from the ship
+    /// turning. Lifting the camera over the hull at zero azimuth is the case
+    /// that makes this sharp — the flow direction does not change at all, so a
+    /// pool left alone would sit perfectly still while the ship rotated in
+    /// front of it, which is precisely what a barrel roll looks like.
+    ///
+    /// Two things happen here that did not before, and both are switched off
+    /// entirely at [`Orbit::LEVEL`] rather than reduced to an identity: the pool
+    /// is turned by however much the camera turned since the last step, and
+    /// travel is a vector rather than a number. At the level shot that vector
+    /// is exactly `(-1, 0, 0)`, so the range still never changes, the fold below
+    /// is still the only way out of the band, and the arithmetic is still what
+    /// the reference frames were recorded from.
+    pub fn update(&mut self, dt: f32, speed: f32, cam: &Camera, orbit: Orbit) {
+        let step = speed * dt;
+        let orbit = orbit.held();
+        let travel = orbit.sky_travel();
         let focal = self.focal;
-        let half_width = self.bound.0;
+        let (half_width, half_height) = self.bound;
         let (bank_sin, bank_cos) = cam.bank.sin_cos();
 
-        for star in &mut self.stars {
+        // How much the camera has turned since the pool was last laid against
+        // it, as a rotation in the camera's own space. Compared rather than
+        // composed to an identity: the angles are unchanged bit for bit when
+        // nothing has moved them, so this is `None` on every frame of a flight
+        // nobody is swinging the camera on.
+        let swing = (orbit != self.orbit).then(|| {
+            let turn = between(&orbit.basis(), &self.orbit.basis());
+            self.orbit = orbit;
+            self.nose = orbit.nose_in_camera();
+            turn
+        });
+        // Depth and height only move when something moves them, and at the
+        // level shot nothing does. Held as flags rather than tested per star so
+        // the two blocks below cost nothing at all rather than costing a
+        // comparison.
+        //
+        // Height goes with depth and not only with its own travel, which is
+        // not obvious and was a real bug: the band is a fixed size on the
+        // *screen*, so its half-height in world units follows the range. A star
+        // whose `y` never moved is outside the band the moment it is carried
+        // nearer the camera, and `x` only escapes noticing because it is folded
+        // every frame regardless.
+        let turns_z = swing.is_some() || travel[2] != 0.0;
+        let turns_y = turns_z || travel[1] != 0.0;
+
+        let mut stars = std::mem::take(&mut self.stars);
+        for star in &mut stars {
             star.prev = cam.project(star.pos);
 
-            // Range never changes — travel is along the track — so the only way
-            // out of the band is off the trailing edge, and the honest place
-            // for a star the ship has just overtaken is back out in front at
-            // the range it already had.
+            // The trail is deliberately left where it was. A camera that is
+            // being swung really does smear what it sweeps past, and at the
+            // rate the orbit eases that smear is a fraction of a subpixel —
+            // rewinding it would cost a projection per star to hide something
+            // nobody can see and that ought to be there anyway.
+            if let Some(turn) = &swing {
+                star.pos = turned(turn, star.pos);
+            }
+
+            if travel[2] != 0.0 {
+                star.pos[2] += travel[2] * step;
+            }
+            // The one recycle that cannot carry its trail: a star crossing a
+            // wall of the band is nowhere near where it came back, so it comes
+            // back as a fresh star drawing a bare point for one frame. That is
+            // affordable because it is rare — the band is three hundred units
+            // deep against a fold width of a few tens, so a star crosses it in
+            // seconds where it wraps round in `x` several times a second.
+            if turns_z && !(Z_NEAR..Z_FAR).contains(&star.pos[2]) {
+                *star = self.spawn();
+                // Given the trail it would have had. Without this a recycled
+                // star draws a bare point on its first frame, and off the beam
+                // at full warp two to four percent of the pool recycles every
+                // frame — which is the sky flickering between streaks and dots
+                // that the fold above exists to avoid, arriving by the other
+                // door. One step back along the track is exactly where it came
+                // from, and is always well clear of the projection's near plane.
+                let was = [
+                    star.pos[0] - travel[0] * step,
+                    star.pos[1] - travel[1] * step,
+                    star.pos[2] - travel[2] * step,
+                ];
+                star.prev = cam.project(was);
+                continue;
+            }
+
+            // Range never changes when the camera is abeam — travel is along
+            // the track — so the only way out of the band is off the trailing
+            // edge, and the honest place for a star the ship has just overtaken
+            // is back out in front at the range it already had.
             let z = star.pos[2];
-            let (folded, shift) = fold(star.pos[0] - travel, band(half_width, focal, z));
+            let (folded, shift) = fold(star.pos[0] + travel[0] * step, band(half_width, focal, z));
             star.pos[0] = folded;
 
             // The fold is an exact whole number of band widths, so the trail
@@ -219,7 +314,32 @@ impl ExteriorField {
                     p.1 += d * bank_sin;
                 }
             }
+
+            if !turns_y {
+                continue;
+            }
+            star.pos[1] += travel[1] * step;
+            // Folded only when it has actually gone over the edge, where `x`
+            // above is folded every frame regardless. The asymmetry is on
+            // purpose and is not a tidying opportunity: `fold` is not an exact
+            // identity for a value already inside its band, so folding a `y`
+            // that never moves would round it, and the shot the reference
+            // frames are recorded from is exactly the shot where it never
+            // moves.
+            let half = band(half_height, focal, z);
+            if star.pos[1] < -half || star.pos[1] >= half {
+                let (folded, shift) = fold(star.pos[1], half);
+                star.pos[1] = folded;
+                if shift != 0.0 {
+                    if let Some(p) = &mut star.prev {
+                        let d = shift * focal / z;
+                        p.0 -= d * bank_sin;
+                        p.1 += d * bank_cos;
+                    }
+                }
+            }
         }
+        self.stars = stars;
     }
 
     /// Turn the band into drawable segments for this frame, before any bending.
@@ -268,9 +388,19 @@ impl ExteriorField {
             // blues, and the sky it is leaving behind reddens. Dead abeam — the
             // middle of the frame — is neither, which is the half-way point of
             // the ramp `shift_color` already takes.
+            //
+            // Against the *nose* rather than against camera `+x`, which is only
+            // the direction of travel while the camera is abeam. Swing it round
+            // and the sky the ship is running into is no longer to screen
+            // right; measured against the frame, a chase view would redden the
+            // sky ahead and blue the wake. Exact where the two agree: the nose
+            // is `(1, 0, 0)` abeam, so this is `pos[0]` to the bit.
             let length = (star.pos[0].powi(2) + star.pos[1].powi(2) + star.pos[2].powi(2)).sqrt();
+            let ahead = star.pos[0] * self.nose[0]
+                + star.pos[1] * self.nose[1]
+                + star.pos[2] * self.nose[2];
             let forward = if length > f32::EPSILON {
-                (0.5 + 0.5 * star.pos[0] / length).clamp(0.0, 1.0)
+                (0.5 + 0.5 * ahead / length).clamp(0.0, 1.0)
             } else {
                 0.5
             };
@@ -397,6 +527,32 @@ fn subdivide(streak: &Streak, lens: &Lens, out: &mut Vec<(f32, f32)>) {
     }
 }
 
+/// The rotation that carries the camera's old frame onto its new one, in the
+/// camera's own space: `M_new · M_oldᵀ`.
+///
+/// Both bases map the hull's frame onto a camera's, so composing one with the
+/// other's inverse — its transpose, these being rotations — leaves something
+/// that acts on positions already in camera space, which is where every star
+/// lives.
+fn between(new: &[[f32; 3]; 3], old: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut turn = [[0.0; 3]; 3];
+    for (i, row) in turn.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = new[i][0] * old[j][0] + new[i][1] * old[j][1] + new[i][2] * old[j][2];
+        }
+    }
+    turn
+}
+
+/// A camera-space position, put through one of those.
+fn turned(turn: &[[f32; 3]; 3], p: [f32; 3]) -> [f32; 3] {
+    let mut out = [0.0; 3];
+    for (axis, row) in out.iter_mut().zip(turn) {
+        *axis = p[0] * row[0] + p[1] * row[1] + p[2] * row[2];
+    }
+    out
+}
+
 fn bound_for(cam: &Camera) -> (f32, f32) {
     (
         cam.width * 0.5 * SPAWN_MARGIN,
@@ -407,6 +563,11 @@ fn bound_for(cam: &Camera) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The nose as [`crate::view::Orbit::LEVEL`] hands it over: the camera
+    /// abeam of the track, which is the shot every one of these was written
+    /// against.
+    const ABEAM: [f32; 3] = [1.0, 0.0, 0.0];
     use crate::canvas::Tonemap;
     use crate::render::Renderer;
     use crate::ship::Ship;
@@ -430,10 +591,10 @@ mod tests {
         // band several times in one step.
         let cam = cam();
         for speed in [0.0, 30.0, crate::ship::WARP_MAX] {
-            let mut field = ExteriorField::new(300, 3, &cam);
+            let mut field = ExteriorField::new(300, 3, &cam, Orbit::LEVEL);
             for _ in 0..600 {
                 let ranges: Vec<f32> = field.stars.iter().map(|s| s.pos[2]).collect();
-                field.update(1.0 / 120.0, speed, &cam);
+                field.update(1.0 / 120.0, speed, &cam, Orbit::LEVEL);
                 for (i, star) in field.stars.iter().enumerate() {
                     assert_eq!(star.pos[2], ranges[i], "star {i} changed range");
                     let band = band(field.bound.0, field.focal, star.pos[2]);
@@ -456,12 +617,12 @@ mod tests {
         // it would leave the nearest stars flickering between streaks and bare
         // points, which reads as television static rather than as speed.
         let cam = cam();
-        let mut field = ExteriorField::new(1, 5, &cam);
+        let mut field = ExteriorField::new(1, 5, &cam, Orbit::LEVEL);
         // Put it a hair inside the trailing edge, so one step folds it.
         let z = Z_NEAR * 1.2;
         let band = band(field.bound.0, field.focal, z);
         field.stars[0].pos = [-band * 0.98, 0.0, z];
-        field.update(1.0 / 120.0, 400.0, &cam);
+        field.update(1.0 / 120.0, 400.0, &cam, Orbit::LEVEL);
 
         let star = field.stars[0];
         assert!(star.prev.is_some(), "the trail was thrown away");
@@ -479,15 +640,165 @@ mod tests {
     }
 
     #[test]
+    fn swinging_the_camera_sweeps_the_sky_past_it() {
+        // The regression test for the bug this whole design is arranged
+        // around, and the one that is easiest to ship without noticing.
+        //
+        // Lifting the camera over the hull at zero azimuth does not change the
+        // direction the sky flows in at all — the rotation is about the flow
+        // axis itself. So a field that was only told the *travel* direction
+        // would sit perfectly still while the ship rotated in front of it,
+        // which is exactly what a barrel roll looks like, and the new control
+        // would be indistinguishable from the one it replaced. The pool has to
+        // turn as well.
+        let cam = Camera::new(120, 72);
+        let level = |field: &ExteriorField| -> Vec<(f32, f32)> {
+            field
+                .stars
+                .iter()
+                .filter_map(|s| cam.project(s.pos))
+                .collect()
+        };
+
+        let mut still = ExteriorField::new(400, 11, &cam, Orbit::LEVEL);
+        let mut swung = ExteriorField::new(400, 11, &cam, Orbit::LEVEL);
+        let lifted = Orbit {
+            azimuth: 0.0,
+            elevation: 0.4,
+            roll: 0.0,
+        };
+        assert_eq!(
+            Orbit::LEVEL.sky_travel(),
+            lifted.sky_travel(),
+            "this test is only worth anything while the flow direction is the same"
+        );
+        for _ in 0..8 {
+            still.update(1.0 / 120.0, 60.0, &cam, Orbit::LEVEL);
+            swung.update(1.0 / 120.0, 60.0, &cam, lifted);
+        }
+        let (a, b) = (level(&still), level(&swung));
+        let moved = a
+            .iter()
+            .zip(&b)
+            .filter(|(p, q)| (p.1 - q.1).abs() > 1.0)
+            .count();
+        assert!(
+            moved > a.len() / 2,
+            "lifting the camera moved only {moved} of {} stars — the sky is not \
+             coming with it, and the control is a barrel roll wearing new keys",
+            a.len()
+        );
+
+        // And the other way: with the camera held where it is, the sky is
+        // bitwise where it always was. This is the gate the reference frames
+        // depend on, asked of the pool rather than of a hash.
+        let mut held = ExteriorField::new(400, 11, &cam, Orbit::LEVEL);
+        let mut untouched = ExteriorField::new(400, 11, &cam, Orbit::LEVEL);
+        for _ in 0..8 {
+            held.update(1.0 / 120.0, 60.0, &cam, Orbit::LEVEL);
+            untouched.update(1.0 / 120.0, 60.0, &cam, Orbit::LEVEL);
+        }
+        for (p, q) in held.stars.iter().zip(&untouched.stars) {
+            assert_eq!(p.pos, q.pos, "a level step is not deterministic");
+            assert_eq!(p.pos[1], q.pos[1], "the level fold moved a star sideways");
+        }
+    }
+
+    #[test]
+    fn the_band_holds_together_from_every_angle() {
+        // Off the beam the sky gains depth, which is the one thing this module
+        // was written never to have to handle: stars cross the near and far
+        // walls and have to be put back. Every star has to stay inside all
+        // three bounds afterwards, or the depth sorting the hull relies on
+        // stops being true and the frame starts showing holes.
+        let cam = Camera::new(120, 72);
+        for (az, el, roll) in [
+            (1.2f32, 0.0f32, 0.0f32),
+            (-1.2, 0.0, 0.0),
+            (std::f32::consts::FRAC_PI_2, 0.0, 0.0),
+            (2.6, 0.9, 1.4),
+            (-0.8, -1.3, -2.2),
+        ] {
+            let orbit = Orbit {
+                azimuth: az,
+                elevation: el,
+                roll,
+            }
+            .held();
+            let mut field = ExteriorField::new(600, 13, &cam, Orbit::LEVEL);
+            for step in 0..400 {
+                // Swung in on the first step and then held, so both the pool
+                // rotation and the steady flow are exercised.
+                field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, orbit);
+                for star in &field.stars {
+                    assert!(
+                        star.pos.iter().all(|v| v.is_finite()),
+                        "a star went to pieces at {orbit:?} on step {step}: {:?}",
+                        star.pos
+                    );
+                    assert!(
+                        (Z_NEAR..Z_FAR).contains(&star.pos[2]),
+                        "a star left the band at {orbit:?} on step {step}: {:?}",
+                        star.pos
+                    );
+                    let (bx, by) = (
+                        band(field.bound.0, field.focal, star.pos[2]),
+                        band(field.bound.1, field.focal, star.pos[2]),
+                    );
+                    assert!(
+                        star.pos[0].abs() <= bx && star.pos[1].abs() <= by,
+                        "a star left the frame at {orbit:?} on step {step}: {:?}",
+                        star.pos
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_star_put_back_through_a_wall_still_draws_a_streak() {
+        // The depth recycle is the one that cannot carry its trail across, so
+        // it is handed the trail it would have had. Without that, off the beam
+        // at full warp a few percent of the pool draws a bare point every
+        // frame — the sky flickering between streaks and dots that the fold
+        // exists to avoid, arriving by the other door.
+        let cam = Camera::new(120, 72);
+        let ahead = Orbit {
+            azimuth: 1.4,
+            elevation: 0.0,
+            roll: 0.0,
+        };
+        let mut field = ExteriorField::new(3000, 17, &cam, ahead);
+        let mut points = 0usize;
+        let mut drawn = 0usize;
+        for _ in 0..120 {
+            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, ahead);
+            for star in &field.stars {
+                if cam.project(star.pos).is_some() {
+                    drawn += 1;
+                    if star.prev.is_none() {
+                        points += 1;
+                    }
+                }
+            }
+        }
+        assert!(drawn > 0, "nothing was on screen to check");
+        assert_eq!(
+            points, 0,
+            "{points} of {drawn} stars came back without the streak they swept"
+        );
+    }
+
+    #[test]
     fn nothing_ever_comes_between_the_camera_and_the_ship() {
         // The whole of the exterior renderer's depth sorting, asserted rather
         // than assumed: the hull is drawn over the sky, so no star may be in
         // front of it — at any zoom, so measured against the furthest back the
         // camera can be pushed.
         let cam = cam();
-        let mut field = ExteriorField::new(2000, 7, &cam);
+        let mut field = ExteriorField::new(2000, 7, &cam, Orbit::LEVEL);
         for _ in 0..600 {
-            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam);
+            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, Orbit::LEVEL);
         }
         for star in &field.stars {
             assert!(
@@ -503,11 +814,11 @@ mod tests {
         // Parallax is the whole reason the band has depth: without it the view
         // is a flat curtain sliding by.
         let cam = cam();
-        let mut field = ExteriorField::new(2, 5, &cam);
+        let mut field = ExteriorField::new(2, 5, &cam, Orbit::LEVEL);
         field.stars[0].pos = [0.0, 0.0, Z_NEAR * 1.1];
         field.stars[1].pos = [0.0, 0.0, Z_FAR * 0.9];
         let before = [screen_x(&field, &cam, 0), screen_x(&field, &cam, 1)];
-        field.update(1.0 / 120.0, 60.0, &cam);
+        field.update(1.0 / 120.0, 60.0, &cam, Orbit::LEVEL);
         let after = [screen_x(&field, &cam, 0), screen_x(&field, &cam, 1)];
         let swept = |i: usize| (before[i] - after[i]).abs();
         assert!(
@@ -525,9 +836,9 @@ mod tests {
         // over-steep falloff makes cruising look like a dead terminal, and the
         // margin is a run-up rather than a place to hide the star budget.
         let cam = cam();
-        let mut field = ExteriorField::new(2000, 21, &cam);
+        let mut field = ExteriorField::new(2000, 21, &cam, Orbit::LEVEL);
         for _ in 0..900 {
-            field.update(1.0 / 120.0, 25.0, &cam);
+            field.update(1.0 / 120.0, 25.0, &cam, Orbit::LEVEL);
         }
         let lit = field
             .streaks(&cam, 0.0, 0.0)
@@ -550,9 +861,9 @@ mod tests {
     #[test]
     fn streaks_are_points_at_rest_and_smear_at_warp() {
         let cam = cam();
-        let mut field = ExteriorField::new(400, 3, &cam);
-        field.update(1.0 / 120.0, 0.0, &cam);
-        field.update(1.0 / 120.0, 0.0, &cam);
+        let mut field = ExteriorField::new(400, 3, &cam, Orbit::LEVEL);
+        field.update(1.0 / 120.0, 0.0, &cam, Orbit::LEVEL);
+        field.update(1.0 / 120.0, 0.0, &cam, Orbit::LEVEL);
         let still: f32 = field
             .streaks(&cam, 0.0, 0.0)
             .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
@@ -560,7 +871,7 @@ mod tests {
         assert!(still < 1.0, "a parked ship should not streak: {still}");
 
         for _ in 0..30 {
-            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam);
+            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, Orbit::LEVEL);
         }
         let moving: f32 = field
             .streaks(&cam, 1.0, 0.0)
@@ -574,9 +885,9 @@ mod tests {
         // With the drive shut down the exterior view has to draw exactly what
         // it would if the lens did not exist — not something very close to it.
         let cam = cam();
-        let mut field = ExteriorField::new(600, 13, &cam);
+        let mut field = ExteriorField::new(600, 13, &cam, Orbit::LEVEL);
         for _ in 0..120 {
-            field.update(1.0 / 120.0, 200.0, &cam);
+            field.update(1.0 / 120.0, 200.0, &cam, Orbit::LEVEL);
         }
 
         let tone = Tonemap::new(1.9, 2.2);
@@ -603,14 +914,14 @@ mod tests {
         // The picture the lens is for: nothing survives inside the Einstein
         // radius, and the light it displaced piles up just outside it.
         let cam = cam();
-        let mut field = ExteriorField::new(8000, 17, &cam);
+        let mut field = ExteriorField::new(8000, 17, &cam, Orbit::LEVEL);
         for _ in 0..120 {
-            field.update(1.0 / 120.0, 300.0, &cam);
+            field.update(1.0 / 120.0, 300.0, &cam, Orbit::LEVEL);
         }
         // Built the way the renderer builds one, so it is seated astern of the
         // ship as a real bubble is. Eleven subpixels of ship come out at the
         // twenty-two the bands below are written against.
-        let lens = Lens::for_warp((cam.cx, cam.cy), 1.0, 11.0);
+        let lens = Lens::for_warp((cam.cx, cam.cy), 1.0, 11.0, ABEAM);
 
         // Mean brightness over a band, not the total: the bands compared below
         // cover different areas, and the canvas clips the outer ones. Measured
@@ -717,17 +1028,18 @@ mod tests {
         // that into a fresh `Vec` each time would be thousands of allocations a
         // frame, in the same spirit as the buffer `resolve_into` reuses.
         let cam = cam();
-        let mut field = ExteriorField::new(3000, 9, &cam);
+        let mut field = ExteriorField::new(3000, 9, &cam, Orbit::LEVEL);
         let mut canvas = Canvas::new(200, 100);
         let lens = Lens::for_warp(
             (cam.cx, cam.cy),
             1.0,
             ship_half_on_screen(cam.height, ZOOM_DEFAULT),
+            ABEAM,
         );
 
         let mut settled = None;
         for frame in 0..120 {
-            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam);
+            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, Orbit::LEVEL);
             field.draw(&mut canvas, &cam, 1.0, frame as f64 / 60.0, &lens);
             let capacity = (field.source.capacity(), field.bent.capacity());
             match settled {
@@ -742,7 +1054,7 @@ mod tests {
     #[test]
     fn resizing_the_pool_and_the_canvas_keeps_it_valid() {
         let cam = cam();
-        let mut field = ExteriorField::new(100, 1, &cam);
+        let mut field = ExteriorField::new(100, 1, &cam, Orbit::LEVEL);
         field.resize_pool(2000);
         assert_eq!(field.len(), 2000);
         field.resize_pool(0);
@@ -761,11 +1073,12 @@ mod tests {
             let (w, h) = renderer.canvas_dims();
             let mut canvas = Canvas::new(w, h);
             for _ in 0..30 {
-                field.update(1.0 / 120.0, 400.0, &cam);
+                field.update(1.0 / 120.0, 400.0, &cam, Orbit::LEVEL);
                 let lens = Lens::for_warp(
                     (cam.cx, cam.cy),
                     1.0,
                     ship_half_on_screen(cam.height, ZOOM_DEFAULT),
+                    ABEAM,
                 );
                 field.draw(&mut canvas, &cam, 1.0, 0.0, &lens);
             }

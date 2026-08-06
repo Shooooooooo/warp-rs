@@ -30,7 +30,7 @@
 use crate::canvas::Canvas;
 use crate::ship::{Ship, MAX_PITCH_RATE, MAX_YAW_RATE};
 use crate::starfield::{self, Camera, Streak};
-use crate::view::{HULL_REACH, MIN_SHIP_DISTANCE};
+use crate::view::{Eye, HULL_REACH, MIN_SHIP_DISTANCE};
 use std::sync::OnceLock;
 
 /// The zoom may push the camera in, and pushing it in far enough would put the
@@ -689,22 +689,6 @@ fn trident() -> ShipModel {
     )
 }
 
-/// Turn a hull-space point into the side camera's space, `distance` away.
-///
-/// `(x, y, z) → (z, y, −x)` is a proper quarter turn about the ship's own down
-/// axis — determinant one, so face winding survives it — putting the nose to
-/// screen right and the starboard side toward the camera. The mirror image,
-/// `(z, y, x)`, would look almost the same and invert every facing test.
-///
-/// The standoff is an argument rather than a constant because the zoom is a
-/// dolly: nothing else about this view moves when the camera does, so this one
-/// number is the whole of it. It arrives as a distance and not as a zoom on
-/// purpose — a hull has no opinion about zooms, only about how far off the eye
-/// is — and [`crate::view::ship_distance`] is what turns one into the other.
-fn to_camera(v: [f32; 3], distance: f32) -> [f32; 3] {
-    [v[2], v[1], distance - v[0]]
-}
-
 /// The attitude the hull is holding, as roll, pitch and yaw in radians.
 ///
 /// Roll is taken as flown: it turns the ship about the very axis it is flying
@@ -731,8 +715,14 @@ fn attitude(ship: &Ship) -> (f32, f32, f32) {
 }
 
 /// Place a hull-space point: roll about the nose, then pitch, then yaw, then
-/// out into the camera's space, `distance` away.
-fn place(v: [f32; 3], (roll, pitch, yaw): (f32, f32, f32), distance: f32) -> [f32; 3] {
+/// out into the camera's space.
+///
+/// The attitude is the ship's and the eye is the pilot's, and the two are
+/// applied in that order for the reason the whole view is built on: the hull
+/// leans about *its* axes wherever the camera happens to be watching from, and
+/// swinging the camera round must not tip the ship off the track it is
+/// visibly flying along.
+fn place(v: [f32; 3], (roll, pitch, yaw): (f32, f32, f32), eye: &Eye) -> [f32; 3] {
     let (sr, cr) = roll.sin_cos();
     let (sp, cp) = pitch.sin_cos();
     let (sy, cy) = yaw.sin_cos();
@@ -744,7 +734,7 @@ fn place(v: [f32; 3], (roll, pitch, yaw): (f32, f32, f32), distance: f32) -> [f3
     let (y, z) = (y * cp + v[2] * sp, -y * sp + v[2] * cp);
     // Positive yaw is nose to starboard: `+z` turns toward `+x`.
     let (x, z) = (x * cy + z * sy, -x * sy + z * cy);
-    to_camera([x, y, z], distance)
+    eye.to_camera([x, y, z])
 }
 
 /// One plate of a hull, ready to draw: where it is on screen, how far off it
@@ -770,12 +760,8 @@ struct Plate {
 /// assemblies of half a dozen separate solids, and a nacelle passing in front
 /// of an engineering hull is two front-facing plates fighting over the same
 /// subpixels. Painting far to near settles it without a depth buffer.
-fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32), distance: f32) -> Vec<Plate> {
-    let placed: Vec<[f32; 3]> = model
-        .verts
-        .iter()
-        .map(|v| place(*v, pose, distance))
-        .collect();
+fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32), eye: &Eye) -> Vec<Plate> {
+    let placed: Vec<[f32; 3]> = model.verts.iter().map(|v| place(*v, pose, eye)).collect();
     let screen: Vec<Option<(f32, f32)>> = placed.iter().map(|v| cam.project(*v)).collect();
 
     let mut plates: Vec<Plate> = Vec::with_capacity(model.faces.len());
@@ -839,19 +825,19 @@ pub fn draw(
     cam: &Camera,
     ship: &Ship,
     model: &ShipModel,
-    distance: f32,
+    eye: &Eye,
     time: f64,
 ) {
     let pose = attitude(ship);
     let bubble = ship.warp_intensity() * BUBBLE_LIGHT;
-    for plate in plates(model, cam, pose, distance) {
+    for plate in plates(model, cam, pose, eye) {
         // Nearer plates read a shade brighter. It is a small effect on purpose:
         // the lighting says which way a plate faces, and this only says which
         // of two plates facing the same way is the closer. Measured against the
         // standoff in force rather than a fixed one, so the ratio stays centred
         // on the hull's own middle — and flattens as the camera pulls back,
         // which is what a longer standoff really does to a subject.
-        let near = (distance / plate.depth).powf(DEPTH_SHADE);
+        let near = (eye.distance / plate.depth).powf(DEPTH_SHADE);
         let paint = (plate.shade + bubble) * near;
         let mut lit = [0.0; 3];
         for (channel, base) in lit.iter_mut().zip(model.hull) {
@@ -860,7 +846,7 @@ pub fn draw(
         canvas.fill_convex(&plate.points, lit);
     }
 
-    draw_engines(canvas, cam, ship, model, pose, distance, time);
+    draw_engines(canvas, cam, ship, model, pose, eye, time);
 }
 
 /// A face's outward normal, unit length, in the camera's space.
@@ -908,7 +894,7 @@ fn draw_engines(
     ship: &Ship,
     model: &ShipModel,
     pose: (f32, f32, f32),
-    distance: f32,
+    eye: &Eye,
     time: f64,
 ) {
     let warp = ship.warp_intensity();
@@ -935,7 +921,7 @@ fn draw_engines(
     let flicker_amt = FLICKER_AT_IMPULSE + (FLICKER_AT_WARP - FLICKER_AT_IMPULSE) * warp;
 
     for (i, bell) in model.engines.iter().enumerate() {
-        let at = place(bell.at, pose, distance);
+        let at = place(bell.at, pose, eye);
         let Some(screen) = cam.project(at) else {
             continue;
         };
@@ -947,7 +933,7 @@ fn draw_engines(
                 bell,
                 index: i,
                 pose,
-                distance,
+                eye,
                 root: at,
                 head: screen,
                 radius,
@@ -984,7 +970,7 @@ struct Flame<'a> {
     /// Which bell this is, used only to stagger the gutter.
     index: usize,
     pose: (f32, f32, f32),
-    distance: f32,
+    eye: &'a Eye,
     /// Where the bell sits in the camera's space, and where that projects to.
     root: [f32; 3],
     head: (f32, f32),
@@ -1049,7 +1035,7 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
     // through, so the plume rolls and leans with the ship and follows the
     // dolly without a constant of its own.
     let tail = [flame.bell.at[0], flame.bell.at[1], flame.bell.at[2] - reach];
-    let mut end = place(tail, flame.pose, flame.distance);
+    let mut end = place(tail, flame.pose, flame.eye);
     // `place` is a rotation and a translation, so the plume is still a straight
     // segment out here and can be cut against the near plane in closed form.
     // The root can never reach it — that is the `const` assertion at the top of
@@ -1172,12 +1158,56 @@ mod tests {
     use super::*;
     use crate::render::Renderer;
     use crate::term::ColorMode;
-    use crate::view::{ship_distance, ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
+    use crate::view::{Orbit, ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
     use std::collections::HashMap;
 
     /// The standoff at the framing a flight opens on — what these tests mean
     /// when they say "the camera", unless they are about the zoom.
     const STANDOFF: f32 = crate::view::SIDE_FOCAL / crate::view::SHIP_SCREEN_FRAC;
+
+    /// And the eye that goes with it: that standoff, from off the starboard
+    /// beam. What "the camera" means here unless a test says otherwise.
+    fn abeam() -> Eye {
+        Eye::new(Orbit::LEVEL, ZOOM_DEFAULT)
+    }
+
+    /// The same, from wherever the camera has been swung to.
+    fn eye_at(orbit: Orbit, zoom: f32) -> Eye {
+        Eye::new(orbit, zoom)
+    }
+
+    fn orbit(azimuth: f32, elevation: f32, roll: f32) -> Orbit {
+        Orbit {
+            azimuth: azimuth.to_radians(),
+            elevation: elevation.to_radians(),
+            roll: roll.to_radians(),
+        }
+        .held()
+    }
+
+    /// A spread of camera angles to fly a property through, in degrees: the
+    /// shot as it opens, both poles, head-on and dead astern, the view from
+    /// port, and two corners with all three angles off zero at once.
+    ///
+    /// The ends are the point. Head-on is where the bubble stops being
+    /// elongated and the hull presents its cross-section instead of its
+    /// profile; the poles are where the hull's beam swings into the frame's
+    /// vertical; and the corners are the only place the outline is turned off
+    /// the horizontal at all.
+    fn orbits() -> Vec<Orbit> {
+        vec![
+            Orbit::LEVEL,
+            orbit(90.0, 0.0, 0.0),
+            orbit(-90.0, 0.0, 0.0),
+            orbit(180.0, 0.0, 0.0),
+            orbit(0.0, 90.0, 0.0),
+            orbit(0.0, -90.0, 0.0),
+            orbit(0.0, 0.0, 137.0),
+            orbit(55.0, 35.0, 20.0),
+            orbit(-140.0, -62.0, -100.0),
+            orbit(35.0, 89.0, 45.0),
+        ]
+    }
 
     fn cam(cols: usize, rows: usize, ship: &Ship) -> (Renderer, Camera) {
         let renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
@@ -1305,7 +1335,7 @@ mod tests {
         let (renderer, cam) = cam(cols, rows, ship);
         let (w, h) = renderer.canvas_dims();
         let mut canvas = Canvas::new(w, h);
-        draw(&mut canvas, &cam, ship, model, STANDOFF, time);
+        draw(&mut canvas, &cam, ship, model, &abeam(), time);
         let mut lit = 0;
         let mut total = 0.0;
         for y in 0..h {
@@ -1371,24 +1401,29 @@ mod tests {
                 let (_, cam) = cam(120, 36, &ship);
 
                 for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
-                    let distance = ship_distance(zoom);
-                    for v in &model.verts {
-                        let at = place(*v, pose, distance);
-                        assert!(
-                            cam.project(at).is_some(),
-                            "{} lost a vertex through the near plane at zoom {zoom}: {at:?}",
-                            model.name
-                        );
-                    }
-                    // And the far end: the whole hull stays inside the wall the
-                    // star band starts at, or a star could be drawn over it.
-                    for v in &model.verts {
-                        let at = place(*v, pose, distance);
-                        assert!(
-                            at[2] < crate::exterior::Z_NEAR,
-                            "{} reached into the star band at zoom {zoom}: {at:?}",
-                            model.name
-                        );
+                    // Swung round the ship as well as pushed in and out. An
+                    // orbit turns the hull about its own centre, so the range
+                    // to a vertex still cannot leave `distance ± HULL_REACH` —
+                    // which is what both assertions are really about, and the
+                    // reason neither `const` assertion needed touching. Flown
+                    // rather than argued, because that is what would go quiet.
+                    for eye in orbits().into_iter().map(|o| eye_at(o, zoom)) {
+                        for v in &model.verts {
+                            let at = place(*v, pose, &eye);
+                            assert!(
+                                cam.project(at).is_some(),
+                                "{} lost a vertex through the near plane at zoom {zoom}: {at:?}",
+                                model.name
+                            );
+                            // And the far end: the whole hull stays inside the
+                            // wall the star band starts at, or a star could be
+                            // drawn over it.
+                            assert!(
+                                at[2] < crate::exterior::Z_NEAR,
+                                "{} reached into the star band at zoom {zoom}: {at:?}",
+                                model.name
+                            );
+                        }
                     }
                 }
             }
@@ -1411,7 +1446,7 @@ mod tests {
         let (_, cam) = cam(120, 36, &ship);
 
         for model in models() {
-            let facing = plates(model, &cam, attitude(&ship), STANDOFF);
+            let facing = plates(model, &cam, attitude(&ship), &abeam());
             assert!(
                 facing.len() < model.faces.len() * 3 / 4,
                 "{}: only {} of {} plates were culled",
@@ -1471,38 +1506,72 @@ mod tests {
         // one unit long; these are real hulls, with nacelles set out to the
         // side that a barrel roll swings straight up into the narrow waist.
         //
-        // Inside the *shadow*, not merely inside the ring, because the ring
-        // only promises that no primary image lands there — the band between
-        // the two is where the counter-images pile up into the rim, and a hull
-        // sitting in it would have the rim drawn across it. Swept over the
-        // whole zoom range and a full turn of roll, and over `models()`, so a
-        // seventh ship is covered the day it is added.
+        // Two statements, because the camera can now be swung all the way
+        // round and they stop being the same statement out there.
+        //
+        // Square to the track — the shot as it opens, every elevation of it and
+        // every roll of its own — the hull is inside the **shadow**. Not merely
+        // inside the ring: the ring only promises that no primary image lands
+        // there, and the band between the two is where the counter-images pile
+        // up into the rim, so a hull sitting in it would have the rim drawn
+        // across it.
+        //
+        // Swung round toward the nose or the tail, that stops being achievable
+        // and the honest bound is the **ring**. The reason is perspective and
+        // not the bubble's shape: `Lens` sizes the bubble from the ship's own
+        // range, and end-on the hull's *length* lies along the line of sight,
+        // so its near end is magnified by up to half again while the bubble it
+        // sits in is not. At `ZOOM_MAX` the bubble's semi-major axis is nine
+        // tenths of the whole standoff, and no single screen-space scale can
+        // hold an object that big — the drawn outline is the silhouette of the
+        // spheroid, which is right, and not the *perspective* silhouette, which
+        // would be a general conic with its own centre and a great deal more
+        // machinery. Inside the ring is what keeps the bright rim off the hull,
+        // and that is what the rim being legible depends on.
+        //
+        // Swept over the whole zoom range, a full turn of roll, every camera
+        // angle in `orbits()`, and over `models()`, so a seventh ship is
+        // covered the day it is added.
         for model in models() {
             for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
-                let distance = ship_distance(zoom);
                 for turn in 0..8 {
                     let mut ship = Ship::new();
                     ship.roll = turn as f32 * std::f32::consts::TAU / 8.0;
                     let (renderer, cam) = cam(120, 36, &ship);
                     let (_, h) = renderer.canvas_dims();
-                    let lens = crate::lens::Lens::for_warp(
-                        (cam.cx, cam.cy),
-                        1.0,
-                        crate::view::ship_half_on_screen(h as f32, zoom),
-                    );
                     let pose = attitude(&ship);
-                    for v in model.verts.iter() {
-                        let Some(p) = cam.project(place(*v, pose, distance)) else {
-                            continue;
-                        };
-                        assert!(
-                            lens.shadowed(p),
-                            "{} pokes out of its bubble at zoom {zoom}, roll {}: \
-                             {p:?} is {} rings out",
-                            model.name,
-                            ship.roll,
-                            lens.offset(p)
+                    for orbit in orbits() {
+                        let eye = eye_at(orbit, zoom);
+                        let lens = crate::lens::Lens::for_warp(
+                            (cam.cx, cam.cy),
+                            1.0,
+                            crate::view::ship_half_on_screen(h as f32, zoom),
+                            orbit.nose_in_camera(),
                         );
+                        // The abeam family, where the shadow still holds: the
+                        // camera square to the track, however far over the hull
+                        // it has been lifted and however it has been rolled.
+                        let square = orbit.azimuth == 0.0;
+                        for v in model.verts.iter() {
+                            let Some(p) = cam.project(place(*v, pose, &eye)) else {
+                                continue;
+                            };
+                            let out = lens.offset(p);
+                            assert!(
+                                out < 1.0,
+                                "{} reaches the rim of its own bubble at zoom {zoom}, \
+                                 roll {}, orbit {orbit:?}: {p:?} is {out} rings out",
+                                model.name,
+                                ship.roll,
+                            );
+                            assert!(
+                                !square || lens.shadowed(p),
+                                "{} pokes out of its bubble abeam at zoom {zoom}, \
+                                 roll {}, orbit {orbit:?}: {p:?} is {out} rings out",
+                                model.name,
+                                ship.roll,
+                            );
+                        }
                     }
                 }
             }
@@ -1519,7 +1588,7 @@ mod tests {
         ship.roll = 0.5;
         let (_, cam) = cam(120, 36, &ship);
         for model in models() {
-            let painted = plates(model, &cam, attitude(&ship), STANDOFF);
+            let painted = plates(model, &cam, attitude(&ship), &abeam());
             for pair in painted.windows(2) {
                 assert!(
                     pair[0].depth >= pair[1].depth,
@@ -1553,7 +1622,7 @@ mod tests {
                     canvas.splat(x as f32, y as f32, [1.0; 3], sky);
                 }
             }
-            draw(&mut canvas, &cam, &ship, model, STANDOFF, 0.0);
+            draw(&mut canvas, &cam, &ship, model, &abeam(), 0.0);
 
             let covered = (0..h)
                 .flat_map(|y| (0..w).map(move |x| (x, y)))
@@ -1582,7 +1651,7 @@ mod tests {
             .iter()
             .map(|model| {
                 let mut canvas = Canvas::new(w, h);
-                draw(&mut canvas, &cam, &ship, model, STANDOFF, 0.0);
+                draw(&mut canvas, &cam, &ship, model, &abeam(), 0.0);
                 (0..w * h)
                     .map(|i| canvas.light_at(i % w, i / w) > 0.02)
                     .collect()
@@ -1651,12 +1720,12 @@ mod tests {
     /// How far forward and how far aft the hull itself reaches on screen, in
     /// subpixels. The nose is to screen right, so the first of the two is the
     /// left-hand edge of the ship and everything past it is exhaust.
-    fn hull_span(model: &ShipModel, cam: &Camera, ship: &Ship, distance: f32) -> (f32, f32) {
+    fn hull_span(model: &ShipModel, cam: &Camera, ship: &Ship, eye: &Eye) -> (f32, f32) {
         let pose = attitude(ship);
         model
             .verts
             .iter()
-            .filter_map(|v| cam.project(place(*v, pose, distance)))
+            .filter_map(|v| cam.project(place(*v, pose, eye)))
             .fold((f32::MAX, f32::MIN), |(aft, fore), p| {
                 (aft.min(p.0), fore.max(p.0))
             })
@@ -1684,7 +1753,7 @@ mod tests {
         time: f64,
     ) -> (usize, f32, f32) {
         let (renderer, cam) = cam(cols, rows, ship);
-        wake_at(model, ship, &renderer, &cam, STANDOFF, time)
+        wake_at(model, ship, &renderer, &cam, &abeam(), time)
     }
 
     /// The same, against a camera and a standoff the caller has chosen.
@@ -1693,13 +1762,13 @@ mod tests {
         ship: &Ship,
         renderer: &Renderer,
         cam: &Camera,
-        distance: f32,
+        eye: &Eye,
         time: f64,
     ) -> (usize, f32, f32) {
         let (w, h) = renderer.canvas_dims();
         let mut canvas = Canvas::new(w, h);
-        draw(&mut canvas, cam, ship, model, distance, time);
-        let (aft, _) = hull_span(model, cam, ship, distance);
+        draw(&mut canvas, cam, ship, model, eye, time);
+        let (aft, _) = hull_span(model, cam, ship, eye);
         let (mut count, mut furthest, mut total) = (0usize, 0.0f32, 0.0f32);
         for y in 0..h {
             for x in 0..w {
@@ -1788,8 +1857,8 @@ mod tests {
             let (renderer, cam) = cam(200, 60, &ship);
             let (w, h) = renderer.canvas_dims();
             let mut canvas = Canvas::new(w, h);
-            draw(&mut canvas, &cam, &ship, model, STANDOFF, 0.0);
-            let (_, fore) = hull_span(model, &cam, &ship, STANDOFF);
+            draw(&mut canvas, &cam, &ship, model, &abeam(), 0.0);
+            let (_, fore) = hull_span(model, &cam, &ship, &abeam());
 
             let ahead = (0..h)
                 .flat_map(|y| (0..w).map(move |x| (x, y)))
@@ -1837,7 +1906,14 @@ mod tests {
 
         let mut first = None;
         for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
-            let (_, furthest, _) = wake_at(model, &ship, &renderer, &cam, ship_distance(zoom), 0.0);
+            let (_, furthest, _) = wake_at(
+                model,
+                &ship,
+                &renderer,
+                &cam,
+                &eye_at(Orbit::LEVEL, zoom),
+                0.0,
+            );
             let ships = furthest / crate::view::ship_half_on_screen(h as f32, zoom);
             let want: f32 = *first.get_or_insert(ships);
             assert!(
@@ -1866,7 +1942,7 @@ mod tests {
         let (renderer, cam) = cam(cols, rows, ship);
         let (w, h) = renderer.canvas_dims();
         let mut canvas = Canvas::new(w, h);
-        draw(&mut canvas, &cam, ship, model, STANDOFF, 0.0);
+        draw(&mut canvas, &cam, ship, model, &abeam(), 0.0);
         let half = crate::view::ship_half_on_screen(h as f32, ZOOM_DEFAULT);
         let x = (cam.cx - half * ships_aft)
             .round()
@@ -1902,7 +1978,14 @@ mod tests {
                 let (w, h) = renderer.canvas_dims();
                 for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
                     let mut canvas = Canvas::new(w, h);
-                    draw(&mut canvas, &cam, &ship, model, ship_distance(zoom), 0.0);
+                    draw(
+                        &mut canvas,
+                        &cam,
+                        &ship,
+                        model,
+                        &eye_at(Orbit::LEVEL, zoom),
+                        0.0,
+                    );
                     let reaches = (0..h).any(|y| canvas.light_at(0, y) > 0.02);
                     assert!(
                         reaches,
@@ -1987,14 +2070,14 @@ mod tests {
                 let pose = attitude(&ship);
 
                 for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
-                    let distance = ship_distance(zoom);
+                    let eye = eye_at(Orbit::LEVEL, zoom);
                     let renderer = Renderer::new(200, 60, ColorMode::Truecolor, 1.9);
                     let cam = renderer.exterior_camera(&ship, 0.0);
                     let (w, h) = renderer.canvas_dims();
                     let mut canvas = Canvas::new(w, h);
-                    draw(&mut canvas, &cam, &ship, model, distance, 0.0);
+                    draw(&mut canvas, &cam, &ship, model, &eye, 0.0);
 
-                    let (aft, _) = hull_span(model, &cam, &ship, distance);
+                    let (aft, _) = hull_span(model, &cam, &ship, &eye);
                     let lit = (0..h)
                         .flat_map(|y| (0..w).map(move |x| (x, y)))
                         .filter(|(x, y)| (*x as f32) < aft - 1.0 && canvas.light_at(*x, *y) > 0.02)
@@ -2151,10 +2234,10 @@ mod tests {
         let (_, cam) = cam(120, 36, &ship);
         let level = attitude(&ship);
         let nose = cam
-            .project(place([0.0, 0.0, 1.0], level, STANDOFF))
+            .project(place([0.0, 0.0, 1.0], level, &abeam()))
             .unwrap();
         let tail = cam
-            .project(place([0.0, 0.0, -1.0], level, STANDOFF))
+            .project(place([0.0, 0.0, -1.0], level, &abeam()))
             .unwrap();
         assert!(nose.0 > tail.0, "the ship is flying backwards");
         assert!((nose.1 - tail.1).abs() < 0.5, "level flight is not level");
@@ -2162,9 +2245,9 @@ mod tests {
         let mut down = Ship::new();
         down.pitch_rate = MAX_PITCH_RATE; // positive is nose-down, per the flight model
         let pose = attitude(&down);
-        let nose = cam.project(place([0.0, 0.0, 1.0], pose, STANDOFF)).unwrap();
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose, &abeam())).unwrap();
         let tail = cam
-            .project(place([0.0, 0.0, -1.0], pose, STANDOFF))
+            .project(place([0.0, 0.0, -1.0], pose, &abeam()))
             .unwrap();
         assert!(nose.1 > tail.1, "nose-down did not put the nose down");
 
@@ -2175,7 +2258,7 @@ mod tests {
         let mut rolled = Ship::new();
         rolled.roll = std::f32::consts::FRAC_PI_2;
         let pose = attitude(&rolled);
-        let top = place([0.0, -1.0, 0.0], pose, STANDOFF);
+        let top = place([0.0, -1.0, 0.0], pose, &abeam());
         assert!(
             top[2] < STANDOFF - 0.4,
             "a quarter roll did not swing the top toward the camera: {top:?}"
@@ -2211,9 +2294,9 @@ mod tests {
 
         let (_, cam) = cam(120, 36, &ship);
         let pose = attitude(&ship);
-        let nose = cam.project(place([0.0, 0.0, 1.0], pose, STANDOFF)).unwrap();
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose, &abeam())).unwrap();
         let tail = cam
-            .project(place([0.0, 0.0, -1.0], pose, STANDOFF))
+            .project(place([0.0, 0.0, -1.0], pose, &abeam()))
             .unwrap();
         assert!(nose.0 > tail.0, "the ship is flying backwards");
         assert!(
@@ -2226,9 +2309,9 @@ mod tests {
         // just a hull that ignores the pilot.
         ship.nudge_pitch(-1.0);
         let pose = attitude(&ship);
-        let nose = cam.project(place([0.0, 0.0, 1.0], pose, STANDOFF)).unwrap();
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose, &abeam())).unwrap();
         let tail = cam
-            .project(place([0.0, 0.0, -1.0], pose, STANDOFF))
+            .project(place([0.0, 0.0, -1.0], pose, &abeam()))
             .unwrap();
         assert!(nose.1 < tail.1 - 1.0, "pulling up did not raise the nose");
     }

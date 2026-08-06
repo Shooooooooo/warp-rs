@@ -476,7 +476,7 @@ impl Canvas {
     }
 
     /// The same pool of light, drawn as an ellipse — the wash inside the warp
-    /// bubble, which is not round.
+    /// bubble, which is neither round nor necessarily square to the frame.
     ///
     /// A separate function rather than the one above generalised, and
     /// deliberately so. `add_glow` draws the cockpit's tunnel glare, whose
@@ -484,28 +484,43 @@ impl Canvas {
     /// `add_glow_oval(.., r, r, ..)` is exactly the obviously-equivalent edit
     /// that moves a float by an ulp and repaints a sky it was never meant to
     /// touch. The duplication is four lines and it is cheaper than that.
+    ///
+    /// `turn` is which way the long axis lies, as `(cos, sin)`, because the
+    /// camera outside can be swung round until the ship's track no longer runs
+    /// across the frame. It is `(1.0, 0.0)` broadside and the rotation is then
+    /// a multiply by one and an addition of zero. The arguments are grouped
+    /// into pairs rather than listed flat only because clippy — which CI runs
+    /// as an error — stops at seven of them.
     pub fn add_glow_oval(
         &mut self,
-        cx: f32,
-        cy: f32,
-        rx: f32,
-        ry: f32,
+        center: (f32, f32),
+        axes: (f32, f32),
+        turn: (f32, f32),
         color: [f32; 3],
         strength: f32,
     ) {
+        let ((cx, cy), (rx, ry)) = (center, axes);
         if strength <= 0.0 || rx <= 0.0 || ry <= 0.0 {
             return;
         }
-        let x0 = ((cx - rx).floor().max(0.0)) as usize;
-        let y0 = ((cy - ry).floor().max(0.0)) as usize;
-        let x1 = ((cx + rx).ceil().min(self.width as f32 - 1.0)).max(0.0) as usize;
-        let y1 = ((cy + ry).ceil().min(self.height as f32 - 1.0)).max(0.0) as usize;
+        // The turned ellipse's own bounding box, which is what a support
+        // function gives back: `√((rx·cos)² + (ry·sin)²)` across and the same
+        // with the two swapped down. Squaring up to the long axis on both sides
+        // would draw the same pixels — everything past the rim is skipped
+        // below — and scan twice as many of them at this elongation.
+        let hx = ((rx * turn.0).powi(2) + (ry * turn.1).powi(2)).sqrt();
+        let hy = ((rx * turn.1).powi(2) + (ry * turn.0).powi(2)).sqrt();
+        let x0 = ((cx - hx).floor().max(0.0)) as usize;
+        let y0 = ((cy - hy).floor().max(0.0)) as usize;
+        let x1 = ((cx + hx).ceil().min(self.width as f32 - 1.0)).max(0.0) as usize;
+        let y1 = ((cy + hy).ceil().min(self.height as f32 - 1.0)).max(0.0) as usize;
         let (inv_x, inv_y) = (1.0 / rx, 1.0 / ry);
 
         for y in y0..=y1 {
             for x in x0..=x1 {
-                let d =
-                    (((x as f32 - cx) * inv_x).powi(2) + ((y as f32 - cy) * inv_y).powi(2)).sqrt();
+                let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+                let (along, across) = (dx * turn.0 + dy * turn.1, dy * turn.0 - dx * turn.1);
+                let d = ((along * inv_x).powi(2) + (across * inv_y).powi(2)).sqrt();
                 if d >= 1.0 {
                     continue;
                 }

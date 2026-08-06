@@ -12,7 +12,7 @@ use crate::models::{self, ShipModel};
 use crate::ship::Ship;
 use crate::starfield::{Camera, StarField};
 use crate::term::{ColorMode, Screen};
-use crate::view::{self, SIDE_FOCAL};
+use crate::view::{self, Orbit, SIDE_FOCAL};
 use std::io::{self, Write};
 
 /// Colour of the glare down the throat of the tunnel.
@@ -42,6 +42,13 @@ pub struct Exterior<'a> {
     /// sky — which is laid out against the camera's focal length and cached
     /// against it — is meant to sit perfectly still while it happens.
     pub zoom: f32,
+    /// Which way round the ship the camera has been swung. It rides in here
+    /// for the same reason the zoom does and with the opposite consequence:
+    /// the [`Camera`] still has no pose, so this is the only thing that knows
+    /// the eye has moved — but unlike the dolly, an orbit is *meant* to take
+    /// the sky with it, and the star band is handed it separately in
+    /// `Flight::advance` so that it can.
+    pub orbit: Orbit,
 }
 
 pub struct Renderer {
@@ -191,13 +198,14 @@ impl Renderer {
             model,
             time,
             zoom,
+            orbit,
         } = scene;
         let warp = ship.warp_intensity();
         let (_, h) = self.canvas.dims();
         // Where the zoom lands: how far off to put the hull, and how big that
         // makes it. Two readings of one number, taken here rather than in each
         // of the two places that wants one, so they cannot disagree.
-        let distance = view::ship_distance(zoom);
+        let eye = view::Eye::new(orbit, zoom);
         let ship_half = view::ship_half_on_screen(h as f32, zoom);
 
         // The ship sits dead on the camera's axis, so its centre projects to
@@ -205,7 +213,7 @@ impl Renderer {
         // the hull rather than to the frame. Sized in ships rather than in
         // frames, so pushing the camera in and out carries the bubble with the
         // hull instead of leaving a fixed collar hanging in the middle.
-        let lens = Lens::for_warp((cam.cx, cam.cy), warp, ship_half);
+        let lens = Lens::for_warp((cam.cx, cam.cy), warp, ship_half, orbit.nose_in_camera());
 
         self.canvas.clear();
         field.draw(&mut self.canvas, cam, warp, time, &lens);
@@ -221,16 +229,15 @@ impl Renderer {
             let glare = warp * warp * warp;
             let (rx, ry) = lens.shadow_axes();
             self.canvas.add_glow_oval(
-                lens.center.0,
-                lens.center.1,
-                rx * 1.5,
-                ry * 1.5,
+                lens.center,
+                (rx * 1.5, ry * 1.5),
+                lens.turn(),
                 CORE_COLOR,
                 glare * 0.35,
             );
         }
 
-        models::draw(&mut self.canvas, cam, ship, model, distance, time);
+        models::draw(&mut self.canvas, cam, ship, model, &eye, time);
 
         // A lighter vignette than the cockpit's: there is no tunnel to be
         // pulled down here, and the ship is off the centre of attention.
@@ -368,26 +375,29 @@ mod tests {
         frames: usize,
         stars: usize,
     ) -> Renderer {
-        fly_outside_zoomed(
+        fly_outside_from(
             cols,
             rows,
             model,
             engaged,
             frames,
             stars,
-            view::ZOOM_DEFAULT,
+            (view::ZOOM_DEFAULT, Orbit::LEVEL),
         )
     }
 
-    /// The same, at a zoom of your choosing.
-    fn fly_outside_zoomed(
+    /// The same, from a camera of your choosing: how far off it is parked, and
+    /// which way round the ship it has been swung. The two travel together
+    /// because they are the two halves of [`view::Eye`], and because one more
+    /// loose argument here is one past where clippy stops reading.
+    fn fly_outside_from(
         cols: usize,
         rows: usize,
         model: usize,
         engaged: bool,
         frames: usize,
         stars: usize,
-        zoom: f32,
+        (zoom, orbit): (f32, Orbit),
     ) -> Renderer {
         let mut renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
         let mut ship = Ship::new();
@@ -396,13 +406,13 @@ mod tests {
             ship.toggle_warp();
         }
         let cam = renderer.exterior_camera(&ship, 0.0);
-        let mut field = crate::exterior::ExteriorField::new(stars, 5, &cam);
+        let mut field = crate::exterior::ExteriorField::new(stars, 5, &cam, orbit);
         let mut time = 0.0;
         for _ in 0..frames {
             time += 1.0 / 60.0;
             ship.update(1.0 / 60.0);
             let cam = renderer.exterior_camera(&ship, time);
-            field.update(1.0 / 60.0, ship.speed, &cam);
+            field.update(1.0 / 60.0, ship.speed, &cam, orbit);
             let readout = readout(&ship);
             let scene = Exterior {
                 field: &mut field,
@@ -410,6 +420,7 @@ mod tests {
                 model: &crate::models::models()[model],
                 time,
                 zoom,
+                orbit,
             };
             renderer.render_exterior(scene, &cam, &readout);
         }
@@ -453,7 +464,7 @@ mod tests {
             // The bubble a lit drive makes, used as the ruler for both frames:
             // the point is to look at the same places in each, so this is built
             // at full warp whether the drive in the frame is lit or not.
-            let bubble = Lens::for_warp((cx, cy), 1.0, ship);
+            let bubble = Lens::for_warp((cx, cy), 1.0, ship, Orbit::LEVEL.nose_in_camera());
             let mean = |lo: f32, hi: f32| {
                 let (mut total, mut n) = (0u64, 0u64);
                 for y in 0..h {

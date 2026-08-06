@@ -146,11 +146,24 @@ pub struct Lens {
     /// Where the mass is, in canvas subpixels. Astern of the ship rather than
     /// on it — see [`Lens::for_warp`].
     pub center: (f32, f32),
-    /// The Einstein radius, in subpixels: the geometric mean of the two
-    /// semi-axes, and so still the one number the bubble's scale is set by.
-    /// Zero is no lens at all, and is an exact identity rather than an
-    /// approximation of one.
+    /// The Einstein radius, in subpixels: the scale the bubble is sized by and
+    /// the unit the magnification is worked in. Zero is no lens at all, and is
+    /// an exact identity rather than an approximation of one.
     pub radius: f32,
+    /// The outline's two semi-axes in subpixels, the long one first.
+    ///
+    /// Stored rather than derived from [`RING_MAJOR`] on demand, because they
+    /// depend on where the camera is: the bubble is a solid drawn out along the
+    /// track, and a camera swung round toward the nose sees that length
+    /// foreshortened. [`Lens::for_warp`] is where they come from.
+    axes: (f32, f32),
+    /// Which way the long axis lies on the canvas, as `(cos, sin)`.
+    ///
+    /// Exactly `(1.0, 0.0)` whenever the camera is abeam of the track — which
+    /// is the shot as it opens, and every elevation and camera roll of it — so
+    /// the rotation in [`Lens::offsets`] costs a multiply by one and an
+    /// addition of zero on the path the reference frames are recorded from.
+    turn: (f32, f32),
 }
 
 /// Which of the two images a point-mass lens forms of a source.
@@ -208,6 +221,8 @@ impl Lens {
     pub const OFF: Lens = Lens {
         center: (0.0, 0.0),
         radius: 0.0,
+        axes: (0.0, 0.0),
+        turn: (1.0, 0.0),
     };
 
     /// The lens the drive is currently making, given the 0..=1 warp ramp and
@@ -223,19 +238,62 @@ impl Lens {
     ///
     /// The centre it is handed is where the *ship* is; the bubble is seated
     /// astern of that, which is the one place in this module that knows which
-    /// way the ship is pointing. Astern is screen `-x` and cannot be anything
-    /// else out here: [`crate::models::to_camera`] is a quarter turn that puts
-    /// the nose to screen right, [`crate::render::Renderer::exterior_camera`]
-    /// leaves the bank at zero, and [`crate::exterior::ExteriorField`] takes no
-    /// steering argument at all because the ship flies where its nose points.
-    /// The shift is a fraction of the semi-major axis rather than of the hull,
-    /// so the wake opens up with the bubble instead of sliding out of it.
-    pub fn for_warp(center: (f32, f32), warp: f32, ship_half: f32) -> Self {
+    /// way the ship is pointing. `nose` is that direction, in the camera's own
+    /// space, from [`crate::view::Orbit::nose_in_camera`] — a unit vector, and
+    /// the only thing here that changes when the camera is swung round. The
+    /// shift is a fraction of the semi-major axis rather than of the hull, so
+    /// the wake opens up with the bubble instead of sliding out of it.
+    ///
+    /// The bubble is a *solid* — a spheroid drawn out along the track — and
+    /// what goes on the canvas is its outline. Support functions do the rest:
+    /// for an ellipsoid the extent in a screen direction `ŝ` is
+    /// `√(L²(ŝ·t̂)² + W²(1 − (ŝ·t̂)²))`, and the track's own screen direction
+    /// has `ŝ·t̂ = sin φ`, while the one across it has `ŝ·t̂ = 0`. So the long
+    /// axis runs from `L` broadside down to `W` end-on and the short one never
+    /// moves — which is why a ship seen head-on sits in a circle rather than in
+    /// a line, and why nothing has to bound how far the camera may be swung.
+    ///
+    /// Broadside is branched rather than computed, and `nose[2] == 0.0` is
+    /// exactly that case: the camera abeam of the track, at any elevation and
+    /// any roll of its own. `√(RING_MAJOR²)` is `RING_MAJOR` under IEEE
+    /// arithmetic and would very probably survive, but "very probably" is not
+    /// what the reference frames are pinned with.
+    pub fn for_warp(center: (f32, f32), warp: f32, ship_half: f32, nose: [f32; 3]) -> Self {
         let warp = warp.clamp(0.0, 1.0);
         let radius = ship_half.max(0.0) * RADIUS_IN_SHIPS * warp * warp;
+
+        // How much of the track's length the camera can still see, and which
+        // way that length lies on the canvas.
+        let sin_sq = nose[0] * nose[0] + nose[1] * nose[1];
+        let sin_phi = sin_sq.sqrt();
+        // End-on there is no direction to be found and no need of one: the
+        // outline is a circle, so any fixed axis will do and this picks the one
+        // every other case reduces to.
+        let turn = if sin_phi > f32::MIN_POSITIVE {
+            (nose[0] / sin_phi, nose[1] / sin_phi)
+        } else {
+            (1.0, 0.0)
+        };
+
+        let across = radius * RING_MINOR;
+        let along = if nose[2] == 0.0 {
+            radius * RING_MAJOR
+        } else {
+            let cos_sq = nose[2] * nose[2];
+            radius * (RING_MAJOR * RING_MAJOR * sin_sq + RING_MINOR * RING_MINOR * cos_sq).sqrt()
+        };
+
+        // The wake is a displacement along the track in three dimensions, so it
+        // foreshortens with the track rather than with the outline it is a
+        // fraction of — `along` has a floor at `W` and this does not. `radius`
+        // already carries the range correction, so this is the honest
+        // projection of that displacement and not an approximation of one.
+        let wake = radius * RING_MAJOR * WAKE_SHIFT * sin_phi;
         Self {
-            center: (center.0 - radius * RING_MAJOR * WAKE_SHIFT, center.1),
+            center: (center.0 - wake * turn.0, center.1 - wake * turn.1),
             radius,
+            axes: (along, across),
+            turn,
         }
     }
 
@@ -245,9 +303,50 @@ impl Lens {
     }
 
     /// The ring's two semi-axes in subpixels: along the track first, across it
-    /// second. Their product is `radius²`, which is the area promise.
+    /// second.
+    ///
+    /// Their product is `radius²` broadside, which is the area promise — and it
+    /// is deliberately *not* extended to every angle, because a bubble seen
+    /// end-on genuinely covers less sky than one seen side-on and pretending
+    /// otherwise would inflate it as the camera came round. What
+    /// [`RING_MINOR`] being a reciprocal buys is that the promise holds however
+    /// the bubble is *shaped*; how much of it the camera can see is a different
+    /// question with a different answer.
     pub fn semi_axes(&self) -> (f32, f32) {
-        (self.radius * RING_MAJOR, self.radius * RING_MINOR)
+        self.axes
+    }
+
+    /// Where `p` sits in the frame the bubble is round in: turned onto the
+    /// outline's own axes, then divided by them.
+    ///
+    /// The one place the ellipse is actually spelled out, so the four questions
+    /// below cannot drift apart about what shape it is. No `is_on` guard —
+    /// every caller has already asked, and this sits under the inner loop.
+    ///
+    /// The square case is branched, and this one is for speed rather than for
+    /// exactness: `dx * 1.0 + dy * 0.0` is already `dx` to the bit, but this is
+    /// two of the three hottest gates in the program and paying four multiplies
+    /// and two adds per sample for a turn of zero cost five percent of the
+    /// drawing time in a warp frame at twenty thousand stars — measured, 21.3 ms
+    /// against 22.3. The branch is free: `turn` is fixed for the whole frame, so
+    /// it predicts perfectly.
+    fn offsets(&self, p: (f32, f32)) -> (f32, f32) {
+        let (dx, dy) = (p.0 - self.center.0, p.1 - self.center.1);
+        let (cos, sin) = self.turn;
+        let (along, across) = if sin == 0.0 {
+            (dx * cos, dy * cos)
+        } else {
+            (dx * cos + dy * sin, dy * cos - dx * sin)
+        };
+        (along / self.axes.0, across / self.axes.1)
+    }
+
+    /// Which way the long axis lies on the canvas, as `(cos, sin)`. What the
+    /// wash inside the bubble has to be turned by, since the hole it sits in
+    /// stops being square to the frame the moment the camera is swung both
+    /// round the ship and over it.
+    pub fn turn(&self) -> (f32, f32) {
+        self.turn
     }
 
     /// The same two, for the shadow. What the wash inside the bubble is drawn
@@ -276,11 +375,9 @@ impl Lens {
     /// ellipse rather than an angle-dependent radius is what makes this
     /// possible: membership of an ellipse is a closed form, so the three
     /// hottest questions in the module lost the square root they would
-    /// otherwise have grown. No guard — every caller has already asked
-    /// [`Self::is_on`], and this sits under the inner loop.
+    /// otherwise have grown.
     fn offset_sq(&self, p: (f32, f32)) -> f32 {
-        let (a, b) = self.semi_axes();
-        let (ex, ey) = ((p.0 - self.center.0) / a, (p.1 - self.center.1) / b);
+        let (ex, ey) = self.offsets(p);
         ex * ex + ey * ey
     }
 
@@ -316,9 +413,8 @@ impl Lens {
     /// lens reaches. Straight lines survive the scaling, so the nearest point
     /// of the scaled segment is the nearest point of the real one.
     fn crosses_the_ring(&self, from: (f32, f32), to: (f32, f32)) -> bool {
-        let (sa, sb) = self.semi_axes();
-        let (ax, ay) = ((from.0 - self.center.0) / sa, (from.1 - self.center.1) / sb);
-        let (bx, by) = ((to.0 - self.center.0) / sa, (to.1 - self.center.1) / sb);
+        let (ax, ay) = self.offsets(from);
+        let (bx, by) = self.offsets(to);
         let (dx, dy) = (bx - ax, by - ay);
         let len_sq = dx * dx + dy * dy;
         // Where along the segment the nearest point to the centre falls, held
@@ -385,9 +481,8 @@ impl Lens {
             };
         }
 
-        let (a, b) = self.semi_axes();
         let (dx, dy) = (p.0 - self.center.0, p.1 - self.center.1);
-        let (ex, ey) = (dx / a, dy / b);
+        let (ex, ey) = self.offsets(p);
         let m = ex.hypot(ey);
 
         // On the axis the source images as the complete ring, which a single
@@ -398,11 +493,14 @@ impl Lens {
         // the one this picks and comes back with the NaN it arrived with.
         if m.is_nan() || m <= f32::EPSILON {
             let along = match image {
-                Image::Primary => a,
-                Image::Secondary => -a,
+                Image::Primary => self.axes.0,
+                Image::Secondary => -self.axes.0,
             };
             return Lensed {
-                at: (self.center.0 + along, self.center.1),
+                at: (
+                    self.center.0 + along * self.turn.0,
+                    self.center.1 + along * self.turn.1,
+                ),
                 gain: magnification(U_FLOOR, image),
             };
         }
@@ -456,8 +554,10 @@ impl Lens {
     /// barely moves and this adds nothing at all.
     ///
     /// The polar coordinates are the round frame's, so what gets laid down is
-    /// an arc of the ellipse rather than of some circle drawn through it. Two
-    /// points on the ring stay on the ring the whole way round.
+    /// an arc of the ellipse rather than of some circle drawn through it — the
+    /// turned ellipse, since the way back out of that frame has to undo the
+    /// same turn [`Self::offsets`] applied on the way in. Two points on the
+    /// ring stay on the ring the whole way round.
     pub fn arc_to(&self, from: (f32, f32), to: (f32, f32), out: &mut Vec<(f32, f32)>) {
         // The expensive part of this is two `atan2`s and a `sin_cos` per point,
         // and the great majority of pairs do not need it: two samples of a
@@ -472,7 +572,7 @@ impl Lens {
         }
         let (a, b) = self.semi_axes();
         let polar = |p: (f32, f32)| {
-            let (ex, ey) = ((p.0 - self.center.0) / a, (p.1 - self.center.1) / b);
+            let (ex, ey) = self.offsets(p);
             (ex.hypot(ey), ey.atan2(ex))
         };
         let (r0, th0) = polar(from);
@@ -494,9 +594,10 @@ impl Lens {
         for i in 1..steps {
             let s = i as f32 / steps as f32;
             let (r, th) = (r0 + (r1 - r0) * s, th0 + sweep * s);
+            let (along, across) = (a * r * th.cos(), b * r * th.sin());
             out.push((
-                self.center.0 + a * r * th.cos(),
-                self.center.1 + b * r * th.sin(),
+                self.center.0 + along * self.turn.0 - across * self.turn.1,
+                self.center.1 + across * self.turn.0 + along * self.turn.1,
             ));
         }
         out.push(to);
@@ -507,10 +608,25 @@ impl Lens {
 mod tests {
     use super::*;
 
+    /// The nose as [`crate::view::Orbit::LEVEL`] hands it over: the camera
+    /// abeam of the track, which is the shot every one of these was written
+    /// against.
+    const ABEAM: [f32; 3] = [1.0, 0.0, 0.0];
+
     fn lens() -> Lens {
+        Lens::for_warp((100.0, 50.0), 1.0, 10.0, ABEAM)
+    }
+
+    /// A lens assembled by hand rather than by [`Lens::for_warp`], so a test
+    /// can hand this module a centre and a radius it would never produce
+    /// itself. The outline is the level one, which is what every caller that
+    /// does go through `for_warp` gets abeam.
+    fn raw(center: (f32, f32), radius: f32) -> Lens {
         Lens {
-            center: (100.0, 50.0),
-            radius: 20.0,
+            center,
+            radius,
+            axes: (radius * RING_MAJOR, radius * RING_MINOR),
+            turn: (1.0, 0.0),
         }
     }
 
@@ -666,17 +782,17 @@ mod tests {
         let c = (60.0, 30.0);
         let ship = 9.0;
         assert!(
-            !Lens::for_warp(c, 0.0, ship).is_on(),
+            !Lens::for_warp(c, 0.0, ship, ABEAM).is_on(),
             "sublight must not bend"
         );
-        let half = Lens::for_warp(c, 0.5, ship).radius;
-        let full = Lens::for_warp(c, 1.0, ship).radius;
+        let half = Lens::for_warp(c, 0.5, ship, ABEAM).radius;
+        let full = Lens::for_warp(c, 1.0, ship, ABEAM).radius;
         assert!(half > 0.0 && full > half * 3.0, "{half} then {full}");
         // Out of range in either direction is clamped, not extrapolated.
-        assert_eq!(Lens::for_warp(c, -3.0, ship).radius, 0.0);
-        assert_eq!(Lens::for_warp(c, 9.0, ship).radius, full);
+        assert_eq!(Lens::for_warp(c, -3.0, ship, ABEAM).radius, 0.0);
+        assert_eq!(Lens::for_warp(c, 9.0, ship, ABEAM).radius, full);
         // And a bubble that is not there is not seated anywhere either.
-        assert_eq!(Lens::for_warp(c, 0.0, ship).center, c);
+        assert_eq!(Lens::for_warp(c, 0.0, ship, ABEAM).center, c);
     }
 
     #[test]
@@ -687,8 +803,8 @@ mod tests {
         // without being asked to. Those are asserted rather than assumed
         // exactly because deriving them is what makes them easy to forget.
         let c = (60.0, 30.0);
-        let small = Lens::for_warp(c, 1.0, 9.0);
-        let large = Lens::for_warp(c, 1.0, 18.0);
+        let small = Lens::for_warp(c, 1.0, 9.0, ABEAM);
+        let large = Lens::for_warp(c, 1.0, 18.0, ABEAM);
         assert_eq!(large.radius, small.radius * 2.0, "the ring did not follow");
         assert_eq!(
             large.shadow_axes().0,
@@ -793,7 +909,7 @@ mod tests {
         // through the arithmetic a frame actually runs.
         let c = (100.0, 50.0);
         let ship = 9.0;
-        let lens = Lens::for_warp(c, 1.0, ship);
+        let lens = Lens::for_warp(c, 1.0, ship, ABEAM);
         assert!(lens.center.0 < c.0, "the bubble is not astern of anything");
         assert!(
             lens.shadowed((c.0 + ship, c.1)),
@@ -854,18 +970,15 @@ mod tests {
         let lenses = [
             lens(),
             Lens::OFF,
-            Lens {
-                center: (0.0, 0.0),
-                radius: f32::MIN_POSITIVE,
-            },
-            Lens {
-                center: (f32::NAN, 0.0),
-                radius: 10.0,
-            },
-            Lens {
-                center: (0.0, 0.0),
-                radius: f32::INFINITY,
-            },
+            raw((0.0, 0.0), f32::MIN_POSITIVE),
+            raw((f32::NAN, 0.0), 10.0),
+            raw((0.0, 0.0), f32::INFINITY),
+            // And one built the way the renderer builds them, from a nose
+            // direction that has gone wrong: `for_warp` divides by the track's
+            // on-screen length, and a zero-length one is the end-on case.
+            Lens::for_warp((100.0, 50.0), 1.0, 10.0, [0.0, 0.0, 1.0]),
+            Lens::for_warp((100.0, 50.0), 1.0, 10.0, [0.0, 0.0, 0.0]),
+            Lens::for_warp((100.0, 50.0), 1.0, 10.0, [f32::NAN, 0.0, 0.0]),
         ];
         let points = [
             (0.0, 0.0),
