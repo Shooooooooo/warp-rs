@@ -429,10 +429,13 @@ pub fn models() -> &'static [ShipModel] {
 /// The one flown when nothing has said otherwise: the first in the list.
 ///
 /// It does not *supply* that default — `--ship` carries the name as a string,
-/// because clap wants one and an index would be a poor thing to type. This is
-/// what the picker opens on, and
-/// `the_view_and_the_ship_can_be_chosen_at_the_command_line` in `cli.rs` is
-/// what holds the two of them together.
+/// because clap wants one and an index would be a poor thing to type. Nothing
+/// in a running program reads this at all; it exists so that
+/// `the_view_and_the_ship_can_be_chosen_at_the_command_line` in `cli.rs` can
+/// hold clap's `default_value` and the head of this list to each other, which
+/// is a thing no code path would otherwise notice going wrong. Hence the gate:
+/// an agreement between two spellings is worth pinning and worth not shipping.
+#[cfg(test)]
 pub const DEFAULT_MODEL: usize = 0;
 
 /// Look a ship up by the name `--ship` and the picker use.
@@ -1329,12 +1332,28 @@ mod tests {
                 model.name
             );
             assert!(model.blurb.is_ascii() && !model.blurb.is_empty());
-            assert_eq!(by_name(model.name), Some(index_of(model.name)));
+            // Only the folded spellings are worth asking about. `by_name` on
+            // the name as written is `index_of` with a trim and a lowercase in
+            // front of it, and the assertion above has just established that
+            // both are no-ops here — so comparing the two would have been an
+            // expression against a copy of itself.
             assert_eq!(
                 by_name(&model.name.to_uppercase()),
                 Some(index_of(model.name))
             );
+            assert_eq!(
+                by_name(&format!("  {}  ", model.name)),
+                Some(index_of(model.name))
+            );
         }
+        // The half of the name that was never checked: `by_name` and `index_of`
+        // both return the *first* match, so two ships sharing a name would have
+        // agreed with each other all the way down and passed.
+        let mut names: Vec<&str> = models().iter().map(|m| m.name).collect();
+        names.sort_unstable();
+        let unique = names.len();
+        names.dedup();
+        assert_eq!(names.len(), unique, "two ships answer to the same name");
         assert_eq!(by_name("no such ship"), None);
         assert!(DEFAULT_MODEL < models().len());
     }
@@ -1858,8 +1877,26 @@ mod tests {
         }
         for model in models() {
             for (cols, rows) in [(1usize, 1usize), (20, 6), (80, 24), (400, 120), (2, 60)] {
-                let (_, total) = footprint(model, &ship, cols, rows);
+                // `total.is_finite()` was the whole of this, and it could not
+                // fail: `footprint_at` asserts exactly that of every subpixel
+                // it visits, and this is a sum over a subset of them. What the
+                // name promises is the bound, so count against it — a hull
+                // that wrote outside the canvas would panic, and one that
+                // wrote outside its own *count* of the canvas would not.
+                let (lit, total) = footprint(model, &ship, cols, rows);
+                assert!(
+                    lit <= cols * rows * 2,
+                    "{} lit {lit} of {cols}x{rows}'s {} subpixels",
+                    model.name,
+                    cols * rows * 2
+                );
                 assert!(total.is_finite(), "{} at {cols}x{rows}", model.name);
+                // And on a terminal with room for it, the ship is actually
+                // there. Degenerate framings are allowed to come out empty;
+                // this one is not.
+                if (cols, rows) == (400, 120) {
+                    assert!(lit > 0, "{} drew nothing at {cols}x{rows}", model.name);
+                }
             }
         }
     }

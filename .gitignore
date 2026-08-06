@@ -1,12 +1,15 @@
 /target
 # Snapshots land in the working directory; the ones in docs/ are tracked.
 /*.png
-# Frames dumped when checking against tests/golden/frames.sha256. All four of
-# them: the recipe in that file writes one per pinned flight, and the two that
-# were missing here arrived with the flights that widened the reference — so
-# regenerating it left `warp.txt` and `side.txt` sitting untracked, waiting to
-# be swept into somebody's next `git add .`.
+# Frames dumped when checking against tests/golden/frames.sha256. All five of
+# them: the recipe in that file writes one per pinned flight, and this list has
+# now fallen behind that recipe twice. `warp.txt` and `side.txt` arrived with
+# the flights that widened the reference, and `orbit.txt` with the one that
+# swung the camera off the beam — each time leaving the documented regeneration
+# recipe with an untracked file waiting to be swept into somebody's next
+# `git add .`. A sixth flight means a sixth line here.
 /truecolor.txt
 /ascii.txt
 /warp.txt
 /side.txt
+/orbit.txt

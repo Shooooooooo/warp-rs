@@ -130,10 +130,12 @@ pub const ORBIT_EASE: f32 = 9.0;
 /// The guard is not an optimisation. [`wrap_signed`] goes through `rem_euclid`
 /// and back, which does not return an angle already in range bit for bit — and
 /// this is applied on every press and every eased step, so without it a notch
-/// and its opposite would not cancel, `Orbit::is_level` would stop answering
-/// yes to a camera that had been put back, and every fast path that turns on
-/// that answer would quietly stop firing. `crate::exterior` guards its own
-/// vertical fold for exactly the same reason and it is the same trap.
+/// and its opposite would not cancel. What turns on that cancelling is
+/// `crate::exterior`, which lays the star band out afresh whenever the orbit
+/// differs from the one it was last laid against: an angle that came back a
+/// hair off would rebuild the whole rotation path every frame of a flight
+/// nobody is touching the camera on. That module guards its own vertical fold
+/// for exactly the same reason and it is the same trap.
 fn turn_of(angle: f32) -> f32 {
     if (-PI..PI).contains(&angle) {
         angle
@@ -190,10 +192,15 @@ impl Orbit {
 
     /// Whether this is that shot, exactly.
     ///
-    /// Asked rather than approximated, and the callers lean on it hard: the
-    /// star band skips its whole rotation path here, the bubble takes an
-    /// unforeshortened outline, and between them that is what keeps a default
-    /// flight producing the bytes it produced before any of this existed.
+    /// Asked rather than approximated, and a test's question rather than the
+    /// renderer's: what wants to know is an assertion that a camera came back
+    /// to where it started. The doc here used to claim the star band and the
+    /// bubble both took fast paths off this answer, which was never true —
+    /// they compare against what they were last laid out for
+    /// (`crate::exterior`) and against a zero sine (`crate::lens`), and
+    /// neither has ever called this. Nothing in a running program does, hence
+    /// the gate.
+    #[cfg(test)]
     pub fn is_level(self) -> bool {
         self == Self::LEVEL
     }

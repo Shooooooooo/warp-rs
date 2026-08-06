@@ -1636,21 +1636,6 @@ mod tests {
     }
 
     #[test]
-    fn a_flight_survives_being_resized_underneath_it() {
-        let args = args_for(&[]);
-        let mut flight = Flight::new(&args, 80, 24);
-        for (cols, rows) in [(80, 24), (250, 70), (8, 3), (1, 1), (120, 40)] {
-            flight.resize(&args, cols, rows);
-            for _ in 0..20 {
-                flight.advance(1.0 / 60.0);
-                flight.draw(60.0, false, true);
-            }
-            flight.renderer.present(&mut Vec::new()).unwrap();
-            assert!(!flight.field.is_empty());
-        }
-    }
-
-    #[test]
     fn a_resize_storm_keeps_every_buffer_in_step() {
         // Three buffers have to agree: the canvas is two subpixel rows per
         // terminal row, the screen is one cell per terminal cell, and the
@@ -2145,7 +2130,7 @@ mod tests {
     }
 
     #[test]
-    fn resetting_puts_the_camera_back_where_it_started() {
+    fn resetting_puts_the_zoom_back_where_it_started() {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = outside(&args);
         let mut paused = false;

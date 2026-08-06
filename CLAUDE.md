@@ -17,8 +17,12 @@ out of the motion rather than being drawn as an effect.
 
 One crate, `warp-rs`, with a binary named `warp`. `src/lib.rs` carries
 everything; `src/main.rs` is sixteen lines of entry point. That split is
-load-bearing and there is a test that fails if it stops being true
-(`tests/flight.rs`).
+load-bearing, and what holds it is `tests/flight.rs`, which drives a whole
+flight through the public surface without touching the binary — so the library
+cannot quietly grow a dependency on `main.rs` having done something first. Note
+what that does *not* say: nothing counts the lines in `main.rs`, and nothing
+fails if it grows. The test pins the direction of the dependency, not the size
+of the shell.
 
 Four dependencies, on purpose: `clap`, `crossterm`, `rand`, and `png` behind
 the optional `snapshot` feature. **Do not add a dependency** without saying why
@@ -136,7 +140,7 @@ they are checked on `ubuntu-latest` only.
 The consequence for how you edit: **do not "clean up" duplicated float
 arithmetic on the pinned paths.** `Renderer::exterior_camera` spells out the
 same shake calculation as `Renderer::camera` rather than sharing a helper, and
-says so at `src/render.rs:99` — extracting it is exactly the sort of obviously
+says so in its own doc comment — extracting it is exactly the sort of obviously
 equivalent edit that moves a float by an ulp and repaints the whole sky. The
 ship picker is drawn from `Flight::draw` rather than inside `Renderer` for the
 same reason.
@@ -281,6 +285,16 @@ The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
 `Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with
 different values (0.9/260 in `starfield`, 18/320 in `exterior`). They are not
 duplication to be merged; they describe different volumes.
+
+`MAGNITUDE_FLOOR` belongs on that list and is the one to watch, because it is
+the one where the argument is not self-evident: it stands at 0.14 in *both*
+modules, and `exterior` already imports `CLASSES` and `shift_color` from
+`starfield`, so there is an obvious-looking third import to be made and nothing
+in the code to argue against it. The argument is the same one as for the other
+four. It is a knob on how lopsided one volume's brightness distribution is, and
+the two volumes are different; that they were tuned to the same number is where
+they are, not what they are. `SPAWN_MARGIN` and `DEPTH_FALLOFF` were the same
+number once too.
 
 One thing *is* genuinely shared: `Camera`, and with it `Camera::project`, which
 clips against `starfield::Z_NEAR` in **both** views — including for the hull.
@@ -481,8 +495,10 @@ anything makes `exterior_camera` read the zoom.
 **The warp bubble is measured in ships.** `Lens::for_warp` takes the hull's
 on-screen half-length, not the canvas height, so the bubble scales with the
 zoom instead of hanging in the frame at a fixed size. That constant used to be
-`0.48` of the canvas with a comment saying it was twice `SHIP_SCREEN_FRAC`'s
-`0.24` — a relationship nothing could check, and exactly the sort that rots.
+`0.48` of the canvas with a comment saying it was twice what `SHIP_SCREEN_FRAC`
+stood at then, `0.24` — a relationship nothing could check, and exactly the sort
+that rots. It rotted: that constant is `0.125` now, and the sentence describing
+the pair went on quoting the old figure long after nothing in the tree held it.
 `the_bubble_is_the_same_number_of_ships_across_at_every_zoom` in `view.rs` is
 what checks it now, through both real arithmetics rather than against a
 constant.
