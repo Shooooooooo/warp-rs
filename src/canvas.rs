@@ -21,6 +21,17 @@ const TAIL_BRIGHTNESS: f32 = 0.32;
 /// Backstop on samples per streak; clipping already bounds this in practice.
 const MAX_SAMPLES: usize = 4096;
 
+/// The curve `LENGTH_FALLOFF` describes, in one place.
+///
+/// `draw_streak` measures the length it passes here *after* clipping and
+/// `draw_path` measures the whole polyline before it, which is a real
+/// difference rather than an oversight — a bent streak is subdivided, and
+/// measuring only the visible part of each piece would change the picture with
+/// the subdivision. Only the shape of the falloff is shared.
+fn spread(length: f32) -> f32 {
+    1.0 + length * LENGTH_FALLOFF
+}
+
 /// Entries in the tonemap table. The curve is sampled on a square-root
 /// compressed domain, which spends resolution where the output moves fastest;
 /// 1024 holds the worst error to a single 8-bit level and keeps the whole
@@ -201,6 +212,34 @@ impl Canvas {
         (self.height - 1) as f32
     }
 
+    /// How far a streak's light would be spread along this segment: the factor
+    /// [`Self::draw_streak`] is about to divide its per-sample brightness by.
+    ///
+    /// Public because of one caller with an unusual problem. The falloff exists
+    /// so that a *star*, whose streak length is its own motion, spreads its
+    /// light rather than burning a line through the frame — the length is the
+    /// physics and dimming with it is the point. The engine trail is the other
+    /// case: above light speed its reach is measured against the frame, so
+    /// without dividing this back out the width of the terminal would decide
+    /// how bright the drive burns, and the same flight would not look the same
+    /// on two machines.
+    ///
+    /// Measured on the clipped segment, and answering 1.0 for the short-streak
+    /// case, because both are what `draw_streak` will actually do — a caller
+    /// dividing this out wants the number that is going to be applied, not the
+    /// one the geometry suggests.
+    pub fn streak_spread(&self, from: (f32, f32), to: (f32, f32)) -> f32 {
+        let Some((from, to)) = self.clip(from, to) else {
+            return 1.0;
+        };
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length < 0.75 {
+            return 1.0;
+        }
+        spread(length)
+    }
+
     /// Draw one star's contribution: a line from where it was to where it is,
     /// brightening toward the head.
     pub fn draw_streak(&mut self, streak: &Streak) {
@@ -233,7 +272,7 @@ impl Canvas {
         // that for nothing — the frames come out byte-identical, so the
         // reference hashes did not move.
         let inv_steps = 1.0 / steps as f32;
-        let per_sample = streak.intensity / (1.0 + length * LENGTH_FALLOFF);
+        let per_sample = streak.intensity / spread(length);
         for i in 0..=steps {
             let t = i as f32 * inv_steps;
             // `from` is the tail, `to` the head: ramp brightness along it.
@@ -274,7 +313,7 @@ impl Canvas {
         }
 
         let (max_x, max_y) = (self.max_x(), self.max_y());
-        let per_sample = intensity / (1.0 + total * LENGTH_FALLOFF);
+        let per_sample = intensity / spread(total);
         let inv_total = 1.0 / total;
         let mut travelled = 0.0f32;
         // Where the previous segment stopped, so the vertex the next one
@@ -478,6 +517,14 @@ impl Canvas {
         px[0] + px[1] + px[2]
     }
 
+    /// The three channels at one subpixel, for the tests that do care what
+    /// colour it came out — the drive's, which is the one thing here whose
+    /// hue carries information rather than decoration.
+    #[cfg(test)]
+    pub fn color_at(&self, x: usize, y: usize) -> [f32; 3] {
+        self.buf[y * self.width + x]
+    }
+
     /// Collapse the HDR buffer to 8-bit sRGB-ish pixels, row-major, into a
     /// caller-owned buffer. Taking one rather than returning a fresh `Vec`
     /// keeps a 98 KB allocation out of every single frame.
@@ -670,6 +717,44 @@ mod tests {
         assert!(
             total_light(&long) > total_light(&short),
             "but it should glow more"
+        );
+    }
+
+    #[test]
+    fn a_streak_divided_by_its_own_spread_keeps_its_brightness() {
+        // What `streak_spread` promises the engine trail: multiply an intensity
+        // by it and the head comes out the same however long the streak is, so
+        // a caller whose length is chosen by the frame rather than by the
+        // physics can state a brightness and get it.
+        //
+        // Pinned against `draw_streak`'s real arithmetic rather than against
+        // the formula, because agreeing with the formula is not the property —
+        // agreeing with the division that is actually applied is, and the two
+        // measure their lengths differently either side of the clip.
+        let head_of = |from: (f32, f32), to: (f32, f32)| {
+            let mut canvas = Canvas::new(128, 8);
+            let held = canvas.streak_spread(from, to);
+            canvas.draw_streak(&Streak {
+                from,
+                to,
+                color: [1.0; 3],
+                intensity: 0.5 * held,
+            });
+            canvas.buf[4 * 128 + to.0 as usize][0]
+        };
+        let short = head_of((60.0, 4.0), (66.0, 4.0));
+        let long = head_of((10.0, 4.0), (110.0, 4.0));
+        // And one running well off the canvas, which is the trail's own case:
+        // the spread has to answer for the part that lands, not the part asked
+        // for, or the compensation overshoots by whatever was clipped away.
+        let clipped = head_of((-400.0, 4.0), (110.0, 4.0));
+        assert!(
+            (long - short).abs() < short * 0.05,
+            "a hundred subpixels came out {long} against six at {short}"
+        );
+        assert!(
+            (clipped - short).abs() < short * 0.05,
+            "a streak mostly off the canvas came out {clipped} against {short}"
         );
     }
 

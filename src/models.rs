@@ -78,8 +78,15 @@ const DIFFUSE: f32 = 0.95;
 /// something sitting *inside* the light.
 const BUBBLE_LIGHT: f32 = 0.45;
 /// Colour of a lit engine at impulse, and at warp.
-const IMPULSE_FLAME: [f32; 3] = [1.00, 0.62, 0.28];
-const WARP_FLAME: [f32; 3] = [0.62, 0.80, 1.00];
+///
+/// Both ends are blue, and the drive whitens rather than cooling as it spools.
+/// It used to run amber at impulse, which put the hottest-looking colour of the
+/// two on the *colder* setting — and read as a chemical rocket bolted to
+/// something that crosses light years. A drive gets whiter as it gets hotter,
+/// so the ramp runs from a saturated blue to very nearly white, and lighting
+/// the warp drive still changes the colour and not only the length.
+const IMPULSE_FLAME: [f32; 3] = [0.24, 0.55, 1.00];
+const WARP_FLAME: [f32; 3] = [0.82, 0.92, 1.00];
 
 /// How far aft a bell throws its exhaust, in hull units per unit of bell
 /// radius, at the top of the sublight range.
@@ -95,6 +102,12 @@ const WARP_FLAME: [f32; 3] = [0.62, 0.80, 1.00];
 /// is not several times longer than it is wide has no shape to show.
 const TRAIL_PER_RADIUS: f32 = 12.0;
 /// What full warp multiplies that reach by, quadratic in the warp ramp.
+///
+/// This looks unreachable and is not. A drive that is *lit* throws its lance at
+/// the frame edge and has no use for a multiple of the hull — but `warp_engaged`
+/// goes false the instant the drive is switched off, while the ship is still
+/// superluminal and the warp ramp is still most of the way up. So this is what
+/// shapes the plume through the spin-down, and only through the spin-down.
 ///
 /// The same *shape* as the sky's `1.0 + warp * warp * 5.0` in
 /// [`crate::exterior`], and deliberately not the same number. Taken literally —
@@ -114,9 +127,14 @@ const TRAIL_STRETCH: f32 = 2.8;
 /// subpixels and the two plumes add. So do neighbouring lanes of one fan, since
 /// five of them cross two subpixels. Between them the common case is four times
 /// nominal, and the first value tried here — set against one lane of one bell —
-/// put the Enterprise at impulse through the tonemap as a saturated amber brick
+/// put the Enterprise at impulse through the tonemap as a saturated brick
 /// brighter than the hull it came out of.
-const TRAIL_INTENSITY: f32 = 0.16;
+///
+/// It is now the brightness at the *nozzle*, because `draw_trail` divides
+/// `Canvas::streak_spread` back out — which is why the figure is so much
+/// smaller than it reads: the value it replaced was per lane before that
+/// division, and at the reference framing the spread is a factor of eleven.
+const TRAIL_INTENSITY: f32 = 0.045;
 /// How much brighter a lit warp drive burns than a lit impulse one.
 ///
 /// Without it the drive reads *dimmer* the faster it goes: `draw_streak`
@@ -159,7 +177,13 @@ const PLUME_FLARE: f32 = 1.6;
 /// the whole thing reads as a brown block bolted to the tail. Shortening the
 /// outer lanes carries the tails round in a curve from the widest point to a
 /// tip, which is the shape a flame has.
+///
+/// A lance does not want one, so the figure eases toward `PLUME_TAPER_AT_WARP`
+/// as the drive spools: at frame length the flame's taper puts the widest point
+/// somewhere in the middle of the view and leaves a single thin lane carrying
+/// on past it.
 const PLUME_TAPER: f32 = 0.55;
+const PLUME_TAPER_AT_WARP: f32 = 0.15;
 /// How much dimmer the outermost lane is than the centre one, quadratically.
 /// The skirt of a plume is not its core, and an edge that ends at full value
 /// draws a line down each side of it.
@@ -864,8 +888,8 @@ fn normal_of(placed: &[[f32; 3]], face: &[u16]) -> [f32; 3] {
     }
 }
 
-/// The drive: a glow out of each bell — amber on impulse, blue-white at warp,
-/// and out with the throttle — with the exhaust it throws behind it.
+/// The drive: a glow out of each bell — blue on impulse, whitening at warp, and
+/// out with the throttle — with the exhaust it throws behind it.
 ///
 /// Both are drawn here, after the plates, and that placement is the one thing
 /// in this function that is a decision rather than a number. Everything in
@@ -930,6 +954,7 @@ fn draw_engines(
                 color,
                 lit,
                 warp,
+                engaged: ship.warp_engaged,
                 surge,
                 surge_reach,
                 gutter,
@@ -968,6 +993,10 @@ struct Flame<'a> {
     color: [f32; 3],
     lit: f32,
     warp: f32,
+    /// Whether the warp drive is lit, which is what throws the lance at the
+    /// frame edge. Not the same question as `warp > 0.0`: a drive spinning
+    /// down is superluminal and switched off at once.
+    engaged: bool,
     surge: f32,
     surge_reach: f32,
     gutter: f32,
@@ -1042,12 +1071,36 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
 
     // The screen perpendicular. A plume seen exactly end-on has no length to
     // take one from, and is a bell rather than a trail; leave it to the glow.
-    let (dx, dy) = (foot.0 - flame.head.0, foot.1 - flame.head.1);
+    let (mut dx, mut dy) = (foot.0 - flame.head.0, foot.1 - flame.head.1);
     let span = dx.hypot(dy);
     if !span.is_finite() || span < 1.0 {
         return;
     }
     let (px, py) = (-dy / span, dx / span);
+
+    // A lit warp drive does not trail, it tears: the lance runs clean off the
+    // side of the frame, and it gets there the moment the drive catches rather
+    // than growing into it over the warp range. The white-out on `Ship::flash`
+    // covers that instant, so the jump arrives under cover.
+    //
+    // Stretched here, in screen space, on a direction that has already been
+    // through the projection and the near-plane cut — so the lean is in it
+    // exactly and the cut does not have to be re-derived against a segment
+    // several times longer. Solving for the hull-unit length that reaches the
+    // edge would need both again and would answer differently at every zoom.
+    //
+    // Gated on `warp_engaged` and not on the warp ramp, so a drive spinning
+    // down loses its lance in the frame it is switched off, while the ship is
+    // still doing most of its old speed. That is the read: the drive quits, the
+    // ship coasts.
+    if flame.engaged {
+        // The diagonal reaches the frame edge from anywhere inside it whatever
+        // direction the plume is pointing, and `draw_streak` clips, so there is
+        // nothing to be gained by working out which edge it leaves by.
+        let out = cam.width.hypot(cam.height) / span;
+        dx *= out;
+        dy *= out;
+    }
 
     let brightness = TRAIL_INTENSITY
         * flame.lit
@@ -1055,6 +1108,11 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         * flame.surge
         * (1.0 + flame.warp * TRAIL_WARP_LIFT)
         * (flame.bell.radius / NOMINAL_BELL);
+    // A flame comes to a tip; a lance runs off the frame in every lane. Left at
+    // the flame's figure, a full-length plume draws a wide wedge that peaks
+    // somewhere in the middle of the frame with a single thin whisker carrying
+    // on past it, which reads as a flame with a hair growing out of it.
+    let taper = PLUME_TAPER + (PLUME_TAPER_AT_WARP - PLUME_TAPER) * flame.warp;
     // Enough lanes that they land about a subpixel apart across the widest end
     // of the fan, and no more. Forced odd so there is a centre lane, which is
     // the whole of the plume on a terminal too small for a second.
@@ -1075,7 +1133,7 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         // rectangle instead: `draw_streak` ramps down to `TAIL_BRIGHTNESS`
         // rather than to nothing, so the far end would stop dead at a third of
         // full brightness and the sides at the outermost lane.
-        let shorten = 1.0 - PLUME_TAPER * out;
+        let shorten = 1.0 - taper * out;
         let nozzle = (
             flame.head.0 + px * offset * throat,
             flame.head.1 + py * offset * throat,
@@ -1084,11 +1142,17 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
             nozzle.0 + (dx + px * offset * widest) * shorten,
             nozzle.1 + (dy + py * offset * widest) * shorten,
         );
+        // Divided back out, so what the constants above name is the brightness
+        // at the nozzle rather than the brightness of a lane of some particular
+        // length. Without it the lance — whose length is the frame's, not the
+        // drive's — would burn dimmer the wider the terminal, and the same
+        // flight would not look the same on two machines.
+        let held = canvas.streak_spread(tip, nozzle);
         canvas.draw_streak(&Streak {
             from: tip,
             to: nozzle,
             color: flame.color,
-            intensity: brightness * gutter_of(lane) * (1.0 - PLUME_EDGE_FADE * out),
+            intensity: brightness * held * gutter_of(lane) * (1.0 - PLUME_EDGE_FADE * out),
         });
     }
 }
@@ -1702,18 +1766,23 @@ mod tests {
         // length written against the canvas would swell and shrink against a
         // hull that was not.
         //
+        // Flown at *impulse*, and that is a real narrowing rather than a
+        // convenience. A lit warp drive throws its lance at the frame edge on
+        // purpose, so above light speed the length is measured against the
+        // canvas and there is nothing left for the zoom to preserve. Below it,
+        // which is the whole of the range this property was ever about, the
+        // reach is still hull units through the same projection.
+        //
         // Measured off the canvas rather than off the formula, which is what
-        // makes it worth having, and two things follow from that. The terminal
-        // is absurdly wide because the reach is read off the frame: at
-        // `ZOOM_MAX` the plume is five ships long against a hull already a
-        // quarter of the height, and on any ordinary canvas it runs out of the
-        // frame and reports the frame's width instead of its own — which the
-        // first draft of this test did, and read as the plume shrinking. And
-        // the tolerance is loose because at `ZOOM_MIN` the whole thing is a
-        // dozen subpixels, where a subpixel of rounding is most of the spread.
-        // A plume pinned to the frame rather than to the ship would be out by
-        // the zoom range itself, which is more than fourfold.
-        let ship = at_warp();
+        // makes it worth having, and the terminal is wide because of that: at
+        // `ZOOM_MAX` the plume runs several ships past a hull already a quarter
+        // of the height, and on an ordinary canvas it leaves the frame and
+        // reports the frame's width instead of its own. The tolerance is loose
+        // because at `ZOOM_MIN` the whole thing is a dozen subpixels, where a
+        // subpixel of rounding is most of the spread. A plume pinned to the
+        // frame rather than to the ship would be out by the zoom range itself,
+        // which is more than fourfold.
+        let ship = at_impulse();
         let model = &models()[0];
         let renderer = Renderer::new(700, 60, ColorMode::Truecolor, 1.9);
         let cam = renderer.exterior_camera(&ship, 0.0);
@@ -1729,6 +1798,125 @@ mod tests {
                 "the trail is {ships} ships long at zoom {zoom}, against {want} at the others"
             );
         }
+    }
+
+    /// The drive's light in one column, a chosen number of the ship's own
+    /// half-lengths aft of the vanishing point.
+    ///
+    /// Measured in ships rather than in subpixels so the sample lands at the
+    /// same place in the plume whatever the terminal is: both the hull and the
+    /// lance scale with the canvas, so a column two ship-halves back is the
+    /// same fraction of the way down the flame at every size. A column fixed in
+    /// subpixels would be inside the hull on one terminal and past the tip on
+    /// another, and would compare nothing.
+    fn drive_column(
+        model: &ShipModel,
+        ship: &Ship,
+        cols: usize,
+        rows: usize,
+        ships_aft: f32,
+    ) -> (f32, [f32; 3]) {
+        let (renderer, cam) = cam(cols, rows, ship);
+        let (w, h) = renderer.canvas_dims();
+        let mut canvas = Canvas::new(w, h);
+        draw(&mut canvas, &cam, ship, model, STANDOFF, 0.0);
+        let half = crate::view::ship_half_on_screen(h as f32, ZOOM_DEFAULT);
+        let x = (cam.cx - half * ships_aft)
+            .round()
+            .clamp(0.0, (w - 1) as f32) as usize;
+        let mut best = 0.0f32;
+        let mut color = [0.0; 3];
+        for y in 0..h {
+            let light = canvas.light_at(x, y);
+            if light > best {
+                best = light;
+                color = canvas.color_at(x, y);
+            }
+        }
+        (best, color)
+    }
+
+    #[test]
+    fn a_lit_warp_drive_trails_off_the_edge_of_the_frame() {
+        // What "very long" was asked to mean, and the reason the reach stops
+        // being hull units the moment the drive is lit. Checked at both ends of
+        // the dolly as well as at three terminals, because the lance is
+        // stretched in screen space after the projection — if it were solved
+        // for in hull units instead it would come up short at one zoom and
+        // overshoot at the other.
+        let ship = at_warp();
+        assert!(
+            ship.warp_engaged,
+            "the drive has to be lit for this to mean anything"
+        );
+        for model in models() {
+            for (cols, rows) in [(120usize, 36usize), (200, 60), (400, 120)] {
+                let (renderer, cam) = cam(cols, rows, &ship);
+                let (w, h) = renderer.canvas_dims();
+                for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
+                    let mut canvas = Canvas::new(w, h);
+                    draw(&mut canvas, &cam, &ship, model, ship_distance(zoom), 0.0);
+                    let reaches = (0..h).any(|y| canvas.light_at(0, y) > 0.02);
+                    assert!(
+                        reaches,
+                        "{} stopped short of the frame edge at {cols}x{rows}, zoom {zoom}",
+                        model.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_lance_burns_as_brightly_on_any_terminal() {
+        // The whole point of dividing `Canvas::streak_spread` back out. A lit
+        // drive's reach is the frame's, not the ship's, and `draw_streak`
+        // spreads a streak's light along its length — so left alone the drive
+        // would burn dimmer the wider the terminal, and the same flight would
+        // not look the same on two machines. That is the one thing this
+        // renderer's tests exist to stop.
+        //
+        // Sampled two ship-halves aft, which is out in the lance and clear of
+        // the bell's own glow. The tolerance covers the lane count, which is
+        // chosen from the fan's width in subpixels and so lands on a different
+        // integer at each size.
+        let ship = at_warp();
+        let model = &models()[0];
+        let mut first = None;
+        for (cols, rows) in [(120usize, 36usize), (200, 60), (400, 120)] {
+            let (light, _) = drive_column(model, &ship, cols, rows, 2.0);
+            let want: f32 = *first.get_or_insert(light);
+            assert!(
+                light > 0.0 && (light - want).abs() < want * 0.4,
+                "the lance is {light} at {cols}x{rows}, against {want} at the other sizes"
+            );
+        }
+    }
+
+    #[test]
+    fn the_drive_burns_blue_at_impulse_and_whitens_at_warp() {
+        // Measured off the canvas rather than off the two constants, so an edit
+        // to either end of the ramp is covered rather than restated. Blue is
+        // the whole read at impulse — a drive that runs amber down there puts
+        // the hotter-looking colour on the colder setting — and whitening is
+        // what stops engaging the drive from being a change of length alone.
+        let model = &models()[0];
+        let (_, cruise) = drive_column(model, &at_impulse(), 200, 60, 1.6);
+        let (_, warp) = drive_column(model, &at_warp(), 200, 60, 1.6);
+
+        assert!(
+            cruise[2] > cruise[0] * 1.5,
+            "the drive is not blue at impulse: {cruise:?}"
+        );
+        let whiteness = |c: [f32; 3]| c[0] / c[2].max(f32::MIN_POSITIVE);
+        assert!(
+            whiteness(warp) > whiteness(cruise) * 1.5,
+            "warp did not whiten the drive: {cruise:?} then {warp:?}"
+        );
+        assert!(
+            warp[2] > warp[0],
+            "warp went past white into the red: {warp:?}"
+        );
     }
 
     #[test]

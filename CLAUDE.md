@@ -29,8 +29,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 225 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 226 unit — adds the snapshot-gated one
+cargo test                              # 229 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 230 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked                  # CI runs this too; `exclude` is by hand
@@ -328,6 +328,18 @@ walks it straight across them. Drawn *under* the plates it would be chopped by
 a silhouette it is barely clear of. Over them it shines through as the wash a
 hot plume genuinely puts on structure it plays over, which is the cheaper of
 the two mistakes.
+
+**The streak falloff is physics for a star and a bug for the drive, which is
+what `Canvas::streak_spread` is for.** `draw_streak` divides a streak's
+per-sample light by its length, so a fast smear spreads instead of burning a
+line. That is right when the length *is* the motion, which is every star in the
+sky. It is wrong for the engine trail: a lit warp drive throws its lance at the
+frame edge, so the length is the terminal's and left alone the drive would burn
+dimmer the wider the window — the same flight looking different on two
+machines, which is the one thing the whole test suite exists to stop.
+`draw_trail` multiplies the factor back out, so what `TRAIL_INTENSITY` names is
+the brightness at the nozzle. Anything else that picks its own streak length
+rather than being handed one has the same problem and the same answer.
 
 **`Canvas::splat_inside` does no bounds checking and will panic.** It is the
 innermost loop in the program and it trusts its caller — `draw_streak` and
