@@ -167,13 +167,32 @@ impl Renderer {
         // light; a single blob reads as an object. Both ramp with the cube of
         // the warp ramp so nothing is hanging in the middle of the view until
         // the ship is genuinely moving.
+        //
+        // Both are wide and weak rather than narrow and fierce, and that is
+        // the whole of the tuning. The core was a tenth of the height across
+        // at 1.6 and the halo half of it at 0.45, which put a hard white point
+        // at the vanishing point inside a veil that reached the middle third
+        // of the frame — the point too small to read as distance and the veil
+        // wide enough to flatten the streaks carrying it. Spreading each over
+        // two to three times the radius at a quarter of the strength trades
+        // one for the other: the light arrives over a broad falloff instead of
+        // as a blob with a wash round it, and the streaks stay legible through
+        // all of it because no part of the pool is bright enough to bury them.
+        //
+        // The falloff stays quartic, which is what keeps this from reading as
+        // a solid body hanging in the middle of the view. Flattening the curve
+        // instead of widening the radius is the obvious alternative and it was
+        // tried: at a squared falloff the pool acquires a visible rim and the
+        // tunnel becomes a ball. `Canvas::add_glow` says the same thing from
+        // the other end, and it is shared with the drive bells out in the side
+        // view, so the exponent is not this call site's to change anyway.
         if warp > 0.0 {
             let (_, h) = self.canvas.dims();
             let glare = warp * warp * warp;
             self.canvas
-                .add_glow(cam.cx, cam.cy, h as f32 * 0.10, CORE_COLOR, glare * 1.6);
+                .add_glow(cam.cx, cam.cy, h as f32 * 0.30, CORE_COLOR, glare * 0.42);
             self.canvas
-                .add_glow(cam.cx, cam.cy, h as f32 * 0.50, CORE_COLOR, glare * 0.45);
+                .add_glow(cam.cx, cam.cy, h as f32 * 0.75, CORE_COLOR, glare * 0.14);
         }
         self.canvas
             .apply_vignette(cam.cx, cam.cy, 0.22 + 0.48 * warp);

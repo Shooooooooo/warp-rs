@@ -80,7 +80,8 @@ reason below.
 one means adding it to all three. They share `--headless --frames 120 --seed 1
 --size 120x36` and differ in what they make the renderer do: two `--demo` runs
 in truecolor and ascii, one `--engage --throttle 1.0`, one of those from
-`--view side`, and the same again from `--orbit 55,35,20`.
+`--view side`, and the same again with the camera swung off the beam by
+`--orbit 55,35,20`.
 
 The last three are not decoration. With only the `--demo` pair, the reference
 covered two seconds of flight that never leaves sublight — `--demo` spends its
@@ -90,6 +91,15 @@ the hashes at all, because a sublight streak is shorter than a subpixel and
 takes the branch in `draw_streak` that never reads it. The streak ramp, the
 glare, the flash, the Doppler shift and the entire view from outside — band,
 lens, arcs and hulls — were all outside the reference.
+
+The orbit case is there for the same kind of reason one step further in. The
+view from outside is written to reduce *exactly* to the old arithmetic when the
+camera is abeam, which is where `side.txt` has it — so a change that repainted
+every angle except that one would have left the reference untouched.
+`--orbit 55,35,20` has all three angles off zero at once, which is the only
+configuration that turns the bubble's outline off the horizontal and puts the
+star band's depth travel, its vertical fold and its wall recycle on the path
+as well.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -109,8 +119,11 @@ sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/fra
 ```
 
 Diff the old hashes against the new ones before committing and say which moved.
-A change aimed at the hull moves `side.txt` and `orbit.txt` and must leave the
-three cockpit flights alone; one that moves a cockpit hash has leaked.
+The split is usually the sharpest thing you have: a change aimed at the hull
+moves `side.txt` and `orbit.txt` and must leave the three cockpit flights alone,
+and one aimed at the tunnel glare moves `warp.txt` and only `warp.txt`, since
+the two `--demo` flights never leave sublight and the outside view goes through
+`add_glow_oval` instead. A hash moving outside that shape has leaked.
 
 Say in the commit message what moved and why. Regenerating without explanation
 throws away the only thing that file is for.

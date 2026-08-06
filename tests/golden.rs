@@ -124,7 +124,8 @@ const COMMON: [&str; 7] = [
 
 /// The reference flights, by the file each one is recorded under.
 ///
-/// The last two are here because the first two turned out to cover very little.
+/// The last three are here because the first two turned out to cover very
+/// little.
 /// `--demo` spends its opening six seconds easing the throttle up and 120
 /// frames at 60 fps is two of them, so the pinned sky was sublight throughout,
 /// peaking at a quarter of light speed with the drive cold — leaving the streak
