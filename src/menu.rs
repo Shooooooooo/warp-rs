@@ -5,9 +5,9 @@
 //! modal: while it is up the keyboard drives the list, and every way out of it
 //! leaves the flight running.
 //!
-//! Moving the highlight flies the ship it is on. A list of five names tells you
-//! nothing about five ships, so the picker previews rather than describes —
-//! which is also why opening it takes the camera outside.
+//! Moving the highlight flies the ship it is on. A list of names tells you
+//! nothing about the ships they belong to, so the picker previews rather than
+//! describes — which is also why opening it takes the camera outside.
 
 use crate::models;
 use crate::term::{ColorMode, Screen};

@@ -114,7 +114,7 @@ and yaw are simply not connected in this view and the hint line stops offering
 them. Press `C` to go back inside and the stick comes back with it. Throttle,
 warp and roll work in both.
 
-`M` opens a picker for the five hulls. It takes the camera outside if it is not
+`M` opens a picker for the six hulls. It takes the camera outside if it is not
 already, and moving through the list flies each ship rather than naming it:
 
 | Ship | |

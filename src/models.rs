@@ -993,8 +993,9 @@ mod tests {
     }
     #[test]
     fn the_ships_do_not_look_like_one_another() {
-        // Five ships is only a feature if they read as five ships. Compared as
-        // silhouettes on the canvas the camera actually uses.
+        // A hangar is only a feature if the ships in it read as different
+        // ships. Compared as silhouettes on the canvas the camera actually
+        // uses.
         let ship = Ship::new();
         let (renderer, cam) = cam(120, 36, &ship);
         let (w, h) = renderer.canvas_dims();
