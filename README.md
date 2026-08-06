@@ -259,11 +259,15 @@ cargo run --release -- --headless --frames 120 --seed 1 --size 120x36 --demo | s
 
 Repeatable is not the same as unchanged, though — a renderer that draws every
 frame differently is still perfectly repeatable about it — so the bytes
-themselves are committed, in `tests/golden/frames.sha256`, and CI checks
-against them. An edit meant to touch one thing that touched the whole sky
-fails there; when the change was the point, that file says how to regenerate
-it. The hashes hold across build profiles and rustc versions but not across
-platforms, so they are only checked on Linux.
+themselves are committed, in `tests/golden/frames.sha256`. Four flights are
+pinned: sublight in truecolor and in ASCII, one at full warp, and one at full
+warp from outside the ship, which between them reach the streak ramp, the
+tunnel glare, the lens and the hulls. `cargo test` reproduces them in process
+and CI re-checks the same hashes against a release binary, so an edit meant to
+touch one thing that touched the whole sky fails on your own machine; when the
+change was the point, that file says how to regenerate it. The hashes hold
+across build profiles and rustc versions but not across platforms, so they are
+only checked on Linux.
 
 The `snapshot` feature writes a frame out as a PNG, which is a great deal easier
 to look at than a wall of escape codes:

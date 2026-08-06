@@ -29,8 +29,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 187 unit + 6 integration tests, ~20s
-cargo test --locked --all-features      # 188 — adds the snapshot-gated one
+cargo test                              # 200 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 201 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
@@ -64,24 +64,45 @@ live in the character grid, not in the pixel buffer, so they are not in it.
 
 `--headless` renders on a fixed timestep with no terminal control, so a fixed
 seed produces byte-identical output. `tests/golden/frames.sha256` pins those
-bytes, and CI checks them.
+bytes, and they are checked two ways from that one file: `cargo test --test
+golden` reproduces them in process through `app::render_headless`, and the
+`headless` CI job produces the same four files from a release binary and runs
+`sha256sum -c`. Between them the two also prove they agree — a library that
+renders one thing and a binary another would be a bug of its own.
 
-**No Rust code reads that file.** It lives under `tests/` but nothing in
-`cargo test` touches it — only the `headless` CI job does, with `sha256sum -c`
-against a release binary. So a green `cargo test` is not evidence the frames
-still match; run the recipe below yourself if you have touched the renderer.
+The in-process half is the reason `render_headless` is public and separate from
+`run_headless`. It costs about three seconds and is **Linux-gated**, for the
+reason below.
 
-**Any change to renderer arithmetic changes those hashes and turns CI red.**
-That is the point of them: an edit meant to touch one thing that touched the
-whole sky has to say so. When the change was intended, regenerate deliberately,
-with the diff in hand:
+**Four flights, and the case list lives in three places** — the comment block in
+`frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job. Adding
+one means adding it to all three. They share `--headless --frames 120 --seed 1
+--size 120x36` and differ in what they make the renderer do: two `--demo` runs
+in truecolor and ascii, one `--engage --throttle 1.0`, and one of those from
+`--view side`.
+
+The last two are not decoration. With only the `--demo` pair, the reference
+covered two seconds of flight that never leaves sublight — `--demo` spends its
+opening six seconds easing the throttle up — so it peaked at a quarter of light
+speed with the drive cold. A deliberate change to `TAIL_BRIGHTNESS` did not move
+the hashes at all, because a sublight streak is shorter than a subpixel and
+takes the branch in `draw_streak` that never reads it. The streak ramp, the
+glare, the flash, the Doppler shift and the entire view from outside — band,
+lens, arcs and hulls — were all outside the reference.
+
+**Any change to renderer arithmetic changes those hashes and turns the test
+red.** That is the point of them: an edit meant to touch one thing that touched
+the whole sky has to say so. When the change was intended, regenerate
+deliberately, with the diff in hand:
 
 ```sh
 cargo build --release
-flags="--headless --frames 120 --seed 1 --size 120x36 --demo"
-./target/release/warp $flags --color truecolor > truecolor.txt
-./target/release/warp $flags --color ascii     > ascii.txt
-sha256sum truecolor.txt ascii.txt > tests/golden/frames.sha256
+common="--headless --frames 120 --seed 1 --size 120x36"
+./target/release/warp $common --demo --color truecolor > truecolor.txt
+./target/release/warp $common --demo --color ascii     > ascii.txt
+./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
+./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
+sha256sum truecolor.txt ascii.txt warp.txt side.txt > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
 
@@ -123,6 +144,7 @@ undo one without a number saying why.
 src/lib.rs        module list and the orientation doc comment
 src/main.rs       parse, fly, report — nothing else
 src/app.rs        the three loops (interactive, headless, snapshot) and Flight
+src/autopilot.rs  the hand on the stick for --demo and --screensaver
 src/cli.rs        every flag, and the bounds each one is held to
 src/view.rs       ViewMode, and the geometry constants the side camera needs
 src/ship.rs       flight model: throttle, warp, steering, transients
@@ -489,12 +511,18 @@ picker both read `models::models()`, and the tests iterate it, so nothing else
 needs touching. The cockpit draws neither the hull nor its name — the panel's
 `SHIP` row is gated on `ViewMode::Side` — so the golden hashes do not move.
 
-The picker is the one thing a new ship *does* move. Its box is
-`models().len() + 6` rows tall against a `MIN_ROWS` of 9 that does not follow
-it — already twelve rows at six ships, so on a short terminal the footer and
-the closing rule are dropped, and each new ship drops one more. The fit test
-only checks that no row ran off the *side*, so nothing fails; look at it at
-30×9 yourself.
+The picker mostly takes care of itself now. It reserves `CHROME_ROWS` (6) for
+its frame, title, rule, blank and footer, gives what is left to the list, and
+windows that on the cursor — so a seventh ship costs nothing on a terminal with
+the room and scrolls on one without. It used to lay the list out at full height
+and clip, which at six ships already overflowed `MIN_ROWS` and dropped the
+footer and the closing rule; that is what the box-always-closes test is for.
+
+Two things a new ship still moves. The box's *width* is derived from the longest
+blurb, so a long one widens the dialogue on every terminal that can afford it —
+keep blurbs to a line. And when the list is windowed the title carries an `n/N`
+counter, which is the one degradation here that announces itself: shedding a
+blurb can go quietly, hiding whole ships cannot.
 
 **Adding a camera.** Add the variant to `ViewMode::ALL` in `src/view.rs` — the
 cycle and `label()` are written so a third costs one line — then the arm in
