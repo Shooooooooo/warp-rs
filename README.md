@@ -2,7 +2,15 @@
 
 Fly a starship through the universe at warp, in your terminal.
 
-![The view at warp factor 9.8](docs/warp.png)
+<!--
+The images are linked absolutely rather than as `docs/warp.png`, and want to
+stay that way. `Cargo.toml` excludes `docs/` from the published crate, and
+docs.rs renders this file out of that package — so a relative path resolves to
+nothing there and every screenshot comes out a broken icon, the one at the top
+of the page included. The repository is public, so these load for everyone.
+-->
+
+![The view at warp factor 9.8](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/warp.png)
 
 Stars live in a real 3D volume ahead of the ship and stream past the canopy.
 Each one is drawn as the segment between where it was last frame and where it
@@ -61,12 +69,12 @@ accident. `Esc` or `Ctrl-C` gets you out.
 **Impulse** — sublight. Stars are points, faintly twinkling, and the instrument
 panel reads a fraction of *c*.
 
-![Cruising at sublight](docs/impulse.png)
+![Cruising at sublight](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/impulse.png)
 
 **Spooling up** — past the light barrier the streaks lengthen, the field starts
 to bend outward, and a glare opens up down the throat of the tunnel.
 
-![Accelerating through the light barrier](docs/spool.png)
+![Accelerating through the light barrier](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/spool.png)
 
 Engaging the drive kicks the view and whites out the frame; dropping out bleeds
 speed off much harder than a normal throttle-down. The panel reports velocity in
@@ -83,7 +91,7 @@ day underway, which is about 5 light years per second at full warp.
 
 ## From outside the ship
 
-![The warp bubble lensing the sky around the ship](docs/side.png)
+![The warp bubble lensing the sky around the ship](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/side.png)
 
 `C` moves the camera off the ship's starboard beam. The hull is there in
 profile, the sky streams astern past it, and the stars nearest the camera sweep

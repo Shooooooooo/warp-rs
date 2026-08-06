@@ -8,10 +8,16 @@ repository = "https://github.com/shooooooooo/warp-rs"
 readme = "README.md"
 keywords = ["terminal", "starfield", "screensaver", "tui", "warp"]
 categories = ["command-line-utilities", "visualization"]
-# The floor the dependency tree already imposes. Not currently exercised by CI,
-# so treat it as a claim about the dependencies rather than a tested guarantee.
+# The floor the dependency tree imposes, and not a number we are free to lower:
+# on 1.84 a transitive manifest will not even parse. The `msrv` CI job reads
+# this field and `cargo check`s the crate and its locked dependencies against
+# exactly it, so this is a tested guarantee rather than a claim about them, and
+# moving the floor means editing it here on purpose.
 rust-version = "1.85"
 # Screenshots and CI config are for the repository, not for the published crate.
+# The README links its images by absolute URL because of this line: docs.rs
+# renders that file out of the package, where a relative `docs/` path points at
+# nothing.
 exclude = ["docs/", ".github/"]
 
 [[bin]]
