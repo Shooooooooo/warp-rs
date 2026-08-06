@@ -6,7 +6,9 @@
 //! raw mode on the alternate screen. So the limits are enforced at parse time,
 //! where the answer is an error message instead.
 
+use crate::models;
 use crate::term::ColorMode;
+use crate::view::ViewMode;
 use clap::{Parser, ValueEnum};
 use crossterm::terminal;
 
@@ -92,6 +94,14 @@ pub struct Args {
     #[arg(long)]
     pub engage: bool,
 
+    /// Which camera to fly behind. `C` cycles them at the stick.
+    #[arg(long, value_enum, default_value_t = ViewArg::Cockpit)]
+    pub view: ViewArg,
+
+    /// Which ship to fly. Only visible from outside; `M` opens the picker.
+    #[arg(long, value_name = "NAME", default_value = "enterprise", value_parser = parse_ship)]
+    pub ship: usize,
+
     /// Tonemap exposure. Higher is brighter.
     #[arg(long, default_value_t = 1.9, value_parser = positive)]
     pub exposure: f32,
@@ -130,6 +140,32 @@ impl ColorArg {
             ColorArg::Ascii => ColorMode::Ascii,
         }
     }
+}
+
+/// Which camera the flight starts behind.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ViewArg {
+    Cockpit,
+    Side,
+}
+
+impl ViewArg {
+    pub fn resolve(self) -> ViewMode {
+        match self {
+            ViewArg::Cockpit => ViewMode::Cockpit,
+            ViewArg::Side => ViewMode::Side,
+        }
+    }
+}
+
+/// A ship by name, as an index into [`crate::models::models`]. Parsed here
+/// rather than carried as a string so an unknown name is an error message at
+/// the command line instead of a silent fall back to the default.
+fn parse_ship(text: &str) -> Result<usize, String> {
+    models::by_name(text).ok_or_else(|| {
+        let known: Vec<&str> = models::models().iter().map(|m| m.name).collect();
+        format!("`{text}` is not a ship. Try one of: {}", known.join(", "))
+    })
 }
 
 fn parse_size(text: &str) -> Result<(u16, u16), String> {
@@ -345,6 +381,44 @@ mod tests {
             );
         }
         assert_eq!(clamp_size(80, 24), (80, 24), "a sane size is left alone");
+    }
+
+    #[test]
+    fn the_view_and_the_ship_can_be_chosen_at_the_command_line() {
+        let plain = args_for(&[]);
+        assert_eq!(
+            plain.view.resolve(),
+            ViewMode::Cockpit,
+            "the default is inside"
+        );
+        assert_eq!(
+            plain.ship,
+            models::DEFAULT_MODEL,
+            "the default ship is the one the list opens with"
+        );
+
+        assert_eq!(args_for(&["--view", "side"]).view.resolve(), ViewMode::Side);
+        // Every ship the picker offers can also be named here, or one of them
+        // is only reachable by hand.
+        for (i, model) in models::models().iter().enumerate() {
+            assert_eq!(args_for(&["--ship", model.name]).ship, i);
+            assert_eq!(args_for(&["--ship", &model.name.to_uppercase()]).ship, i);
+        }
+    }
+
+    #[test]
+    fn an_unknown_ship_is_refused_and_the_message_says_what_there_is() {
+        let err = Args::try_parse_from(["warp", "--ship", "millennium falcon"])
+            .expect_err("that is not one of ours")
+            .to_string();
+        for model in models::models() {
+            assert!(
+                err.contains(model.name),
+                "the error does not list {}",
+                model.name
+            );
+        }
+        assert!(Args::try_parse_from(["warp", "--view", "porthole"]).is_err());
     }
 
     #[test]

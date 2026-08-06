@@ -7,6 +7,7 @@
 
 use crate::ship::Ship;
 use crate::term::{ColorMode, Screen};
+use crate::view::ViewMode;
 
 const LABEL: (u8, u8, u8) = (96, 176, 208);
 const VALUE: (u8, u8, u8) = (226, 240, 255);
@@ -27,16 +28,36 @@ const THROTTLE_BAR: usize = 16;
 /// Control hints, widest first: the first that fits is the one drawn, so a
 /// narrow window sheds detail rather than losing the line entirely.
 const HINTS: [&str; 3] = [
-    "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  P pause  R reset  ESC quit",
+    "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  \u{2191}\u{2193} throttle  WASD steer  QE roll  ESC quit",
     "SPACE warp  WASD steer  QE roll  ESC quit",
 ];
 
 /// The same hints without the arrows, for a terminal being drawn in ASCII.
 const ASCII_HINTS: [&str; 3] = [
-    "SPACE warp  UP/DN throttle  WASD steer  QE roll  P pause  R reset  ESC quit",
+    "SPACE warp  UP/DN throttle  WASD steer  QE roll  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  UP/DN throttle  WASD steer  QE roll  ESC quit",
     "SPACE warp  WASD steer  QE roll  ESC quit",
+];
+
+/// And the same again for the view from outside, where WASD does nothing.
+///
+/// Pointing the nose is a thing you do from behind it: out there the camera
+/// rides with the ship, so a turn moves nothing an eye can see and the two
+/// axes that do it are switched off. The hints are the only place the controls
+/// are written down, so they have to stop naming a key that has gone quiet —
+/// a stick advertised and unresponsive reads as a bug in the flight model.
+/// Roll survives, and is worth more here than it is in the cockpit.
+const SIDE_HINTS: [&str; 3] = [
+    "SPACE warp  \u{2191}\u{2193} throttle  QE roll  C view  M ships  P pause  R reset  ESC quit",
+    "SPACE warp  \u{2191}\u{2193} throttle  QE roll  C view  ESC quit",
+    "SPACE warp  QE roll  C view  ESC quit",
+];
+
+const ASCII_SIDE_HINTS: [&str; 3] = [
+    "SPACE warp  UP/DN throttle  QE roll  C view  M ships  P pause  R reset  ESC quit",
+    "SPACE warp  UP/DN throttle  QE roll  C view  ESC quit",
+    "SPACE warp  QE roll  C view  ESC quit",
 ];
 
 /// The characters the panel is drawn from.
@@ -64,6 +85,7 @@ struct Glyphs {
     bar_empty: char,
     degree: char,
     hints: &'static [&'static str; 3],
+    side_hints: &'static [&'static str; 3],
 }
 
 impl Glyphs {
@@ -80,6 +102,7 @@ impl Glyphs {
         bar_empty: '\u{2591}',
         degree: '\u{B0}',
         hints: &HINTS,
+        side_hints: &SIDE_HINTS,
     };
 
     /// Chosen against [`crate::term`]'s brightness ramp as much as against the
@@ -102,12 +125,22 @@ impl Glyphs {
         // one column, it keeps the readout inside its column.
         degree: '*',
         hints: &ASCII_HINTS,
+        side_hints: &ASCII_SIDE_HINTS,
     };
 
     fn for_mode(mode: ColorMode) -> &'static Glyphs {
         match mode {
             ColorMode::Ascii => &Self::ASCII,
             ColorMode::Truecolor | ColorMode::Ansi256 => &Self::UNICODE,
+        }
+    }
+
+    /// The hints for the view being flown: they name different keys, because
+    /// in the two views different keys do anything.
+    fn hints_for(&self, view: ViewMode) -> &'static [&'static str; 3] {
+        match view {
+            ViewMode::Cockpit => self.hints,
+            ViewMode::Side => self.side_hints,
         }
     }
 }
@@ -133,6 +166,14 @@ pub struct Readout<'a> {
     /// Whether to show the control hints. A screensaver quits on any key, so
     /// listing which keys do what would be a lie.
     pub hints: bool,
+    /// Which camera the frame under the glass was drawn with. The panel is the
+    /// same either way except where the view itself has moved something: the
+    /// reticle marks where the nose is pointed, which is only a thing you can
+    /// see from behind it, and the ship's name is only worth reading when you
+    /// are looking at the ship.
+    pub view: ViewMode,
+    /// What the ship is, for the row that names it.
+    pub model: &'a str,
 }
 
 pub fn draw(screen: &mut Screen, r: &Readout) {
@@ -144,12 +185,14 @@ pub fn draw(screen: &mut Screen, r: &Readout) {
         return;
     }
 
-    draw_reticle(screen, cols, rows, g);
+    if r.view == ViewMode::Cockpit {
+        draw_reticle(screen, cols, rows, g);
+    }
     draw_nav_panel(screen, r, g);
     draw_status_line(screen, r, cols, rows, g);
     draw_throttle(screen, r, rows, g);
     if r.hints {
-        draw_hints(screen, cols, rows, g);
+        draw_hints(screen, cols, rows, g, r.view);
     }
 }
 
@@ -186,7 +229,7 @@ fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs) {
 
 fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
     let ship = r.ship;
-    let rows = [
+    let mut rows = vec![
         ("VELOCITY", velocity_text(ship), VALUE),
         (
             "WARP",
@@ -204,6 +247,11 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
         // the ship ended up.
         ("ROLL", roll_text(ship, g), VALUE),
     ];
+    // Only from outside: in the cockpit you are sitting in it, and a row that
+    // never changes is a row the panel does not need.
+    if r.view == ViewMode::Side {
+        rows.push(("SHIP", r.model.to_uppercase(), ACCENT));
+    }
 
     screen.overlay(2, 1, &format!("{} NAV", g.frame_top), LABEL);
     for (i, (label, value, color)) in rows.iter().enumerate() {
@@ -266,8 +314,12 @@ fn draw_throttle(screen: &mut Screen, r: &Readout, rows: usize, g: &Glyphs) {
     screen.overlay(bar_col + THROTTLE_BAR + 1, row, &pct, VALUE);
 }
 
-fn draw_hints(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs) {
-    let Some(hint) = g.hints.iter().find(|h| h.chars().count() + 2 <= cols) else {
+fn draw_hints(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs, view: ViewMode) {
+    let Some(hint) = g
+        .hints_for(view)
+        .iter()
+        .find(|h| h.chars().count() + 2 <= cols)
+    else {
         return;
     };
     let col = cols - (hint.chars().count() + 2);
@@ -340,6 +392,8 @@ mod tests {
             stars: 4000,
             paused: false,
             hints: true,
+            view: ViewMode::Cockpit,
+            model: "dart",
         }
     }
 
@@ -474,11 +528,12 @@ mod tests {
     #[test]
     fn the_hints_name_the_keys_that_exist() {
         // The hints are the only place the controls are written down, so a key
-        // that has moved must move here too — and `q` no longer quits. Both
-        // faces of the panel carry their own copy, so both are checked.
-        for set in [&HINTS, &ASCII_HINTS] {
+        // that has moved must move here too — and `q` no longer quits. Each
+        // face of the panel carries its own copy, and so does each view, so all
+        // four are checked.
+        for set in [&HINTS, &ASCII_HINTS, &SIDE_HINTS, &ASCII_SIDE_HINTS] {
             for hint in set {
-                assert!(hint.contains("WASD") && hint.contains("QE"), "{hint:?}");
+                assert!(hint.contains("QE"), "{hint:?} does not name the roll");
                 assert!(hint.contains("ESC quit"), "{hint:?}");
                 assert!(!hint.contains("Q quit"), "{hint:?}");
                 assert!(!hint.contains("IK"), "{hint:?}");
@@ -493,7 +548,59 @@ mod tests {
                 widths.last().is_some_and(|w| w + 2 <= MIN_COLS),
                 "the shortest hint does not fit the narrowest panel: {widths:?}"
             );
+            // The camera is on the widest tier only. Putting the whole lot on
+            // every tier would take the shortest one past the panel's own
+            // minimum width, and that line has to keep fitting the terminals it
+            // exists for.
+            assert!(
+                set[0].contains("C view") && set[0].contains("M ships"),
+                "the widest hint does not name the camera: {:?}",
+                set[0]
+            );
         }
+
+        // And the two views differ in exactly the way the controls do: the
+        // cockpit steers, the view from outside does not, and a hint that goes
+        // on offering a key that has been switched off is worse than no hint.
+        for set in [&HINTS, &ASCII_HINTS] {
+            assert!(set.iter().all(|h| h.contains("WASD steer")), "{set:?}");
+        }
+        for set in [&SIDE_HINTS, &ASCII_SIDE_HINTS] {
+            assert!(
+                set.iter().all(|h| !h.contains("WASD")),
+                "the outside view still advertises a stick it ignores: {set:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hint_line_follows_the_view_it_is_drawn_over() {
+        let ship = Ship::new();
+        let read = |view| {
+            let mut screen = blank(120, 34);
+            draw(
+                &mut screen,
+                &Readout {
+                    ship: &ship,
+                    fps: 60.0,
+                    stars: 900,
+                    paused: false,
+                    hints: true,
+                    view,
+                    model: "enterprise",
+                },
+            );
+            screen.row_text(hint_row(34))
+        };
+        assert!(read(ViewMode::Cockpit).contains("WASD"));
+        assert!(
+            !read(ViewMode::Side).contains("WASD"),
+            "the outside view offered a stick it ignores"
+        );
+        assert!(
+            read(ViewMode::Side).contains("QE"),
+            "roll still works there"
+        );
     }
 
     #[test]
@@ -522,6 +629,8 @@ mod tests {
                         stars: 900,
                         paused,
                         hints: true,
+                        view: ViewMode::Cockpit,
+                        model: "dart",
                     },
                 );
                 for row in 0..rows {
@@ -573,6 +682,8 @@ mod tests {
             stars: 4000,
             paused: false,
             hints: false,
+            view: ViewMode::Cockpit,
+            model: "dart",
         };
         // Which cells the panel stamped over the composed frame. The two modes
         // compose different backdrops — half blocks against a brightness ramp —
@@ -725,6 +836,8 @@ mod tests {
                     stars: 900,
                     paused: false,
                     hints,
+                    view: ViewMode::Cockpit,
+                    model: "dart",
                 },
             );
             let mut out = Vec::new();
@@ -755,6 +868,8 @@ mod tests {
                     stars: 900,
                     paused,
                     hints: true,
+                    view: ViewMode::Cockpit,
+                    model: "dart",
                 },
             );
             let mut out = Vec::new();

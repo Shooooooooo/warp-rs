@@ -244,6 +244,133 @@ impl Canvas {
         }
     }
 
+    /// Draw a streak that has been bent into a curve: the same light a
+    /// [`Canvas::draw_streak`] would lay down, following a polyline instead of
+    /// a straight segment.
+    ///
+    /// The ramp and the length falloff are measured over the *whole* path
+    /// rather than per segment. Doing it per segment would scallop the streak —
+    /// every joint would restart at the tail brightness — and would dim a
+    /// finely subdivided curve far more than a coarsely subdivided one, so the
+    /// picture would change with the subdivision rather than with the physics.
+    pub fn draw_path(&mut self, points: &[(f32, f32)], color: [f32; 3], intensity: f32) {
+        if intensity.is_nan() || intensity <= 0.0 || points.is_empty() {
+            return;
+        }
+        let total: f32 = points
+            .windows(2)
+            .map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1))
+            .sum();
+        // A path that went nowhere, or one with a NaN in it, is a point.
+        if !total.is_finite() || total < 0.75 {
+            let head = points[points.len() - 1];
+            self.draw_streak(&Streak {
+                from: head,
+                to: head,
+                color,
+                intensity,
+            });
+            return;
+        }
+
+        let (max_x, max_y) = (self.max_x(), self.max_y());
+        let per_sample = intensity / (1.0 + total * LENGTH_FALLOFF);
+        let inv_total = 1.0 / total;
+        let mut travelled = 0.0f32;
+        // Where the previous segment stopped, so the vertex the next one
+        // starts from is not splatted twice. Without this every joint comes
+        // out as a bright bead, and a finely subdivided curve is a dotted
+        // line rather than a smooth one.
+        let mut resume_at: Option<(f32, f32)> = None;
+
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let span = (b.0 - a.0).hypot(b.1 - a.1);
+            // Clipping moves the endpoints, so the ramp has to be evaluated
+            // against where they ended up along the *original* segment — not
+            // against the clipped one, which would stretch the ramp back out
+            // over whatever fragment survived.
+            if let Some((from, to)) = self.clip(a, b) {
+                let at = |p: (f32, f32)| (travelled + (p.0 - a.0).hypot(p.1 - a.1)) * inv_total;
+                let (t0, t1) = (at(from), at(to));
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let length = (dx * dx + dy * dy).sqrt();
+                let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
+                let inv_steps = 1.0 / steps as f32;
+                let first = usize::from(resume_at == Some(from));
+                resume_at = Some(to);
+                for i in first..=steps {
+                    let s = i as f32 * inv_steps;
+                    let t = t0 + (t1 - t0) * s;
+                    let ramp = TAIL_BRIGHTNESS + (1.0 - TAIL_BRIGHTNESS) * t;
+                    let x = (from.0 + dx * s).clamp(0.0, max_x);
+                    let y = (from.1 + dy * s).clamp(0.0, max_y);
+                    self.splat_inside(x, y, color, per_sample * ramp);
+                }
+            }
+            travelled += span;
+        }
+    }
+
+    /// Paint a convex polygon flat, covering whatever was under it.
+    ///
+    /// The one thing in this module that does not add light. Everything else
+    /// here accumulates, because everything else is light: a hundred streaks
+    /// crossing a subpixel should pile up. A hull is not light, it is a solid
+    /// object, and a star shining through a starship reads as a fault rather
+    /// than as glass — so this writes rather than adds, and what was behind it
+    /// stays behind it.
+    ///
+    /// Convex is the caller's promise, and it is what lets a row of the polygon
+    /// be filled between the outermost two edge crossings without sorting them.
+    pub fn fill_convex(&mut self, points: &[(f32, f32)], color: [f32; 3]) {
+        if points.len() < 3
+            || !color.iter().all(|c| c.is_finite())
+            || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite())
+        {
+            return;
+        }
+        let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+        for p in points {
+            top = top.min(p.1);
+            bottom = bottom.max(p.1);
+        }
+        let (max_x, max_y) = (self.max_x(), self.max_y());
+        if bottom < 0.0 || top > max_y {
+            return;
+        }
+        let first = top.round().max(0.0) as usize;
+        let last = (bottom.round().min(max_y)).max(0.0) as usize;
+
+        for y in first..=last {
+            let row = y as f32;
+            // Where the polygon's outline crosses this row. Convexity means
+            // there are at most two crossings that matter, so the extremes are
+            // the span — no sorting, no parity rule.
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for i in 0..points.len() {
+                let (a, b) = (points[i], points[(i + 1) % points.len()]);
+                let (upper, lower) = if a.1 <= b.1 { (a, b) } else { (b, a) };
+                let span = lower.1 - upper.1;
+                if row < upper.1 || row > lower.1 || span <= f32::EPSILON {
+                    continue;
+                }
+                let x = upper.0 + (lower.0 - upper.0) * (row - upper.1) / span;
+                lo = lo.min(x);
+                hi = hi.max(x);
+            }
+            if lo > hi || hi < 0.0 || lo > max_x {
+                continue;
+            }
+            // Rounded rather than floored and ceiled, so a plate seen almost
+            // edge-on still covers the one column it is standing in instead of
+            // falling through the gap between two of them.
+            let start = lo.round().max(0.0) as usize;
+            let end = (hi.round().min(max_x)).max(0.0) as usize;
+            self.buf[y * self.width + start..=y * self.width + end].fill(color);
+        }
+    }
+
     /// Clip a segment to the canvas (Liang–Barsky). Returning `None` for a
     /// fully off-screen streak is what keeps a hard turn from costing anything.
     fn clip(&self, a: (f32, f32), b: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
@@ -341,6 +468,14 @@ impl Canvas {
                 }
             }
         }
+    }
+
+    /// Total light at one subpixel, for tests outside this module that care
+    /// about where the light landed rather than what colour it came out.
+    #[cfg(test)]
+    pub fn light_at(&self, x: usize, y: usize) -> f32 {
+        let px = self.buf[y * self.width + x];
+        px[0] + px[1] + px[2]
     }
 
     /// Collapse the HDR buffer to 8-bit sRGB-ish pixels, row-major, into a
@@ -491,6 +626,161 @@ mod tests {
         let head = canvas.buf[4 * 128 + 108][0];
         let tail = canvas.buf[4 * 128 + 12][0];
         assert!(head > tail, "head {head} should outshine tail {tail}");
+    }
+
+    #[test]
+    fn a_fill_covers_what_was_under_it_rather_than_adding_to_it() {
+        // The only thing here that is not light. A hull painted additively over
+        // a starfield is a hologram of a hull: the bright streak behind it goes
+        // on shining through, and the eye reads glass.
+        let mut canvas = Canvas::new(32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                canvas.splat(x as f32, y as f32, [1.0; 3], 4.0);
+            }
+        }
+        let square = [(8.0, 8.0), (20.0, 8.0), (20.0, 20.0), (8.0, 20.0)];
+        canvas.fill_convex(&square, [0.25, 0.25, 0.25]);
+
+        assert_eq!(
+            canvas.buf[14 * 32 + 14],
+            [0.25; 3],
+            "the fill did not cover"
+        );
+        assert_eq!(
+            canvas.buf[2 * 32 + 2],
+            [4.0; 3],
+            "it covered the wrong thing"
+        );
+        assert!(
+            total_light(&canvas) < 32.0 * 32.0 * 3.0 * 4.0,
+            "an opaque fill has to be able to take light away"
+        );
+    }
+
+    #[test]
+    fn a_fill_stays_inside_its_own_outline() {
+        let mut canvas = Canvas::new(64, 64);
+        let triangle = [(10.0, 10.0), (50.0, 12.0), (30.0, 45.0)];
+        canvas.fill_convex(&triangle, [1.0, 0.0, 0.0]);
+        // Inside, and outside on each side of it.
+        assert_eq!(canvas.buf[20 * 64 + 30][0], 1.0);
+        for (x, y) in [(2usize, 2usize), (60, 60), (12, 40), (50, 40), (30, 60)] {
+            assert_eq!(canvas.buf[y * 64 + x][0], 0.0, "it leaked to ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn a_fill_of_nonsense_paints_nothing_and_panics_at_nothing() {
+        let mut canvas = Canvas::new(32, 16);
+        for points in [
+            vec![],
+            vec![(1.0, 1.0)],
+            vec![(1.0, 1.0), (5.0, 5.0)],
+            vec![(f32::NAN, 0.0), (5.0, 5.0), (1.0, 8.0)],
+            vec![(1e9, 1e9), (-1e9, 4.0), (2.0, 2.0)],
+            vec![(-50.0, -50.0), (-10.0, -50.0), (-30.0, -20.0)],
+            vec![(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
+        ] {
+            canvas.fill_convex(&points, [1.0; 3]);
+        }
+        canvas.fill_convex(&[(1.0, 1.0), (9.0, 1.0), (5.0, 9.0)], [f32::NAN; 3]);
+        assert_eq!(canvas.buf.len(), 32 * 16, "the buffer must not have grown");
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
+
+        // A polygon hanging off every edge covers what it should and no more.
+        canvas.fill_convex(&[(-20.0, -20.0), (60.0, -20.0), (60.0, 40.0)], [0.5; 3]);
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
+    }
+
+    #[test]
+    fn a_two_point_path_is_exactly_the_streak_it_stands_in_for() {
+        // The lensed sky falls back to a straight path whenever the drive is
+        // off, so the bent and unbent code paths have to agree pixel for pixel
+        // — not merely look alike — or engaging warp would visibly re-render
+        // the whole field rather than bending it.
+        let (a, b) = ((12.0, 20.0), (96.0, 51.0));
+        let mut straight = Canvas::new(128, 64);
+        straight.draw_streak(&Streak {
+            from: a,
+            to: b,
+            color: [0.8, 0.9, 1.0],
+            intensity: 1.3,
+        });
+        let mut path = Canvas::new(128, 64);
+        path.draw_path(&[a, b], [0.8, 0.9, 1.0], 1.3);
+        assert_eq!(straight.buf, path.buf);
+    }
+
+    #[test]
+    fn a_path_ramps_over_its_whole_length_rather_than_every_joint() {
+        // Subdividing a streak more finely must not change how it looks. If the
+        // ramp restarted at every joint the curve would come out scalloped, and
+        // the picture would depend on the subdivision instead of the physics.
+        let ends = [(8.0, 32.0), (120.0, 32.0)];
+        let mut coarse = Canvas::new(128, 64);
+        coarse.draw_path(&ends, [1.0; 3], 1.0);
+
+        let fine: Vec<(f32, f32)> = (0..=16)
+            .map(|i| {
+                let t = i as f32 / 16.0;
+                (ends[0].0 + (ends[1].0 - ends[0].0) * t, 32.0)
+            })
+            .collect();
+        let mut subdivided = Canvas::new(128, 64);
+        subdivided.draw_path(&fine, [1.0; 3], 1.0);
+
+        for (i, (a, b)) in coarse.buf.iter().zip(&subdivided.buf).enumerate() {
+            assert!(
+                (a[0] - b[0]).abs() < 0.02,
+                "subdividing changed pixel {i}: {} against {}",
+                a[0],
+                b[0]
+            );
+        }
+        // And it is still a streak: brighter at the head than at the tail.
+        let row = 32 * 128;
+        assert!(coarse.buf[row + 110][0] > coarse.buf[row + 12][0]);
+    }
+
+    #[test]
+    fn a_curved_path_bends_where_it_is_told_to() {
+        // The whole point of the primitive: light lands on the arc, not on the
+        // chord between its ends.
+        let arc: Vec<(f32, f32)> = (0..=12)
+            .map(|i| {
+                let t = i as f32 / 12.0;
+                let angle = std::f32::consts::PI * t;
+                (64.0 + 40.0 * angle.cos(), 60.0 - 40.0 * angle.sin())
+            })
+            .collect();
+        let mut canvas = Canvas::new(128, 64);
+        canvas.draw_path(&arc, [1.0; 3], 2.0);
+        // On the arc, at the top of the sweep.
+        assert!(canvas.buf[20 * 128 + 64][0] > 0.0, "the arc is missing");
+        // On the chord between the ends, which nothing should have drawn.
+        assert_eq!(canvas.buf[60 * 128 + 64][0], 0.0, "it drew the chord");
+    }
+
+    #[test]
+    fn a_path_made_of_nonsense_draws_nothing_dangerous() {
+        let mut canvas = Canvas::new(64, 32);
+        canvas.draw_path(&[], [1.0; 3], 1.0);
+        assert_eq!(total_light(&canvas), 0.0, "an empty path is not a point");
+
+        for path in [
+            vec![(10.0, 10.0)],
+            vec![(f32::NAN, 2.0), (5.0, 5.0)],
+            vec![(1e9, 1e9), (-1e9, 4.0), (2.0, 2.0)],
+            vec![(3.0, 3.0), (3.0, 3.0), (3.0, 3.0)],
+        ] {
+            canvas.draw_path(&path, [1.0; 3], 1.0);
+        }
+        for intensity in [0.0, -1.0, f32::NAN] {
+            canvas.draw_path(&[(4.0, 4.0), (40.0, 20.0)], [1.0; 3], intensity);
+        }
+        assert_eq!(canvas.buf.len(), 64 * 32, "the buffer must not have grown");
+        assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 
     #[test]
