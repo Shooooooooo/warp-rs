@@ -480,7 +480,7 @@ impl Canvas {
     ///
     /// A separate function rather than the one above generalised, and
     /// deliberately so. `add_glow` draws the cockpit's tunnel glare, whose
-    /// bytes are pinned by three of the four reference frames; rewriting it as
+    /// bytes are pinned by three of the five reference frames; rewriting it as
     /// `add_glow_oval(.., r, r, ..)` is exactly the obviously-equivalent edit
     /// that moves a float by an ulp and repaints a sky it was never meant to
     /// touch. The duplication is four lines and it is cheaper than that.
