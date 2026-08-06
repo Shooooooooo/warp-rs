@@ -29,8 +29,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 216 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 217 unit — adds the snapshot-gated one
+cargo test                              # 225 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 226 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked                  # CI runs this too; `exclude` is by hand
@@ -195,9 +195,11 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    ramp); side view gets the wash inside the lens shadow, so the swept-clear
    disc reads as a bubble rather than as a hole punched in the sky.
 4. The hull, side view only: `models::draw` — plates via `canvas.fill_convex`,
-   then the engine bells as glows on top of them. It takes the standoff as an
-   argument, since the zoom moves it: `view::ship_distance(zoom)`, worked out
-   once in `render_exterior` alongside the half-length the lens is sized from.
+   then the drive on top of them, which is each bell's glow and the exhaust it
+   throws. It takes the standoff as an argument, since the zoom moves it:
+   `view::ship_distance(zoom)`, worked out once in `render_exterior` alongside
+   the half-length the lens is sized from. It also takes `time`, and only the
+   flame's gutter reads it.
 5. `apply_vignette`, then `add_flash` on top of it so a drive catching whites
    out the frame edges included.
 6. `canvas.resolve_into(&tonemap, &mut pixels)` — HDR to 8-bit RGB.
@@ -302,19 +304,30 @@ full set, because turning off a mode that was never on costs nothing and
 leaving one on hands the next program a terminal that reports clicks at it.
 
 **`f64` where a screensaver would otherwise break it.** `Flight::time`,
-`Autopilot::update`'s `elapsed`, the twinkle phase folded once per frame, and
-the four shake terms are `f64` because a screensaver is left running for days
-and an `f32` accumulator stops advancing after about six — freezing the twinkle
-and the shake. `Flight::accumulator` stays `f32` deliberately: it is bounded by
-one sim step and never drifts. Do not "unify" these.
+`Autopilot::update`'s `elapsed`, the twinkle phase folded once per frame, the
+four shake terms and the engine flame's gutter are `f64` because a screensaver
+is left running for days and an `f32` accumulator stops advancing after about
+six — freezing the twinkle, the shake and the flame with it.
+`Flight::accumulator` stays `f32` deliberately: it is bounded by one sim step
+and never drifts. Do not "unify" these.
 
 **Light adds; hulls write.** Everything in `Canvas` accumulates, because
 everything in it is light and a hundred streaks crossing a subpixel ought to
 pile up. `fill_convex` is the one exception — a hull is not light, so it covers
 what is behind it. Values run past 1.0 and are pulled back once, at the end, by
 the tonemap; that is what makes overlapping streaks bloom instead of clip. It
-is also why the engine bells are drawn *after* the plates: an opaque write over
-a glow erases it.
+is also why the drive is drawn *after* the plates: an opaque write over a glow
+erases it.
+
+That rule is what settles where the exhaust goes, and it costs something to
+keep. Five of the six ships put every bell a hair aft of the hull, so their
+plumes stream into clear sky and the order could not matter less; the
+enterprise's impulse bell is mid-ship, and its plume clears the nacelle tops by
+0.165 hull units — a subpixel and a half at the reference framing, so a roll
+walks it straight across them. Drawn *under* the plates it would be chopped by
+a silhouette it is barely clear of. Over them it shines through as the wash a
+hot plume genuinely puts on structure it plays over, which is the cheaper of
+the two mistakes.
 
 **`Canvas::splat_inside` does no bounds checking and will panic.** It is the
 innermost loop in the program and it trusts its caller — `draw_streak` and
@@ -566,6 +579,14 @@ box, give it a lowercase ASCII `name` and a one-line `blurb`. `--ship` and the
 picker both read `models::models()`, and the tests iterate it, so nothing else
 needs touching. The cockpit draws neither the hull nor its name — the panel's
 `SHIP` row is gated on `ViewMode::Side` — so the golden hashes do not move.
+
+An `Engine`'s `radius` is doing more work than it looks like. It sets the bell's
+glow, and it also sets how long and how bright a trail that bell throws — a
+bigger drive throws a longer flame, which is what hands the fleet its variety
+without a per-ship table. The fleet spans 0.07 to 0.17 and `NOMINAL_BELL` is the
+middle of that; a new ship far outside the range will trail unlike anything else
+in the hangar, which may well be the point, but it is a decision rather than a
+detail.
 
 The picker mostly takes care of itself now. It reserves `CHROME_ROWS` (6) for
 its frame, title, rule, blank and footer, gives what is left to the list, and

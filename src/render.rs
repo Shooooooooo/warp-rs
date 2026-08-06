@@ -224,7 +224,7 @@ impl Renderer {
             );
         }
 
-        models::draw(&mut self.canvas, cam, ship, model, distance);
+        models::draw(&mut self.canvas, cam, ship, model, distance, time);
 
         // A lighter vignette than the cockpit's: there is no tunnel to be
         // pulled down here, and the ship is off the centre of attention.
