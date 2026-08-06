@@ -99,7 +99,7 @@ pub struct Args {
     pub view: ViewArg,
 
     /// Which ship to fly. Only visible from outside; `M` opens the picker.
-    #[arg(long, value_name = "NAME", default_value = "dart", value_parser = parse_ship)]
+    #[arg(long, value_name = "NAME", default_value = "enterprise", value_parser = parse_ship)]
     pub ship: usize,
 
     /// Tonemap exposure. Higher is brighter.

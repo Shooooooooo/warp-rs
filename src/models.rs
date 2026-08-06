@@ -215,16 +215,105 @@ fn engine(at: [f32; 3], radius: f32) -> Engine {
 /// Every ship, in the order the picker lists them.
 pub fn models() -> &'static [ShipModel] {
     static MODELS: OnceLock<Vec<ShipModel>> = OnceLock::new();
-    MODELS.get_or_init(|| vec![dart(), hauler(), needle(), beetle(), trident()])
+    MODELS.get_or_init(|| {
+        vec![
+            enterprise(),
+            dart(),
+            hauler(),
+            needle(),
+            beetle(),
+            trident(),
+        ]
+    })
 }
 
-/// The one flown when nothing has said otherwise.
+/// The one flown when nothing has said otherwise: the first in the list.
 pub const DEFAULT_MODEL: usize = 0;
 
 /// Look a ship up by the name `--ship` and the picker use.
 pub fn by_name(name: &str) -> Option<usize> {
     let name = name.trim().to_ascii_lowercase();
     models().iter().position(|m| m.name == name)
+}
+
+/// Saucer, neck, engineering hull, two nacelles on swept pylons — a wireframe
+/// bow to the ship every warp drive since has been drawn against.
+///
+/// It is designed as a *profile*, because that is the only view this camera
+/// gives, and the profile is three masses stacked in a particular order: the
+/// saucer highest and furthest forward, the nacelles just below and well aft of
+/// it, and the engineering hull slung underneath on a neck that leans forward.
+/// Get that stacking wrong — nacelles above the saucer, say — and every line is
+/// still in the right place while the ship stops being this ship. Seen from the
+/// beam the two nacelles line up into one, which is the silhouette everybody
+/// already has in mind, and the reason this hull is the one flown by default.
+///
+/// Everything vertical is drawn thicker than scale. The whole ship is a little
+/// over half the canvas height long, so on a thirty-row terminal one unit here
+/// is about twenty subpixels, and an honest saucer would come out a single
+/// subpixel thick — a line, not a shape.
+fn enterprise() -> ShipModel {
+    let mut b = Builder::default();
+    // The saucer: widest across the middle, and about as long as it is wide, so
+    // from above it would read as the disc it is. Deliberately thin — a saucer
+    // as deep as a nacelle reads as a third nacelle — with the bridge dome
+    // above it doing the work of saying which way up the ship goes.
+    b.shell(&[
+        Section::offset(0.22, 0.0, -0.31, 0.12, 0.032),
+        Section::offset(0.36, 0.0, -0.32, 0.30, 0.065),
+        Section::offset(0.58, 0.0, -0.32, 0.42, 0.085),
+        Section::offset(0.80, 0.0, -0.32, 0.36, 0.070),
+        Section::offset(0.94, 0.0, -0.31, 0.19, 0.044),
+        Section::offset(1.00, 0.0, -0.30, 0.05, 0.024),
+    ]);
+    b.shell(&[
+        Section::offset(0.50, 0.0, -0.40, 0.10, 0.040),
+        Section::offset(0.68, 0.0, -0.41, 0.13, 0.048),
+        Section::offset(0.82, 0.0, -0.39, 0.08, 0.030),
+    ]);
+    // The neck, leaning forward as it climbs from the engineering hull.
+    b.shell(&[
+        Section::offset(-0.02, 0.0, 0.16, 0.055, 0.15),
+        Section::offset(0.34, 0.0, -0.18, 0.05, 0.11),
+    ]);
+    // The engineering hull, slung below and aft, with the deflector at its
+    // forward end.
+    b.shell(&[
+        Section::offset(-0.82, 0.0, 0.34, 0.055, 0.055),
+        Section::offset(-0.64, 0.0, 0.34, 0.12, 0.13),
+        Section::offset(-0.22, 0.0, 0.34, 0.145, 0.155),
+        Section::offset(0.20, 0.0, 0.32, 0.12, 0.13),
+        Section::offset(0.34, 0.0, 0.31, 0.08, 0.085),
+        Section::offset(0.40, 0.0, 0.31, 0.04, 0.045),
+    ]);
+    for side in [-1.0f32, 1.0] {
+        // Pylons, reaching out, up and aft all at once: the strut is what makes
+        // the gap between hull and nacelle read as a gap rather than as a join.
+        b.plate(
+            Section::offset(-0.56, side * 0.40, 0.06, 0.035, 0.10),
+            Section::offset(-0.20, side * 0.10, 0.28, 0.045, 0.11),
+        );
+        // Nacelles: below the saucer's plane and well behind it, which is the
+        // half of the stacking that says this is not a flying saucer with an
+        // engine bolted on.
+        b.shell(&[
+            Section::offset(-0.88, side * 0.42, -0.06, 0.050, 0.050),
+            Section::offset(-0.76, side * 0.42, -0.06, 0.080, 0.085),
+            Section::offset(-0.10, side * 0.42, -0.06, 0.080, 0.085),
+            Section::offset(0.02, side * 0.42, -0.06, 0.050, 0.055),
+        ]);
+    }
+    b.finish(
+        "enterprise",
+        "Heavy cruiser. Saucer, neck, and two nacelles.",
+        [0.82, 0.90, 1.00],
+        vec![
+            engine([-0.42, -0.06, -0.92], 0.11),
+            engine([0.42, -0.06, -0.92], 0.11),
+            // Impulse, out of the back of the saucer, and much the smaller.
+            engine([0.0, -0.31, 0.21], 0.07),
+        ],
+    )
 }
 
 /// A knife with a fin: all nose and engine, nothing spare.

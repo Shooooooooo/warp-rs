@@ -10,7 +10,10 @@
 /// is the shot, where a wide one would splay it into a three-quarter view.
 pub const SIDE_FOCAL: f32 = 1.15;
 /// Half the ship's length on screen, as a fraction of the canvas height.
-pub const SHIP_SCREEN_FRAC: f32 = 0.20;
+/// Big enough that a hull with a saucer, a neck and two nacelles still has
+/// them at this resolution, and small enough to leave the warp bubble room to
+/// bend the sky around it.
+pub const SHIP_SCREEN_FRAC: f32 = 0.28;
 /// Range from the side camera to the ship. This falls out as a constant
 /// because the focal length is proportional to the canvas height, so the ship
 /// is the same fraction of the frame on a phone-sized terminal and a wall.

@@ -43,9 +43,10 @@ const REACH: f32 = 10.0;
 const SHADOW_FRAC: f32 = 0.72;
 
 /// Fraction of the canvas height the Einstein radius reaches at full warp.
-/// Sized so the ring sits just outside the hull rather than inside it: the
-/// point is to see the sky bend *around* the ship.
-const RADIUS_AT_WARP: f32 = 0.42;
+/// Sized against the hull rather than by eye: the ship is 0.28 of the canvas
+/// height from nose to centre, and the bubble has to hold it with room to
+/// spare, or the sky bends *through* the ship instead of around it.
+const RADIUS_AT_WARP: f32 = 0.48;
 
 /// A thin point-mass lens sitting on the canvas.
 #[derive(Debug, Clone, Copy)]
