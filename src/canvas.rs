@@ -475,6 +475,52 @@ impl Canvas {
         }
     }
 
+    /// The same pool of light, drawn as an ellipse — the wash inside the warp
+    /// bubble, which is not round.
+    ///
+    /// A separate function rather than the one above generalised, and
+    /// deliberately so. `add_glow` draws the cockpit's tunnel glare, whose
+    /// bytes are pinned by three of the four reference frames; rewriting it as
+    /// `add_glow_oval(.., r, r, ..)` is exactly the obviously-equivalent edit
+    /// that moves a float by an ulp and repaints a sky it was never meant to
+    /// touch. The duplication is four lines and it is cheaper than that.
+    pub fn add_glow_oval(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        rx: f32,
+        ry: f32,
+        color: [f32; 3],
+        strength: f32,
+    ) {
+        if strength <= 0.0 || rx <= 0.0 || ry <= 0.0 {
+            return;
+        }
+        let x0 = ((cx - rx).floor().max(0.0)) as usize;
+        let y0 = ((cy - ry).floor().max(0.0)) as usize;
+        let x1 = ((cx + rx).ceil().min(self.width as f32 - 1.0)).max(0.0) as usize;
+        let y1 = ((cy + ry).ceil().min(self.height as f32 - 1.0)).max(0.0) as usize;
+        let (inv_x, inv_y) = (1.0 / rx, 1.0 / ry);
+
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let d =
+                    (((x as f32 - cx) * inv_x).powi(2) + ((y as f32 - cy) * inv_y).powi(2)).sqrt();
+                if d >= 1.0 {
+                    continue;
+                }
+                // The same quartic as the round one, and for the same reason:
+                // anything flatter reads as a solid body hanging in space
+                // rather than as light.
+                let fade = (1.0 - d).powi(4);
+                let px = &mut self.buf[y * self.width + x];
+                for i in 0..3 {
+                    px[i] += color[i] * strength * fade;
+                }
+            }
+        }
+    }
+
     /// Uniform additive wash — the white-out when the drive catches.
     pub fn add_flash(&mut self, color: [f32; 3], amount: f32) {
         if amount <= 0.0 {

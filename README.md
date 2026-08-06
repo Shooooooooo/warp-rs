@@ -101,15 +101,25 @@ sideways on.
 
 Light the drive out here and the sky bends. A warp bubble is a lump of curved
 spacetime and it lenses starlight exactly as any other mass would: the sky
-behind the ship is pushed outward, away from the bubble, so a disc around the
-hull is swept clear, and the light that used to be there piles up into a bright
-rim just outside it. Streaks passing close bend into arcs around that rim rather
-than running straight past it, and a second, fainter image of each one appears
-on the far side — the counter-image every gravitational lens produces, and the
-thing that makes one read as a lens rather than as a smudge. Inside the bubble
-nothing is drawn at all: a transparent mass would refill that disc with a
+behind the ship is pushed outward, away from the bubble, so the region around
+the hull is swept clear, and the light that used to be there piles up into a
+bright rim just outside it. Streaks passing close bend into arcs around that rim
+rather than running straight past it, and a second, fainter image of each one
+appears on the far side — the counter-image every gravitational lens produces,
+and the thing that makes one read as a lens rather than as a smudge. Inside the
+bubble nothing is drawn at all: a transparent mass would refill it with a
 shrunken copy of the whole sky, and a warp bubble is no more transparent than a
 hull is.
+
+The bubble is not round, and where it sits says which way the ship is going. It
+is drawn out along the track — a little over twice as long as it is wide — and
+it is seated astern of the hull rather than around it, so the ship rides the
+front of it and the rest trails off behind like the disturbance behind anything
+moving through anything. Streaks come in from ahead almost straight, lift over
+the flanks, and stay lifted well past the ship before they settle. It is only a
+reshape and not an enlargement: the ring encloses exactly the sky a round one
+did, so what stretches along the track narrows across it, and the drive's own
+lance runs off the frame down the middle of the wake.
 
 The drive trails. Every engine bell throws exhaust astern down the ship's own
 axis, guttering as it goes, burning blue at impulse and whitening as the drive
@@ -144,8 +154,9 @@ camera out and in, and they do nothing from the pilot's seat, where there is no
 ship to be looking at. The shot opens well back, with the hull about a quarter
 of the frame's height, so it reads as something crossing the view rather than
 parked in it; `]` walks it in from there and `R` puts it back. The warp bubble
-is drawn around the *ship* rather than around the frame, so it comes and goes
-with the hull instead of hanging there at a fixed size, and the sky does not
+is sized and seated against the *ship* rather than against the frame, so it
+comes and goes with the hull instead of hanging there at a fixed size, and the
+wake keeps its length in ships however far off the camera is. The sky does not
 move at all — pulling the camera back a few units against stars that are
 hundreds away is no parallax worth drawing.
 

@@ -1463,6 +1463,53 @@ mod tests {
     }
 
     #[test]
+    fn every_hull_stays_inside_its_own_bubble() {
+        // The bubble is drawn out along the track and seated astern of the
+        // hull, which trades clearance across the ship for clearance along it.
+        // Both ends of that trade are guarded in `lens.rs` by a compile-time
+        // assertion, but the assertion is about the nose of an abstract ship
+        // one unit long; these are real hulls, with nacelles set out to the
+        // side that a barrel roll swings straight up into the narrow waist.
+        //
+        // Inside the *shadow*, not merely inside the ring, because the ring
+        // only promises that no primary image lands there — the band between
+        // the two is where the counter-images pile up into the rim, and a hull
+        // sitting in it would have the rim drawn across it. Swept over the
+        // whole zoom range and a full turn of roll, and over `models()`, so a
+        // seventh ship is covered the day it is added.
+        for model in models() {
+            for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
+                let distance = ship_distance(zoom);
+                for turn in 0..8 {
+                    let mut ship = Ship::new();
+                    ship.roll = turn as f32 * std::f32::consts::TAU / 8.0;
+                    let (renderer, cam) = cam(120, 36, &ship);
+                    let (_, h) = renderer.canvas_dims();
+                    let lens = crate::lens::Lens::for_warp(
+                        (cam.cx, cam.cy),
+                        1.0,
+                        crate::view::ship_half_on_screen(h as f32, zoom),
+                    );
+                    let pose = attitude(&ship);
+                    for v in model.verts.iter() {
+                        let Some(p) = cam.project(place(*v, pose, distance)) else {
+                            continue;
+                        };
+                        assert!(
+                            lens.shadowed(p),
+                            "{} pokes out of its bubble at zoom {zoom}, roll {}: \
+                             {p:?} is {} rings out",
+                            model.name,
+                            ship.roll,
+                            lens.offset(p)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn plates_are_painted_far_to_near() {
         // The other half of the hidden-surface removal, and the half culling
         // cannot do: these hulls are assemblies of separate solids, so a

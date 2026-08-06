@@ -29,8 +29,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 229 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 230 unit — adds the snapshot-gated one
+cargo test                              # 233 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 234 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked                  # CI runs this too; `exclude` is by hand
@@ -151,7 +151,7 @@ src/view.rs       ViewMode, the side camera's geometry, and the zoom's range
 src/ship.rs       flight model: throttle, warp, steering, transients
 src/starfield.rs  the cockpit's sky — a cone opening forward, plus Camera
 src/exterior.rs   the side view's sky — a band the ship flies through
-src/lens.rs       the warp bubble as a thin point-mass gravitational lens
+src/lens.rs       the warp bubble: a point-mass lens in an elliptical metric
 src/models.rs     the six hulls, and how to draw one
 src/menu.rs       the ship picker
 src/canvas.rs     f32 RGB accumulation buffer, rasterisers, tonemap
@@ -192,8 +192,10 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    an exterior frame expensive.
 3. The lit things — `add_glow`: cockpit gets the tunnel glare down the throat
    (a tight core inside a wide halo, both ramping with the *cube* of the warp
-   ramp); side view gets the wash inside the lens shadow, so the swept-clear
-   disc reads as a bubble rather than as a hole punched in the sky.
+   ramp); side view gets the wash inside the lens shadow — `add_glow_oval`,
+   about the *bubble's* centre and to the shadow's own two axes, both of which
+   are astern of the vanishing point — so the swept-clear region reads as a
+   bubble rather than as a hole punched in the sky.
 4. The hull, side view only: `models::draw` — plates via `canvas.fill_convex`,
    then the drive on top of them, which is each bell's glow and the exhaust it
    throws. It takes the standoff as an argument, since the zoom moves it:
@@ -441,6 +443,41 @@ zoom instead of hanging in the frame at a fixed size. That constant used to be
 `the_bubble_is_the_same_number_of_ships_across_at_every_zoom` in `view.rs` is
 what checks it now, through both real arithmetics rather than against a
 constant.
+
+**The bubble is an ellipse, and the whole module is written in its metric.**
+`Lens::offset` reports how far a point is from the centre *in rings* — exactly
+1.0 on the ring, whichever way round it is measured — and every question the
+module used to answer with a distance and a radius it now answers with that and
+a bare number: the shadow is `SHADOW_FRAC`, the reach is `REACH`, the ring is
+one. Three consequences worth keeping.
+
+`RING_MINOR` is `1.0 / RING_MAJOR` and must stay derived. The ring then encloses
+`π·radius²` whatever the elongation is, so `bends` sweeps the same area it
+always did and an exterior frame at warp costs what it always cost — measured,
+not assumed: 22.1 ms of drawing before, 21.4 ms after, at 20 000 stars on
+200×60. `the_bubble_sweeps_the_same_sky_clear_however_it_is_shaped` in `lens.rs`
+is what holds it, integrating through `offset` rather than multiplying the two
+constants together.
+
+Being an *ellipse* rather than an angle-dependent radius is why this got
+cheaper. Membership of an ellipse is a closed form, so `bends`, `shadowed`,
+`crosses_the_ring` and `curvature` have no square root in them at all; a ring
+whose radius varied with the angle would have needed one in each, on the two
+hottest gates in the program. If you reshape this again, reshape it by changing
+what `offset_sq` divides by.
+
+The wake is the *centre*, not the outline. `for_warp` seats the bubble
+`WAKE_SHIFT` of a semi-major axis astern of the ship it is handed, and the
+outline stays a symmetric convex ellipse. Skewing the ring fore and aft is the
+obvious way to draw a teardrop and it is the wrong one: each image then has to
+be solved on its own ray with its own radius, which costs the `θ₊θ₋ = e²`
+cancellation the counter-image depends on, and at 2.2 to one it pinches the
+waist into a peanut — `1 + A·cos²φ` has a local *minimum* of width at the waist
+for any `A` past 0.5. Both ends of the shift are guarded: a `const _: ()` in
+`lens.rs` fails the build if the nose leaves the shadow, and
+`every_hull_stays_inside_its_own_bubble` in `models.rs` flies every hull in the
+hangar through every zoom and a full turn of roll to say the same thing about
+real geometry rather than about a ship one unit long.
 
 **The hull points along the track, and `models::attitude` is where that is
 kept.** Out there the direction of travel is the one thing that cannot move:
