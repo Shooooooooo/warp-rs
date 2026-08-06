@@ -156,13 +156,27 @@ impl Renderer {
         // light; a single blob reads as an object. Both ramp with the cube of
         // the warp ramp so nothing is hanging in the middle of the view until
         // the ship is genuinely moving.
+        //
+        // The halo is the number that has been tuned, and it is a balance
+        // between two ways of losing the tunnel. It was 0.45, which at full
+        // warp laid a veil clear across the middle third of the frame and
+        // flattened the streaks nearest the vanishing point — the ones doing
+        // most of the work of saying how fast the ship is going, drowned by
+        // the very thing meant to be sitting behind them. Take it much below
+        // this and the other failure arrives instead: the core becomes a bare
+        // point with nothing around it and reads as a bright star rather than
+        // as the far end of a shaft. Its *radius* is left alone, so the wash
+        // still reaches as far as it ever did and is simply fainter out there.
+        //
+        // The core keeps its 1.6. It is only a tenth of the height across, so
+        // what was too much was the wash, not the light at the end of it.
         if warp > 0.0 {
             let (_, h) = self.canvas.dims();
             let glare = warp * warp * warp;
             self.canvas
                 .add_glow(cam.cx, cam.cy, h as f32 * 0.10, CORE_COLOR, glare * 1.6);
             self.canvas
-                .add_glow(cam.cx, cam.cy, h as f32 * 0.50, CORE_COLOR, glare * 0.45);
+                .add_glow(cam.cx, cam.cy, h as f32 * 0.50, CORE_COLOR, glare * 0.20);
         }
         self.canvas
             .apply_vignette(cam.cx, cam.cy, 0.22 + 0.48 * warp);

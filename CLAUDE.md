@@ -29,8 +29,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 233 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 234 unit — adds the snapshot-gated one
+cargo test                              # 247 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 248 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked                  # CI runs this too; `exclude` is by hand
@@ -75,14 +75,15 @@ The in-process half is the reason `render_headless` is public and separate from
 `run_headless`. It costs about three seconds and is **Linux-gated**, for the
 reason below.
 
-**Four flights, and the case list lives in three places** — the comment block in
+**Five flights, and the case list lives in three places** — the comment block in
 `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job. Adding
 one means adding it to all three. They share `--headless --frames 120 --seed 1
 --size 120x36` and differ in what they make the renderer do: two `--demo` runs
-in truecolor and ascii, one `--engage --throttle 1.0`, and one of those from
-`--view side`.
+in truecolor and ascii, one `--engage --throttle 1.0`, one of those from
+`--view side`, and the same again with the camera swung off the beam by
+`--orbit 55,35,20`.
 
-The last two are not decoration. With only the `--demo` pair, the reference
+The last three are not decoration. With only the `--demo` pair, the reference
 covered two seconds of flight that never leaves sublight — `--demo` spends its
 opening six seconds easing the throttle up — so it peaked at a quarter of light
 speed with the drive cold. A deliberate change to `TAIL_BRIGHTNESS` did not move
@@ -90,6 +91,15 @@ the hashes at all, because a sublight streak is shorter than a subpixel and
 takes the branch in `draw_streak` that never reads it. The streak ramp, the
 glare, the flash, the Doppler shift and the entire view from outside — band,
 lens, arcs and hulls — were all outside the reference.
+
+The orbit case is there for the same kind of reason one step further in. The
+view from outside is written to reduce *exactly* to the old arithmetic when the
+camera is abeam, which is where `side.txt` has it — so a change that repainted
+every angle except that one would have left the reference untouched.
+`--orbit 55,35,20` has all three angles off zero at once, which is the only
+configuration that turns the bubble's outline off the horizontal and puts the
+star band's depth travel, its vertical fold and its wall recycle on the path
+as well.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -103,7 +113,8 @@ common="--headless --frames 120 --seed 1 --size 120x36"
 ./target/release/warp $common --demo --color ascii     > ascii.txt
 ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
-sha256sum truecolor.txt ascii.txt warp.txt side.txt > tests/golden/frames.sha256
+./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
+sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
 
