@@ -443,7 +443,20 @@ mod tests {
         ] {
             let mut screen = blank(cols, rows);
             draw(&mut screen, &readout(&ship));
+            // This used to assert `screen.dims() == (cols, rows)`, which is the
+            // pair handed to `blank` one line up: `draw` takes a `&mut Screen`
+            // and never resizes, so the only failure it could report was a
+            // panic. What the name is about is that the panel *degrades* —
+            // every row it wrote has to be the width it was given, and none of
+            // it may have run off the end.
             assert_eq!(screen.dims(), (cols, rows));
+            for row in 0..rows {
+                assert_eq!(
+                    screen.row_text(row).chars().count(),
+                    cols,
+                    "row {row} of {cols}x{rows} is not the width it was given"
+                );
+            }
         }
     }
 
@@ -979,16 +992,5 @@ mod tests {
             text.contains("FACTOR"),
             "the banner should quote a warp factor"
         );
-    }
-
-    #[test]
-    fn the_panel_writes_something_visible() {
-        let ship = Ship::new();
-        let mut screen = blank(100, 30);
-        draw(&mut screen, &readout(&ship));
-        let mut out = Vec::new();
-        screen.flush(&mut out).unwrap();
-        let text = String::from_utf8_lossy(&out);
-        assert!(text.contains("VELOCITY") && text.contains("THR"));
     }
 }

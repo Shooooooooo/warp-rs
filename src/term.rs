@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_text_survives_into_the_flushed_frame() {
+    fn overlay_text_lands_in_the_cells_it_was_given() {
         let mut screen = Screen::new(20, 3, ColorMode::Truecolor);
         screen.compose(&pixels(20, 3, [0, 0, 0]));
         screen.overlay(2, 1, "WARP 9", (255, 255, 255));
