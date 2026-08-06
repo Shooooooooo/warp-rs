@@ -19,12 +19,33 @@ const REST: (u8, u8, u8) = (150, 168, 190);
 const BLURB: (u8, u8, u8) = (92, 108, 130);
 
 /// Narrowest and shortest terminal the box will draw itself in. Below this it
-/// sheds the blurbs, and below *that* it gives up and says so on one line,
-/// rather than overflowing a window it cannot fit.
+/// gives up and says what is selected on one line, rather than overflowing a
+/// window it cannot fit.
 const MIN_COLS: usize = 30;
 const MIN_ROWS: usize = 9;
-/// The width the box wants, before it is clamped to the terminal.
-const WANTED_COLS: usize = 44;
+
+/// Rows the box spends on itself whatever the list is doing: the two frame
+/// lines, the title and the rule under it, and the blank and the footer above
+/// the closing one. `MIN_ROWS` is set above this with room for three ships.
+const CHROME_ROWS: usize = 6;
+/// Columns it spends the same way: the two frame lines and the space inside
+/// each of them.
+const CHROME_COLS: usize = 4;
+
+/// Blurb columns below which there is nothing worth reading, so the row hands
+/// them back to the name.
+const MIN_BLURB: usize = 14;
+
+/// What the box says about getting out of it, widest first: the first that
+/// fits is the one drawn, the same way the panel picks a hint tier.
+///
+/// It used to be chosen on the same threshold as the blurbs, which is ten
+/// columns short of what the long one needs — so between 38 and 47 columns the
+/// box offered `ESC keep the one you hav`.
+const FOOTERS: [&str; 2] = [
+    "ENTER fly it   ESC keep the one you have",
+    "ENTER fly   ESC keep",
+];
 
 /// The characters the box is drawn from, in a face for terminals that take
 /// Unicode and one for terminals that do not. Every substitute is one column
@@ -34,6 +55,8 @@ struct Glyphs {
     horizontal: char,
     vertical: char,
     cursor: char,
+    /// Stands at the end of a blurb the box had to cut short.
+    cut: char,
 }
 
 impl Glyphs {
@@ -42,6 +65,7 @@ impl Glyphs {
         horizontal: '\u{2500}',
         vertical: '\u{2502}',
         cursor: '\u{25B8}',
+        cut: '\u{2026}',
     };
 
     const ASCII: Glyphs = Glyphs {
@@ -49,6 +73,10 @@ impl Glyphs {
         horizontal: '-',
         vertical: '|',
         cursor: '>',
+        // One column, like every other substitute here, so the two faces lay
+        // out identically. An ASCII ellipsis is three characters wide and
+        // would push the row it ends out of the box.
+        cut: '~',
     };
 
     fn for_mode(mode: ColorMode) -> &'static Glyphs {
@@ -102,22 +130,38 @@ pub fn draw(screen: &mut Screen, menu: &Menu) {
         return;
     }
 
-    let width = WANTED_COLS.min(cols.saturating_sub(4)).max(MIN_COLS - 4);
-    // Title, rule, a row per ship, rule, footer — plus the two frame lines.
-    let height = ships.len() + 6;
-    let (left, top) = ((cols - width) / 2, (rows.saturating_sub(height)) / 2);
-    // Blurbs are the first thing to go: the names are the point.
-    let room_for_blurbs = width >= 34;
+    let width = wanted_cols()
+        .min(cols - CHROME_COLS)
+        .max(MIN_COLS - CHROME_COLS);
+    // What a line has room for between the two frame characters and the spaces
+    // inside them. Every row of the box is padded to exactly this, which is
+    // what keeps the right-hand edge lined up with the left.
+    let inner = width - CHROME_COLS;
+
+    // The list is the only part of the box that can be shortened, so it is the
+    // part that gives. It used to be laid out at its full height and clipped
+    // against the terminal, which on a nine-row window cost the blank, the
+    // footer and the closing rule — leaving a box with no bottom edge, and a
+    // *modal* dialogue with nothing left saying how to get out of it.
+    let shown = ships.len().min(rows - CHROME_ROWS);
+    let height = shown + CHROME_ROWS;
+    let (left, top) = ((cols - width) / 2, (rows - height) / 2);
+    // Windowed on the cursor rather than taken from the top, so moving down the
+    // list scrolls it instead of walking the highlight onto a ship that is not
+    // being drawn.
+    let first = menu
+        .cursor
+        .saturating_sub(shown / 2)
+        .min(ships.len() - shown);
 
     let rule: String = std::iter::repeat_n(g.horizontal, width - 2).collect();
-    let blank = " ".repeat(width - 2);
-    let line = |body: &str| format!("{} {body} {}", g.vertical, g.vertical);
+    let line = |text: &str| format!("{} {text} {}", g.vertical, g.vertical);
 
     let mut row = top;
+    // No bounds check: the box is sized to the terminal above, so every row of
+    // it has somewhere to go.
     let put = |screen: &mut Screen, text: &str, color: (u8, u8, u8), row: &mut usize| {
-        if *row < rows {
-            screen.overlay_panel(left, *row, &truncate(text, cols - left), color);
-        }
+        screen.overlay_panel(left, *row, &truncate(text, cols - left), color);
         *row += 1;
     };
 
@@ -129,37 +173,116 @@ pub fn draw(screen: &mut Screen, menu: &Menu) {
     );
     put(
         screen,
-        &line(&pad("SELECT SHIP", width - 4)),
+        &line(&title(menu, ships.len(), shown, inner)),
         TITLE,
         &mut row,
     );
-    put(screen, &line(&"-".repeat(width - 4)), FRAME, &mut row);
+    put(screen, &line(&"-".repeat(inner)), FRAME, &mut row);
 
-    for (i, ship) in ships.iter().enumerate() {
+    for (i, ship) in ships.iter().enumerate().skip(first).take(shown) {
         let mark = if i == menu.cursor { g.cursor } else { ' ' };
-        let name = ship.name.to_uppercase();
-        let body = if room_for_blurbs {
-            format!("{mark} {name:<9} {}", ship.blurb)
-        } else {
-            format!("{mark} {name}")
-        };
         let color = if i == menu.cursor { CHOSEN } else { REST };
-        put(screen, &line(&pad(&body, width - 4)), color, &mut row);
+        put(
+            screen,
+            &line(&pad(&ship_row(ship, mark, inner, g), inner)),
+            color,
+            &mut row,
+        );
     }
 
-    put(screen, &line(&blank[..width - 4]), FRAME, &mut row);
-    let footer = if room_for_blurbs {
-        "ENTER fly it   ESC keep the one you have"
-    } else {
-        "ENTER fly   ESC keep"
-    };
-    put(screen, &line(&pad(footer, width - 4)), BLURB, &mut row);
+    put(screen, &line(&" ".repeat(inner)), FRAME, &mut row);
+    put(screen, &line(&pad(footer(inner), inner)), BLURB, &mut row);
     put(
         screen,
         &format!("{}{}{}", g.corner[2], rule, g.corner[3]),
         FRAME,
         &mut row,
     );
+}
+
+/// The name column, as wide as the longest name there is.
+///
+/// Pinned at nine it was one character short of `enterprise`, so that one row's
+/// blurb started a column later than every other row's and lost a character off
+/// its end that none of the others did.
+fn name_cols() -> usize {
+    models::models()
+        .iter()
+        .map(|m| m.name.chars().count())
+        .max()
+        .unwrap_or(1)
+}
+
+/// Columns a list row spends before its blurb: the cursor, a space, the name
+/// column, and the space after it.
+fn label_cols() -> usize {
+    name_cols() + 3
+}
+
+/// The width the box would like, before it is clamped to the terminal: enough
+/// for the longest blurb there is.
+///
+/// Derived rather than pinned at a number. Pinned at 44 it was narrower than
+/// the sentences it was framing, so five of the six blurbs were cut mid-word at
+/// *every* terminal size, the widest included — which reads as a fault in the
+/// renderer rather than as a box deciding what it has room for.
+fn wanted_cols() -> usize {
+    let blurb = models::models()
+        .iter()
+        .map(|m| m.blurb.chars().count())
+        .max()
+        .unwrap_or(0);
+    CHROME_COLS + label_cols() + blurb
+}
+
+/// The title, carrying where in the list the cursor is whenever the box cannot
+/// show all of it.
+///
+/// Shedding a blurb is a detail going quietly, and the rest of this module does
+/// that without comment. Hiding whole ships is not the same thing: there would
+/// otherwise be nothing at all to tell a six-ship hangar shortened to three from
+/// a hangar that only has three ships in it.
+fn title(menu: &Menu, total: usize, shown: usize, inner: usize) -> String {
+    if shown >= total {
+        return pad("SELECT SHIP", inner);
+    }
+    let counter = format!("{}/{}", menu.cursor + 1, total);
+    let room = inner.saturating_sub(counter.chars().count());
+    pad(&format!("{}{counter}", pad("SELECT SHIP", room)), inner)
+}
+
+/// One row of the list: the cursor, the name in its own column, and as much of
+/// the blurb as the box has room for.
+fn ship_row(ship: &models::ShipModel, mark: char, inner: usize, g: &Glyphs) -> String {
+    let name = ship.name.to_uppercase();
+    let names = name_cols();
+    match inner.checked_sub(label_cols()).filter(|r| *r >= MIN_BLURB) {
+        Some(room) => format!("{mark} {name:<names$} {}", clip(ship.blurb, room, g)),
+        // Below that a blurb is a few words and an ellipsis, which says less
+        // than the columns are worth. The names are the point.
+        None => format!("{mark} {name}"),
+    }
+}
+
+/// A blurb cut to fit, with a mark saying that it was cut. Cutting silently
+/// fills the box with sentences that stop mid-word; the mark is the difference
+/// between a fit and a fault.
+fn clip(text: &str, room: usize, g: &Glyphs) -> String {
+    if text.chars().count() <= room {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(room - 1).collect();
+    format!("{}{}", head.trim_end(), g.cut)
+}
+
+/// The widest thing the box can say about getting out of itself in the room it
+/// has. The last tier is held to `MIN_COLS` by a test, so there is always one.
+fn footer(inner: usize) -> &'static str {
+    FOOTERS
+        .iter()
+        .copied()
+        .find(|f| f.chars().count() <= inner)
+        .unwrap_or(FOOTERS[FOOTERS.len() - 1])
 }
 
 /// Pad or cut to exactly `width` characters, counting characters rather than
@@ -221,8 +344,8 @@ mod tests {
         let menu = Menu::new(1);
         draw(&mut screen, &menu);
 
-        let width = WANTED_COLS;
-        let height = models::models().len() + 6;
+        let width = wanted_cols();
+        let height = models::models().len() + CHROME_ROWS;
         let (left, top) = ((cols - width) / 2, (rows - height) / 2);
         for row in top..top + height {
             for col in left..left + width {
@@ -324,5 +447,140 @@ mod tests {
             "the blurb did not fit"
         );
         assert!(narrow_text.contains("DART"), "the name has to survive");
+    }
+
+    /// The picker as text, a string per row of the terminal.
+    ///
+    /// In colour a dialogue leaves the half block standing where it writes a
+    /// space, so the sky is still faintly there behind it rather than a hole
+    /// being cut in the frame. Those are put back to spaces here, so what comes
+    /// out is the text the box laid out rather than the text plus its backdrop.
+    fn rendered(cols: usize, rows: usize, cursor: usize) -> Vec<String> {
+        let mut screen = lit(cols, rows, ColorMode::Truecolor);
+        draw(&mut screen, &Menu::new(cursor));
+        (0..rows)
+            .map(|r| screen.row_text(r).replace('\u{2580}', " "))
+            .collect()
+    }
+
+    #[test]
+    fn the_box_always_closes_and_always_says_how_to_leave_it() {
+        // Regression: the box was laid out at `ships.len() + 6` rows against a
+        // MIN_ROWS of 9 and then clipped against the terminal, so on a short
+        // window the blank, the footer and the closing rule fell off the bottom
+        // — a box with no bottom edge. It is *modal*, so the footer it dropped
+        // was the only thing left on screen naming the key that gets you out.
+        let g = &Glyphs::UNICODE;
+        for rows in MIN_ROWS..=40 {
+            for cols in [MIN_COLS, 34, 40, 48, 63, 80, 200] {
+                let text = rendered(cols, rows, 0).concat();
+                assert!(
+                    text.contains(g.corner[2]) && text.contains(g.corner[3]),
+                    "the box has no bottom edge at {cols}x{rows}"
+                );
+                // Verbatim, not merely present: a footer clipped to
+                // `ESC keep the one you hav` still contains the word.
+                assert!(
+                    FOOTERS.iter().any(|f| text.contains(f)),
+                    "the way out was cut short at {cols}x{rows}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_short_box_windows_the_list_and_says_that_it_did() {
+        // Shedding a blurb can go quietly. Dropping whole ships cannot: without
+        // the counter there is nothing to tell a hangar of six shortened to
+        // three from a hangar that only has three in it.
+        let all = models::models().len();
+        let counter = format!("1/{all}");
+
+        let short = rendered(80, MIN_ROWS, 0).concat();
+        assert!(
+            short.contains(&counter),
+            "ships went missing without a word: {short:?}"
+        );
+
+        let tall = rendered(80, all + CHROME_ROWS, 0).concat();
+        assert!(
+            !tall.contains(&counter),
+            "the counter showed up with the whole list on screen"
+        );
+    }
+
+    #[test]
+    fn the_ship_under_the_cursor_is_always_one_of_the_ones_drawn() {
+        // The highlight walks the whole list whatever the box can show, so the
+        // window has to follow it. A cursor on a row that is not being drawn is
+        // a picker flying a ship you cannot see yourself choosing.
+        let ships = models::models();
+        for rows in MIN_ROWS..=(ships.len() + CHROME_ROWS + 4) {
+            for (cursor, ship) in ships.iter().enumerate() {
+                let text = rendered(80, rows, cursor);
+                let marked = text
+                    .iter()
+                    .find(|r| r.contains(Glyphs::UNICODE.cursor))
+                    .unwrap_or_else(|| panic!("nothing highlighted at {rows} rows"));
+                let name = ship.name.to_uppercase();
+                assert!(
+                    marked.contains(&name),
+                    "the window left {name} behind at {rows} rows: {marked:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_shortest_footer_fits_the_narrowest_box() {
+        // The same shape as the panel's hint tiers: widest first, so the first
+        // that fits is the most detailed, and the last has to fit the smallest
+        // box there is or `footer` has nothing to fall back on.
+        let widths: Vec<usize> = FOOTERS.iter().map(|f| f.chars().count()).collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] > w[1]),
+            "the footers are out of order: {widths:?}"
+        );
+        // A box at `MIN_COLS` spends `CHROME_COLS` on its frame and the same
+        // again centring itself, which leaves this.
+        assert!(
+            widths
+                .last()
+                .is_some_and(|w| *w <= MIN_COLS - CHROME_COLS * 2),
+            "the shortest footer does not fit the narrowest box: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn a_blurb_the_box_could_not_finish_says_that_it_was_cut() {
+        // Regression: blurbs were cut by `pad`, which stops mid-word without a
+        // word about it, so the box read as a renderer dropping characters
+        // rather than as a box deciding what it had room for.
+        let cut = Glyphs::UNICODE.cut;
+        let tight = rendered(48, 20, 0).concat();
+        assert!(
+            tight.contains(cut),
+            "a blurb was cut with nothing to say so: {tight:?}"
+        );
+    }
+
+    #[test]
+    fn a_box_with_the_room_finishes_every_sentence_in_it() {
+        // Regression: the width was pinned at 44, which is narrower than the
+        // blurbs it was framing — so five of the six were cut mid-word at
+        // *every* terminal size, the widest included. The width is derived from
+        // the blurbs now, so a terminal with the room shows them whole.
+        let text = rendered(120, 34, 0).concat();
+        for ship in models::models() {
+            assert!(
+                text.contains(ship.blurb),
+                "{} is still cut short on a terminal with room to spare",
+                ship.name
+            );
+        }
+        assert!(
+            !text.contains(Glyphs::UNICODE.cut),
+            "something was cut in a box that had the room"
+        );
     }
 }
