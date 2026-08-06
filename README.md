@@ -40,6 +40,7 @@ cargo run --release -- --demo
 | `↑` `↓` | Throttle |
 | `Space` | Engage or disengage the warp drive |
 | `C` | Cycle the camera — cockpit, then outside |
+| `[` `]` / wheel | Zoom the camera out and in. Outside only |
 | `M` | Pick a ship |
 | `+` `-` | More or fewer stars |
 | `P` | Pause |
@@ -121,6 +122,16 @@ stars stream on exactly as they were and the hull leans a few degrees, so pitch
 and yaw are simply not connected in this view and the hint line stops offering
 them. Press `C` to go back inside and the stick comes back with it. Throttle,
 warp and roll work in both.
+
+One control runs the other way. `[` and `]` — or the scroll wheel — push the
+camera out and in, and they do nothing from the pilot's seat, where there is no
+ship to be looking at. The shot opens well back, with the hull about a quarter
+of the frame's height, so it reads as something crossing the view rather than
+parked in it; `]` walks it in from there and `R` puts it back. The warp bubble
+is drawn around the *ship* rather than around the frame, so it comes and goes
+with the hull instead of hanging there at a fixed size, and the sky does not
+move at all — pulling the camera back a few units against stars that are
+hundreds away is no parallax worth drawing.
 
 `M` opens a picker for the six hulls. It takes the camera outside if it is not
 already, and moving through the list flies each ship rather than naming it:

@@ -49,15 +49,25 @@ const ASCII_HINTS: [&str; 3] = [
 /// axes that do it are switched off. The hints are the only place the controls
 /// are written down, so they have to stop naming a key that has gone quiet —
 /// a stick advertised and unresponsive reads as a bug in the flight model.
-/// Roll survives, and is worth more here than it is in the cockpit.
+/// Roll survives, and is worth more here than it is in the cockpit. And the
+/// zoom appears, which runs the other way — it is the one control that does
+/// nothing from the pilot's seat, since there is no ship to be looking at.
+///
+/// It goes on the widest tier and no further, which is where `C view` and
+/// `M ships` already stop. There is no room for it below: the narrowest tier
+/// has seven columns spare against `MIN_COLS` and the fragment costs nine, and
+/// putting it on the middle tier would push that one past sixty columns — so a
+/// sixty-column window would shed the whole tier and lose the *throttle* to
+/// gain the zoom, which is a poor trade for a control it can barely see the
+/// effect of.
 const SIDE_HINTS: [&str; 3] = [
-    "SPACE warp  \u{2191}\u{2193} throttle  QE roll  C view  M ships  P pause  R reset  ESC quit",
+    "SPACE warp  \u{2191}\u{2193} throttle  QE roll  [] zoom  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  \u{2191}\u{2193} throttle  QE roll  C view  ESC quit",
     "SPACE warp  QE roll  C view  ESC quit",
 ];
 
 const ASCII_SIDE_HINTS: [&str; 3] = [
-    "SPACE warp  UP/DN throttle  QE roll  C view  M ships  P pause  R reset  ESC quit",
+    "SPACE warp  UP/DN throttle  QE roll  [] zoom  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  UP/DN throttle  QE roll  C view  ESC quit",
     "SPACE warp  QE roll  C view  ESC quit",
 ];
@@ -592,6 +602,19 @@ mod tests {
                 set.iter().all(|h| !h.contains("WASD")),
                 "the outside view still advertises a stick it ignores: {set:?}"
             );
+            // And the zoom, which runs the other way: it does nothing at all
+            // from the pilot's seat, so it is named out here and nowhere else.
+            assert!(
+                set[0].contains("[] zoom"),
+                "the outside view does not name the zoom: {:?}",
+                set[0]
+            );
+        }
+        for set in [&HINTS, &ASCII_HINTS] {
+            assert!(
+                set.iter().all(|h| !h.contains("zoom")),
+                "the cockpit advertises a zoom it has not got: {set:?}"
+            );
         }
     }
 
@@ -640,27 +663,34 @@ mod tests {
 
         // Wide enough for the full panel, and narrow enough for the compact
         // one, and paused as well as under way: every branch that writes text.
+        // Both views, because they carry their own hints and CI's grep only
+        // ever sees a cockpit frame — the ASCII reference flight is a `--demo`,
+        // so a stray multi-byte glyph in the outside view's hints would get
+        // past it and this is the only thing looking.
         for (cols, rows) in [(120, 34), (80, 24), (46, 12), (20, 6), (2, 2)] {
             for paused in [false, true] {
-                let mut screen = blank_in(cols, rows, ColorMode::Ascii);
-                draw(
-                    &mut screen,
-                    &Readout {
-                        ship: &ship,
-                        fps: 60.0,
-                        stars: 900,
-                        paused,
-                        hints: true,
-                        view: ViewMode::Cockpit,
-                        model: "dart",
-                    },
-                );
-                for row in 0..rows {
-                    let text = screen.row_text(row);
-                    assert!(
-                        text.is_ascii(),
-                        "row {row} of {cols}x{rows} left ASCII: {text:?}"
+                for view in ViewMode::ALL {
+                    let mut screen = blank_in(cols, rows, ColorMode::Ascii);
+                    draw(
+                        &mut screen,
+                        &Readout {
+                            ship: &ship,
+                            fps: 60.0,
+                            stars: 900,
+                            paused,
+                            hints: true,
+                            view,
+                            model: "dart",
+                        },
                     );
+                    for row in 0..rows {
+                        let text = screen.row_text(row);
+                        assert!(
+                            text.is_ascii(),
+                            "row {row} of {cols}x{rows} in the {} view left ASCII: {text:?}",
+                            view.label()
+                        );
+                    }
                 }
             }
         }
