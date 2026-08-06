@@ -52,7 +52,7 @@ Everything else means the same thing in both:
 | `M` | Pick a ship |
 | `+` `-` | More or fewer stars |
 | `P` | Pause |
-| `R` | Reset — the throttle, the ship's attitude, and the camera |
+| `R` | Reset — the throttle, the ship's attitude, the camera, and the pause |
 | `Esc` / `Ctrl-C` / `Ctrl-D` | Quit |
 
 Throttle and steering are impulse-driven — a press nudges the ship and it eases
@@ -154,7 +154,10 @@ There are no stops on any of them. A quarter turn of `W` looks straight down on
 the ship, and holding it carries the camera on over the top, past an upside-down
 view from the far beam and back round to where it started — one continuous loop,
 the same as `A` and `D` make horizontally. Dead ahead is the nose coming at you;
-dead astern is the drive coming at you. `R` puts the camera back on the beam.
+dead astern is the drive coming at you. `R` puts the camera back where the
+flight opened — on the beam by default, and wherever `--orbit` put it if that
+was given, the same way `R` restores the throttle `--throttle` asked for rather
+than some fixed number.
 
 Pointing the nose is something you do from behind it, so out here that is not
 what the stick is for. A turn of the *hull* moves nothing an eye can see — the

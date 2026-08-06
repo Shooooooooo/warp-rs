@@ -33,8 +33,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       # Default features first: `snapshot` is optional, and the build without
-      # it is the one people actually install.
-      - run: cargo build --locked
+      # it is the one people actually install. There was a `cargo build
+      # --locked` above this line for a while, which bought nothing — `cargo
+      # test` compiles the bin targets too, so it was a second full compile of
+      # the same tree on each of three operating systems.
       - run: cargo test --locked
       - run: cargo test --locked --all-features
 
