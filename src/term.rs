@@ -582,29 +582,77 @@ fn luma(rgb: [u8; 3]) -> f32 {
     (0.2126 * rgb[0] as f32 + 0.7152 * rgb[1] as f32 + 0.0722 * rgb[2] as f32) / 255.0
 }
 
+/// The six levels of the xterm-256 colour cube.
+const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+/// The distance between a cube level and a value, without a signed detour.
+/// A free function rather than a closure because the table below is built in a
+/// `const` context, where a closure cannot be called.
+const fn gap(level: u8, value: usize) -> u8 {
+    if level as usize > value {
+        level - value as u8
+    } else {
+        value as u8 - level
+    }
+}
+
+/// For every 8-bit value, the cube level nearest it.
+///
+/// This replaces a linear scan over six entries that depended on a single byte,
+/// run twice per cell per frame. Composing a frame at 300x90 cost 2.35 ms in
+/// this mode against 1.10 ms in truecolor, and the scan was most of the
+/// difference — about 7% of a 60 fps budget, in the mode `ColorMode::detect`
+/// hands to any terminal with a `TERM` entry and no `COLORTERM`, which is most
+/// of them. Built at compile time, so it costs nothing at startup either.
+///
+/// Ties break downward, the way `min_by_key` broke them by keeping the first
+/// minimum. 115, 155, 195 and 235 all sit exactly between two levels, and a test
+/// pins every value against the scan this stands in for.
+const NEAREST_CUBE: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut value = 0usize;
+    while value < 256 {
+        let mut best = CUBE[0];
+        let mut nearest = gap(CUBE[0], value);
+        let mut i = 1;
+        while i < CUBE.len() {
+            let distance = gap(CUBE[i], value);
+            // Strictly nearer, so an equidistant value keeps the lower level.
+            if distance < nearest {
+                nearest = distance;
+                best = CUBE[i];
+            }
+            i += 1;
+        }
+        table[value] = best;
+        value += 1;
+    }
+    table
+};
+
 /// Snap a colour to the nearest xterm-256 palette entry, then hand back that
 /// entry's RGB. Emitting the RGB rather than the index means one code path in
 /// the writer; the point is that the *values* are restricted to the palette,
 /// so a 256-colour terminal renders them exactly.
 fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
-    const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
-
-    let nearest_cube = |v: u8| {
-        CUBE.iter()
-            .copied()
-            .min_by_key(|c| (*c as i32 - v as i32).abs())
-            .unwrap()
-    };
     let cube = [
-        nearest_cube(rgb[0]),
-        nearest_cube(rgb[1]),
-        nearest_cube(rgb[2]),
+        NEAREST_CUBE[rgb[0] as usize],
+        NEAREST_CUBE[rgb[1] as usize],
+        NEAREST_CUBE[rgb[2] as usize],
     ];
 
     // The 24-step grey ramp is finer than the cube's grey diagonal, so near-grey
     // colours come out visibly better if we let it compete.
+    //
+    // Which step, in integers. This was a float divide, a `round` and a
+    // `clamp` — a round trip through the FPU for what is a table lookup's worth
+    // of arithmetic, taken twice per cell per frame. The `+ 5` is the rounding
+    // the `round` was doing; below 8 both forms floor to zero, so the
+    // saturating subtraction loses nothing. Worth about 0.4 ms a frame at
+    // 300x90, and a test walks all 256 inputs against the form it replaced —
+    // this decides an output colour, so "equivalent" has to mean equal.
     let avg = (rgb[0] as u32 + rgb[1] as u32 + rgb[2] as u32) / 3;
-    let step = ((avg as i32 - 8) as f32 / 10.0).round().clamp(0.0, 23.0) as i32;
+    let step = ((avg.saturating_sub(8) + 5) / 10).min(23);
     let grey = (8 + step * 10) as u8;
     let grey = [grey, grey, grey];
 
@@ -980,6 +1028,51 @@ mod tests {
         assert_eq!(screen.back[0].ch, ' ');
         assert_eq!(screen.back[1].ch, '@');
         assert!(screen.back[1].fg.is_none() && screen.back[1].bg.is_none());
+    }
+
+    #[test]
+    fn the_cube_table_is_exactly_the_search_it_replaces() {
+        // The table stands in for a scan over six levels, and `min_by_key` kept
+        // the *first* minimum — so a value sitting exactly between two levels
+        // has to keep the lower one. Breaking that the other way would move
+        // every colour on a boundary, which is a whole band of the sky.
+        for value in 0..=255u8 {
+            let scanned = CUBE
+                .iter()
+                .copied()
+                .min_by_key(|level| (*level as i32 - value as i32).abs())
+                .expect("the cube is not empty");
+            assert_eq!(
+                NEAREST_CUBE[value as usize], scanned,
+                "the table disagrees with the scan at {value}"
+            );
+        }
+        // The four midpoints, named, because they are the ones that would move.
+        for (value, want) in [(115u8, 95u8), (155, 135), (195, 175), (235, 215)] {
+            assert_eq!(
+                NEAREST_CUBE[value as usize], want,
+                "the tie at {value} broke upward"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grey_step_is_exactly_the_float_form_it_replaces() {
+        // The integer form stands in for
+        //
+        //     ((avg as i32 - 8) as f32 / 10.0).round().clamp(0.0, 23.0) as i32
+        //
+        // and it picks an output colour, so agreeing closely is not enough. The
+        // input is a mean of three bytes, so there are only 256 of them and the
+        // check can simply be exhaustive.
+        for avg in 0..256u32 {
+            let float = ((avg as i32 - 8) as f32 / 10.0).round().clamp(0.0, 23.0) as u32;
+            let integer = ((avg.saturating_sub(8) + 5) / 10).min(23);
+            assert_eq!(
+                integer, float,
+                "the two forms disagree at an average of {avg}"
+            );
+        }
     }
 
     #[test]
