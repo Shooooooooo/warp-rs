@@ -6,6 +6,7 @@
 //! the whole reason `main.rs` is fifteen lines.
 
 use clap::Parser;
+use std::time::{Duration, Instant};
 use warp_rs::app::Flight;
 use warp_rs::cli::Args;
 
@@ -111,6 +112,60 @@ fn every_ship_can_be_flown_from_the_command_line() {
         );
         assert!(!out.is_empty(), "{ship} would not fly");
     }
+}
+
+#[test]
+fn a_flight_survives_a_step_the_caller_should_not_have_asked_for() {
+    // `Flight::advance` is public, and the whole point of this file is that a
+    // flight can be driven from out here. The guard against a `dt` that is not
+    // a frame used to live in the interactive loop instead, so a caller at this
+    // level got neither half of it: an enormous step was unbounded work, and a
+    // NaN step stopped the simulation for good while frames went on drawing.
+    let args = Args::try_parse_from([
+        "warp",
+        "--color",
+        "truecolor",
+        "--seed",
+        "5",
+        "--stars",
+        "600",
+        "--throttle",
+        "1.0",
+    ])
+    .expect("arguments should parse");
+    let mut flight = Flight::new(&args, 60, 20);
+    let frame = |flight: &mut Flight| {
+        flight.draw(60.0, false, true);
+        let mut out = Vec::new();
+        flight
+            .present_plain(&mut out)
+            .expect("writing to a Vec cannot fail");
+        out
+    };
+
+    for _ in 0..30 {
+        flight.advance(1.0 / 60.0);
+    }
+    flight.advance(f32::NAN);
+
+    let before = frame(&mut flight);
+    for _ in 0..60 {
+        flight.advance(1.0 / 60.0);
+    }
+    assert_ne!(
+        before,
+        frame(&mut flight),
+        "one bad step froze the flight for the rest of its life"
+    );
+
+    // And a step far past anything a frame could be returns rather than
+    // grinding: unclamped, this one is a hundred billion simulation steps.
+    let started = Instant::now();
+    flight.advance(1e9);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "an absurd dt was taken literally"
+    );
 }
 
 #[test]
