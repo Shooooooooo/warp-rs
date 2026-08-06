@@ -40,7 +40,26 @@ const MAX_FRAME_DT: f32 = 0.25;
 /// of it.
 const MAX_STEP_DT: f32 = 1.0;
 /// Stars per subpixel when the count is chosen automatically.
-const AUTO_DENSITY: f32 = 0.02;
+///
+/// Thinned twice now, 0.05 to 0.02 to this, and both times for the same
+/// reason: a field that looks right held still is too dense to fly. Every star
+/// is drawn as the segment it swept, so lighting the drive turns each one into
+/// a streak several times its own length, and what was a scattering of points
+/// becomes a wash with no individual star left in it — the depth parallax that
+/// is most of what the view is for goes with them. Larger terminals feel it
+/// first, because the count follows the area while the streaks lengthen with
+/// the frame as well.
+///
+/// What pulls the other way is emptiness, and `AUTO_MIN_STARS` answers that
+/// rather than this number does. At 0.01 a terminal has to reach thirty
+/// thousand subpixels — two hundred columns by seventy-five rows — before the
+/// density decides anything at all; below that the floor does, so every
+/// ordinary window is untouched by this and only the big ones thin out. A
+/// 300x90 terminal spawns 540 stars where it spawned 1080.
+///
+/// `--stars` is unaffected, and so is the `+`/`-` pair, which works off
+/// whatever pool it is handed.
+const AUTO_DENSITY: f32 = 0.01;
 const AUTO_MIN_STARS: usize = 300;
 const AUTO_MAX_STARS: usize = 20_000;
 /// Mixed into `--seed` for the outside view's sky, so the two fields are
