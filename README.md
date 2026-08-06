@@ -26,8 +26,8 @@ cargo run --release -- --demo
 
 | Key | |
 | --- | --- |
-| `W` `S` / `I` `K` | Pitch — nose up and nose down |
-| `A` `D` / `←` `→` | Yaw — nose left and nose right |
+| `W` `S` / `I` `K` | Pitch — nose up and nose down. Cockpit only |
+| `A` `D` / `←` `→` | Yaw — nose left and nose right. Cockpit only |
 | `Q` `E` | Roll — port and starboard |
 | `↑` `↓` | Throttle |
 | `Space` | Engage or disengage the warp drive |
@@ -106,6 +106,13 @@ The camera rides with the ship rather than with the sky, so a roll turns the
 *hull* against a level starfield — `Q` or `E` held down is a barrel roll you can
 watch from the outside, which is the one thing the view from the cockpit cannot
 show you.
+
+The same fact switches the other two axes off. Pointing the nose is something
+you do from behind it: out here a turn moves nothing an eye can see, since the
+stars stream on exactly as they were and the hull leans a few degrees, so pitch
+and yaw are simply not connected in this view and the hint line stops offering
+them. Press `C` to go back inside and the stick comes back with it. Throttle,
+warp and roll work in both.
 
 `M` opens a picker for the five hulls. It takes the camera outside if it is not
 already, and moving through the list flies each ship rather than naming it:

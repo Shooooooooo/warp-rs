@@ -333,6 +333,15 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
     if flight.menu_open() && !ctrl {
         return menu_key(key, flight);
     }
+    // Pointing the nose is a thing you do from behind it. The camera outside
+    // rides with the ship rather than with the sky, so out there a turn moves
+    // nothing an eye can see — the stars stream on exactly as they were and the
+    // hull leans a few degrees — and a control that swallows the input and
+    // gives nothing back is worse than one that is plainly not there. Roll is
+    // the exception and stays on: against a level starfield it is the best
+    // thing in the view.
+    let steers = flight.view() == ViewMode::Cockpit;
+
     match key.code {
         // `q` is on the stick, so it cannot also be the way out: nothing a
         // pilot reaches for mid-turn should end the flight.
@@ -341,10 +350,10 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
 
         // The stick. WASD for the two axes that point the nose, QE for the one
         // that turns the sky about it; `i`/`k` pitch too, as they always have.
-        KeyCode::Char('w' | 'W' | 'i' | 'I') => flight.ship.nudge_pitch(-1.0),
-        KeyCode::Char('s' | 'S' | 'k' | 'K') => flight.ship.nudge_pitch(1.0),
-        KeyCode::Left | KeyCode::Char('a' | 'A') => flight.ship.nudge_yaw(-1.0),
-        KeyCode::Right | KeyCode::Char('d' | 'D') => flight.ship.nudge_yaw(1.0),
+        KeyCode::Char('w' | 'W' | 'i' | 'I') if steers => flight.ship.nudge_pitch(-1.0),
+        KeyCode::Char('s' | 'S' | 'k' | 'K') if steers => flight.ship.nudge_pitch(1.0),
+        KeyCode::Left | KeyCode::Char('a' | 'A') if steers => flight.ship.nudge_yaw(-1.0),
+        KeyCode::Right | KeyCode::Char('d' | 'D') if steers => flight.ship.nudge_yaw(1.0),
         KeyCode::Char('q' | 'Q') => flight.ship.nudge_roll(-1.0),
         KeyCode::Char('e' | 'E') => flight.ship.nudge_roll(1.0),
 
@@ -794,6 +803,70 @@ mod tests {
             ),
             Action::Quit
         ));
+    }
+
+    #[test]
+    fn the_stick_loses_pitch_and_yaw_outside_the_cockpit() {
+        // Out there the camera rides with the ship, so a turn moves nothing an
+        // eye can see: the stars stream on as they were and the hull leans a
+        // few degrees. A control that takes the input and gives nothing back is
+        // worse than one that is plainly switched off, so those two axes are.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        assert_eq!(flight.view(), ViewMode::Side);
+
+        for code in [
+            KeyCode::Char('w'),
+            KeyCode::Char('W'),
+            KeyCode::Char('s'),
+            KeyCode::Char('i'),
+            KeyCode::Char('k'),
+            KeyCode::Char('a'),
+            KeyCode::Char('d'),
+            KeyCode::Char('A'),
+            KeyCode::Left,
+            KeyCode::Right,
+        ] {
+            flight.ship.reset();
+            let action = handle_key(press(code), &mut flight, &args, &mut paused);
+            assert!(
+                matches!(action, Action::Continue),
+                "{code:?} ended the flight"
+            );
+            assert_eq!(flight.ship.pitch_rate, 0.0, "{code:?} still pitched");
+            assert_eq!(flight.ship.yaw_rate, 0.0, "{code:?} still yawed");
+        }
+
+        // Roll is the exception, and the reason to be out here at all: against
+        // a level starfield it is the best thing in the view.
+        for (key, want_negative) in [('q', true), ('e', false)] {
+            flight.ship.reset();
+            handle_key(press(KeyCode::Char(key)), &mut flight, &args, &mut paused);
+            assert_eq!(
+                flight.ship.roll_rate < 0.0,
+                want_negative,
+                "{key} should still roll out here"
+            );
+        }
+        // As is the throttle, which is what the arrows have always been.
+        flight.ship.reset();
+        let before = flight.ship.throttle;
+        handle_key(press(KeyCode::Up), &mut flight, &args, &mut paused);
+        assert!(flight.ship.throttle > before, "the throttle went quiet too");
+
+        // And coming back inside gives the stick back.
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        assert_eq!(flight.view(), ViewMode::Cockpit);
+        flight.ship.reset();
+        handle_key(press(KeyCode::Char('w')), &mut flight, &args, &mut paused);
+        assert!(flight.ship.pitch_rate < 0.0, "the stick did not come back");
+        flight.ship.reset();
+        handle_key(press(KeyCode::Char('a')), &mut flight, &args, &mut paused);
+        assert!(flight.ship.yaw_rate < 0.0, "the stick did not come back");
     }
 
     #[test]
