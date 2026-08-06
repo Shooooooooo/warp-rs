@@ -59,6 +59,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+      # `exclude` in Cargo.toml is hand-maintained, and the failure mode is
+      # quiet: a crate that builds here and not from the tarball anyone
+      # installs. `cargo package` assembles the package and builds it, which is
+      # the check. The `--list` before it prints what went in, so a diff that
+      # drops a file says which one in the log rather than in a build error.
+      - run: cargo package --locked --list
+      - run: cargo package --locked
+
   # `rust-version` in Cargo.toml is a promise to anyone on an older toolchain,
   # and an untested promise is a guess. Checking rather than testing: this is
   # about whether the crate and its locked dependencies still compile there,

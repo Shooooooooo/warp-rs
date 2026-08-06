@@ -50,7 +50,7 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(cols: usize, rows: usize, mode: ColorMode, exposure: f32) -> Self {
         // Clamp *before* doubling. `Canvas` and `Screen` each clamp a zero
-        // dimension up to one on their own, and if we hand them a zero they
+        // dimension up to one on their own, and handed a zero the two
         // disagree about how big the pixel buffer is: the canvas becomes one
         // row, the screen wants two. A terminal that reports zero rows — which
         // is what tmux hands a `lock-command` — then crashes `compose`.
@@ -170,10 +170,14 @@ impl Renderer {
     /// yet.
     ///
     /// The same order as [`Self::render`] — sky, then what is lit, then the
-    /// glass — with the hull between them. There is no depth buffer and none is
-    /// needed: [`crate::exterior`]'s near wall is four units beyond the ship, so
-    /// nothing can be in front of it, and the far side of the hull is culled on
-    /// the winding of each plate.
+    /// glass — with the hull between them. There is no depth buffer and none
+    /// is needed: [`crate::exterior`]'s near wall is beyond the furthest any
+    /// hull reaches, so nothing can be in front of it, and the far side of the
+    /// hull is culled on the winding of each plate. The clearance is kept as a
+    /// `const` assertion in that module rather than quoted here as a distance,
+    /// which is what it used to be and what had silently gone wrong: the
+    /// number outlived the constants it was measured from by some margin, and
+    /// a wrong figure guarding an invariant reads exactly like a right one.
     pub fn render_exterior(&mut self, scene: Exterior<'_>, cam: &Camera, hud: &Readout) {
         let Exterior {
             field,
@@ -427,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_sized_terminal_does_not_crash_in_either_view() {
+    fn a_zero_sized_terminal_does_not_crash_from_outside() {
         for (cols, rows) in [(0usize, 0usize), (80, 0), (0, 24), (1, 0), (2, 3)] {
             let renderer = fly_outside(cols, rows, 0, true, 5, 200);
             let (w, h) = renderer.canvas_dims();

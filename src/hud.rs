@@ -8,7 +8,7 @@
 //! window the panel sheds detail instead of overflowing.
 
 use crate::ship::Ship;
-use crate::term::{ColorMode, Screen};
+use crate::term::{truncate, ColorMode, Screen};
 use crate::view::ViewMode;
 
 const LABEL: (u8, u8, u8) = (96, 176, 208);
@@ -372,15 +372,6 @@ fn roll_text(ship: &Ship, g: &Glyphs) -> String {
     format!("{:>+6.1}{d}", ship.roll.to_degrees())
 }
 
-/// Character-aware truncation — the panel is full of multi-byte glyphs.
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        text.chars().take(max).collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,9 +666,9 @@ mod tests {
         // readouts out of their columns on exactly the terminals least able
         // to spare the room.
         let ship = Ship::new();
-        // The hints are left out: "UP/DN" is genuinely wider than "\u{2191}\u{2193}",
-        // so that one line is expected to differ, and it is right-aligned on a
-        // row of its own precisely so it can.
+        // The hints are left out: "UP/DN" is genuinely wider than
+        // "\u{2191}\u{2193}", so that one line is expected to differ, and it is
+        // right-aligned on a row of its own precisely so it can.
         let quiet = Readout {
             ship: &ship,
             fps: 60.0,
@@ -712,13 +703,6 @@ mod tests {
                 "the two faces disagree about the layout at {cols}x{rows}"
             );
         }
-    }
-
-    #[test]
-    fn truncate_counts_characters_not_bytes() {
-        let text = "\u{27E8} WARP \u{27E9}";
-        assert_eq!(truncate(text, 3).chars().count(), 3);
-        assert_eq!(truncate(text, 999), text);
     }
 
     #[test]

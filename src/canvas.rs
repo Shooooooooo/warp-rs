@@ -456,8 +456,8 @@ impl Canvas {
         let max_r = ((self.width as f32).powi(2) + (self.height as f32).powi(2)).sqrt() * 0.5;
         let inv = 1.0 / max_r.max(1.0);
         // The curve is quadratic in the distance, so it can be evaluated on the
-        // *squared* distance directly — taking a square root here only to square
-        // it again is a root per subpixel that never had to be taken.
+        // *squared* distance directly — taking a square root here only to
+        // square it again is a root per subpixel that never had to be taken.
         let inv_sq = inv * inv;
         for y in 0..self.height {
             for x in 0..self.width {
@@ -563,6 +563,60 @@ mod tests {
         let mut canvas = Canvas::new(8, 8);
         canvas.splat(3.25, 4.75, [1.0, 0.0, 0.0], 2.0);
         assert!((total_light(&canvas) - 2.0).abs() < 1e-5);
+    }
+
+    /// The whole reason [`Canvas::splat`] exists beside `splat_inside` is the
+    /// branch below the fast path, and until this test nothing in the tree ran
+    /// it: every call site, all of them in tests, passed coordinates already on
+    /// the canvas, so the checked path was documented and unexercised.
+    #[test]
+    fn a_splat_over_the_edge_keeps_only_the_taps_that_landed() {
+        // Half a pixel past the right edge: two of the four taps are off the
+        // canvas, and the two that remain carry the fractions that faced left.
+        let mut canvas = Canvas::new(8, 8);
+        canvas.splat(7.5, 4.0, [1.0, 1.0, 1.0], 4.0);
+        assert!(
+            (total_light(&canvas) - 6.0).abs() < 1e-5,
+            "half a splat should have fallen off, not {}",
+            total_light(&canvas) / 3.0
+        );
+
+        // The same weight, entirely outside — including the negative side,
+        // where a cast to `usize` would wrap into the buffer rather than miss
+        // it, and the far corner, where both axes are out at once.
+        for (x, y) in [
+            (-4.0, 4.0),
+            (4.0, -4.0),
+            (99.0, 4.0),
+            (4.0, 99.0),
+            (-9.0, -9.0),
+        ] {
+            let mut canvas = Canvas::new(8, 8);
+            canvas.splat(x, y, [1.0, 1.0, 1.0], 4.0);
+            assert_eq!(
+                total_light(&canvas),
+                0.0,
+                "({x}, {y}) is off the canvas and still lit something"
+            );
+        }
+
+        // And the guards at the top of it, which the fast path never reaches
+        // because `draw_streak` has already dropped these.
+        let mut canvas = Canvas::new(8, 8);
+        for (x, y, weight) in [
+            (f32::NAN, 4.0, 1.0),
+            (4.0, f32::NAN, 1.0),
+            (f32::INFINITY, 4.0, 1.0),
+            (4.0, 4.0, 0.0),
+            (4.0, 4.0, -1.0),
+        ] {
+            canvas.splat(x, y, [1.0, 1.0, 1.0], weight);
+        }
+        assert_eq!(
+            total_light(&canvas),
+            0.0,
+            "a splat with nothing to add added something"
+        );
     }
 
     #[test]

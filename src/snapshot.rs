@@ -23,6 +23,9 @@ pub fn write_png(
         width * height,
         "pixel buffer does not match its dimensions"
     );
+    // `--scale` is bounded to at least one when it is parsed, so this is here
+    // for the other caller: the module is `pub`, and a zero would otherwise
+    // write a PNG with no pixels in it rather than say why.
     let scale = scale.max(1);
     let (out_w, out_h) = (width * scale, height * scale);
 

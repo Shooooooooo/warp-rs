@@ -33,8 +33,8 @@ pub enum ViewMode {
     /// the one everything that is not interactive still flies in.
     #[default]
     Cockpit,
-    /// Off the ship's starboard beam: the hull in profile with the sky streaming
-    /// astern, and — once the drive is lit — bending around it.
+    /// Off the ship's starboard beam: the hull in profile with the sky
+    /// streaming astern, and — once the drive is lit — bending around it.
     Side,
 }
 
@@ -49,7 +49,15 @@ impl ViewMode {
         Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
-    /// What the command line takes and the panel prints.
+    /// A view's name, spelled once so everything that has to say one agrees.
+    ///
+    /// The panel does not print it — it gates on the variant, since the two
+    /// views differ in what they draw rather than in what they are called —
+    /// and `--view` parses into [`crate::cli::ViewArg`], whose spellings clap
+    /// derives from its own variant names. That derivation is what makes this
+    /// worth keeping rather than a name nothing reads: the two enums have to
+    /// stay in step, and `the_command_line_takes_every_view_by_its_name` in
+    /// `cli.rs` walks [`Self::ALL`] to say they do.
     pub fn label(self) -> &'static str {
         match self {
             ViewMode::Cockpit => "cockpit",

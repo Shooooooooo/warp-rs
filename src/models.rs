@@ -66,8 +66,9 @@ const BUBBLE_LIGHT: f32 = 0.45;
 const IMPULSE_FLAME: [f32; 3] = [1.00, 0.62, 0.28];
 const WARP_FLAME: [f32; 3] = [0.62, 0.80, 1.00];
 
-/// Lean the hull takes from a turn, in radians at full deflection. The camera
-/// rides with the ship, so this is the only thing that says a turn is happening.
+/// Lean the hull takes from a turn, in radians at full deflection. The
+/// camera rides with the ship, so this is the only thing that says a turn
+/// is happening.
 const YAW_LEAN: f32 = 0.35;
 /// Lean the hull takes from a pull on the stick, in radians at full deflection.
 /// A little under the yaw's, because the two are not equally visible from here:
@@ -187,7 +188,8 @@ impl Builder {
         for a in 0..arcs {
             let theta = a as f32 / arcs as f32 * std::f32::consts::TAU;
             // The hoop stands in the plane across the ship's track, so its
-            // radius sweeps through `y` and `z` and its tube reaches out in `x`.
+            // radius sweeps through `y` and `z` and its tube reaches out
+            // in `x`.
             let radial = [0.0, theta.sin(), theta.cos()];
             for s in 0..SIDES {
                 let phi = s as f32 / SIDES as f32 * std::f32::consts::TAU;
@@ -279,9 +281,12 @@ pub fn by_name(name: &str) -> Option<usize> {
 /// already has in mind, and the reason this hull is the one flown by default.
 ///
 /// Everything vertical is drawn thicker than scale. The whole ship is a little
-/// under half the canvas height long, so on a thirty-row terminal one unit here
-/// is about seventeen subpixels, and an honest saucer would come out a single
-/// subpixel thick — a line, not a shape.
+/// under half the canvas height long — [`SHIP_SCREEN_FRAC`] of it either side
+/// of centre — so on a thirty-row terminal, sixty subpixels tall, one unit
+/// here is about fourteen subpixels, and an honest saucer would come out a
+/// single subpixel thick: a line, not a shape.
+///
+/// [`SHIP_SCREEN_FRAC`]: crate::view::SHIP_SCREEN_FRAC
 fn enterprise() -> ShipModel {
     let mut b = Builder::default();
     // The saucer: widest across the middle, and about as long as it is wide, so
@@ -1006,6 +1011,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn the_ships_do_not_look_like_one_another() {
         // A hangar is only a feature if the ships in it read as different

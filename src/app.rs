@@ -29,12 +29,13 @@ const MAX_FRAME_DT: f32 = 0.25;
 /// The widest step [`Flight::advance`] will take, whatever it is handed.
 ///
 /// Deliberately looser than `MAX_FRAME_DT`, which is the interactive loop's own
-/// limit and is tight because a frame on a real terminal is never a quarter of a
-/// second. This one sits underneath *every* caller, so it has to leave the
+/// limit and is tight because a frame on a real terminal is never a quarter of
+/// a second. This one sits underneath *every* caller, so it has to leave the
 /// legitimate ones alone: headless and snapshot step at `1.0 / --fps` and
-/// `--fps` is floored at 1, so a second is the longest step anything in the tree
-/// asks for. Past that it is not a frame, and the fixed-step loop below would
-/// grind through a hundred and twenty simulation steps for every second of it.
+/// `--fps` is floored at 1, so a second is the longest step anything in the
+/// tree asks for. Past that it is not a frame, and the fixed-step loop below
+/// would grind through a hundred and twenty simulation steps for every second
+/// of it.
 const MAX_STEP_DT: f32 = 1.0;
 /// Stars per subpixel when the count is chosen automatically.
 const AUTO_DENSITY: f32 = 0.05;
@@ -495,7 +496,7 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                     }
                 }
                 // Only repaint if the size really changed: terminals emit
-                // resize events that settle on the size we already have, and
+                // resize events that settle on the size already in use, and
                 // clearing on those makes the field blink for no reason.
                 Event::Resize(cols, rows) => {
                     let changed = flight.resize(args, cols as usize, rows as usize);
@@ -567,8 +568,8 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
     eprintln!(
         "wrote {} ({}x{} px) at velocity {:.1} c",
         path.display(),
-        w * args.scale.max(1),
-        h * args.scale.max(1),
+        w * args.scale,
+        h * args.scale,
         flight.ship.velocity_c()
     );
     Ok(())
@@ -787,8 +788,9 @@ mod tests {
                         "{key} moved the stick the wrong way: {}",
                         rates[axis]
                     );
-                    // One key, one axis: the stick must not cross-couple, and
-                    // W and S must no longer touch the throttle they used to be.
+                    // One key, one axis: the stick must not cross-couple,
+                    // and W and S must no longer touch the throttle they
+                    // used to be.
                     for other in (0..3).filter(|o| *o != axis) {
                         assert_eq!(rates[other], 0.0, "{key} also moved axis {other}");
                     }

@@ -8,17 +8,27 @@ repository = "https://github.com/Shooooooooo/warp-rs"
 readme = "README.md"
 keywords = ["terminal", "starfield", "screensaver", "tui", "warp"]
 categories = ["command-line-utilities", "visualization"]
-# The floor the dependency tree imposes, and not a number we are free to lower:
-# on 1.84 a transitive manifest will not even parse. The `msrv` CI job reads
-# this field and `cargo check`s the crate and its locked dependencies against
-# exactly it, so this is a tested guarantee rather than a claim about them, and
-# moving the floor means editing it here on purpose.
+# The floor the dependency tree imposes, and not a number this crate is free to
+# lower: on 1.84 a transitive manifest will not even parse. The `msrv` CI job
+# reads this field and `cargo check`s the crate and its locked dependencies
+# against exactly it, so this is a tested guarantee rather than a claim about
+# them, and moving the floor means editing it here on purpose.
 rust-version = "1.85"
-# Screenshots and CI config are for the repository, not for the published crate.
-# The README links its images by absolute URL because of this line: docs.rs
-# renders that file out of the package, where a relative `docs/` path points at
-# nothing.
-exclude = ["docs/", ".github/"]
+# Screenshots, CI config and the contributor notes are for the repository, not
+# for the published crate. The README links its images by absolute URL because
+# of this line: docs.rs renders that file out of the package, where a relative
+# `docs/` path points at nothing. `CLAUDE.md` is here on the same principle:
+# thirty kilobytes of notes addressed to whoever is editing the tree, which is
+# nobody who has the crate as a dependency.
+exclude = ["docs/", ".github/", "CLAUDE.md"]
+
+# docs.rs builds with default features, and `snapshot` is not one of them — so
+# without this the `snapshot` module is simply absent from the published
+# documentation, while `README.md` on the same page goes on describing how to
+# use it. The feature is the only thing gated, so there is nothing to be gained
+# by naming it rather than asking for all of them.
+[package.metadata.docs.rs]
+all-features = true
 
 [[bin]]
 name = "warp"

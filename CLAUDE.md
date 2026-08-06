@@ -29,10 +29,11 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 200 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 201 unit — adds the snapshot-gated one
+cargo test                              # 203 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 204 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo package --locked                  # CI runs this too; `exclude` is by hand
 ```
 
 Clippy warnings are **errors** in CI. So is misformatting. Run both before
@@ -170,9 +171,15 @@ private; new state that another module needs comes with an accessor.
 
 `advance` accumulates wall-clock `dt` and steps the simulation at a **fixed
 `SIM_STEP` of 1/120 s**, so the flight model behaves the same whether the
-terminal keeps up or not. A single frame's `dt` is clamped to `MAX_FRAME_DT`
-(0.25 s) so a stalled process cannot fast-forward the universe. Only the sky
-for the current `ViewMode` is stepped.
+terminal keeps up or not. Only the sky for the current `ViewMode` is stepped.
+
+There are **two** clamps on `dt` and they are not the same one. `advance`
+holds its own argument to `MAX_STEP_DT` (1.0 s) and turns a non-finite step
+into zero — it is `pub`, so that guard sits with the loop it protects rather
+than at any one caller. The interactive loop separately holds a measured frame
+to `MAX_FRAME_DT` (0.25 s), which is tighter because a frame on a real
+terminal is never a quarter of a second, where `advance` has to leave headroom
+for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
 
 `draw` runs, per view:
 
@@ -393,7 +400,11 @@ of **glyph** is the only thing separating instrument from sky. Which is why the
 ASCII face's odder picks — `|` for a throttle bar, `[` and `]` for the reticle
 — are chosen against `term::ASCII_RAMP` as much as against the alphabet: a mark
 drawn in a character the starfield also draws reads as a bright star. `#`, `*`
-and `+` are all in the ramp, and there is a test saying so. Second, the face's
+and `+` are all in the ramp — which is why none of them is a bar or a reticle,
+and `the_ascii_shapes_stay_clear_of_the_brightness_ramp` is what holds the
+face's marks out of it. Note which way round that test runs: it pins the
+*shapes*, not the ramp, and the words are deliberately let alone — `NAV` beside
+a star is legible, a bar of `#` against `#` is not. Second, the face's
 *glyph* substitutes are one column wide so the panels lay out identically and
 only the ink differs — the hint strings are the exception, since `UP/DN` is
 genuinely wider than `↑↓`, so that row is right-aligned on a character count
@@ -458,11 +469,14 @@ sentences too, and say what should have been true.
 `f32` throughout the render and flight paths; `f64` only where accumulated time
 demands it (see above). Errors are `io::Result` and propagate with `?`.
 
-No `unwrap` outside tests — the one exception in the tree is the infallible
-`min_by_key(..).unwrap()` over a const palette in `quantize_256`
-(`src/term.rs:580`). Buffers a frame needs are allocated once and reused —
-`Renderer::pixels`, `Screen::scratch`, the exterior field's two arc scratches —
-and nothing allocates per star. The hull path is the exception there:
+No `unwrap` outside tests, and at present there is not one anywhere in the
+tree. The last was an infallible `min_by_key(..)` over the six levels of the
+colour cube in `quantize_256`, and it went when that scan became the
+`NEAREST_CUBE` lookup table.
+
+Buffers a frame needs are allocated once and reused — `Renderer::pixels`,
+`Screen::scratch`, the exterior field's two arc scratches — and nothing
+allocates per star. The hull path is the exception there:
 `models::plates` builds its vertex, screen and plate vectors fresh each
 side-view frame, which is only cheap because a hull is a few dozen faces.
 
@@ -564,7 +578,10 @@ hot loop — `draw_streak`, `resolve_into`, `Screen::flush`, `ExteriorField::dra
   `--all-features`. The matrix is the point: the renderer's whole job is to
   behave the same everywhere.
 - **lint** — `cargo fmt --all --check` first (it needs no build), then clippy
-  with `-D warnings`.
+  with `-D warnings`, then `cargo package`. That last one is there because
+  `exclude` in `Cargo.toml` is hand-maintained and its failure mode is quiet: a
+  crate that builds from the repository and not from the tarball people
+  install. Touching `exclude` means watching that step.
 - **msrv** — reads `rust-version` from `Cargo.toml` (currently **1.85**) and
   `cargo check`s against it. Bumping the floor means editing that field.
 - **headless** — same seed twice gives the same bytes, different seeds give

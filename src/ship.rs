@@ -172,7 +172,7 @@ impl Ship {
             DECEL_K
         };
         self.speed += (target - self.speed) * (1.0 - (-k * dt).exp());
-        // The hard dropout curve only applies until we've rejoined sublight.
+        // The hard dropout curve only applies until the ship is sublight again.
         if self.dropping_out && self.speed <= CRUISE_MAX * 1.02 {
             self.dropping_out = false;
         }

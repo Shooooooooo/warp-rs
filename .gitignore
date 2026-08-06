@@ -1,6 +1,12 @@
 /target
 # Snapshots land in the working directory; the ones in docs/ are tracked.
 /*.png
-# Frames dumped when checking against tests/golden/frames.sha256.
+# Frames dumped when checking against tests/golden/frames.sha256. All four of
+# them: the recipe in that file writes one per pinned flight, and the two that
+# were missing here arrived with the flights that widened the reference — so
+# regenerating it left `warp.txt` and `side.txt` sitting untracked, waiting to
+# be swept into somebody's next `git add .`.
 /truecolor.txt
 /ascii.txt
+/warp.txt
+/side.txt
