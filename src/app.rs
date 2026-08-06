@@ -15,8 +15,10 @@ use crate::ship::Ship;
 use crate::snapshot;
 use crate::starfield::StarField;
 use crate::term::RawGuard;
-use crate::view::ViewMode;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crate::view::{self, ViewMode};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use crossterm::{terminal, QueueableCommand};
 use std::io::{self, BufWriter, Write};
 use std::time::{Duration, Instant};
@@ -73,6 +75,15 @@ pub struct Flight {
     view: ViewMode,
     model: usize,
     menu: Option<Menu>,
+    /// How far the outside camera has been pushed in or out, and where it is
+    /// being asked to go. Kept apart so a wheel — which arrives as a burst of
+    /// notches rather than as one — is eased into rather than jumped to.
+    ///
+    /// Both stay `f32` where `time` below is `f64`: these are bounded at both
+    /// ends and are not accumulators, so the drift that argument is about
+    /// cannot reach them.
+    zoom: f32,
+    zoom_target: f32,
     /// Kept so a field built later gets the sky the seed asked for.
     seed: u64,
     /// Wall time since launch, in seconds. `f64` because it only ever grows and
@@ -106,6 +117,8 @@ impl Flight {
             view: ViewMode::Cockpit,
             model: args.ship,
             menu: None,
+            zoom: view::ZOOM_DEFAULT,
+            zoom_target: view::ZOOM_DEFAULT,
             seed,
             time: 0.0,
             accumulator: 0.0,
@@ -123,8 +136,46 @@ impl Flight {
 
     /// The next camera round, building the sky it needs if this is the first
     /// time it has been asked for.
+    ///
+    /// The zoom is left alone. It belongs to the outside camera, and going in
+    /// to look at something and coming back out to find the shot re-framed
+    /// would be its own small annoyance; `R` is the way to put it back.
     pub fn cycle_view(&mut self, args: &Args) {
         self.set_view(self.view.next(), args);
+    }
+
+    /// How far the outside camera has been pushed in or out.
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    /// Push it a notch: positive is closer and bigger, negative is further off.
+    ///
+    /// Geometric, so a notch is the same size of change wherever it is taken
+    /// from — an additive step big enough to be worth pressing out at the far
+    /// end would shove the near view straight through its stop. Multiplied in
+    /// and divided out by the one constant rather than raised to `dir`, so a
+    /// press and its opposite land back where they started instead of a `powf`
+    /// away from it.
+    ///
+    /// It is the *target* that is held to the range, not the eased value. Clamp
+    /// the eased one and the target winds up somewhere past the end, and the
+    /// first notch back does nothing at all.
+    pub fn nudge_zoom(&mut self, dir: f32) {
+        let step = if dir >= 0.0 {
+            view::ZOOM_STEP
+        } else {
+            1.0 / view::ZOOM_STEP
+        };
+        self.zoom_target = (self.zoom_target * step).clamp(view::ZOOM_MIN, view::ZOOM_MAX);
+    }
+
+    /// Back to the framing the flight opened on. Snapped rather than eased,
+    /// because `R` is the key for when the view has got away from you and
+    /// watching it saunter back is not what is wanted.
+    pub fn reset_zoom(&mut self) {
+        self.zoom = view::ZOOM_DEFAULT;
+        self.zoom_target = view::ZOOM_DEFAULT;
     }
 
     fn set_view(&mut self, view: ViewMode, args: &Args) {
@@ -202,6 +253,18 @@ impl Flight {
         self.accumulator += dt;
         while self.accumulator >= SIM_STEP {
             self.ship.update(SIM_STEP);
+            // The camera catching up with the zoom it was asked for, in the
+            // same frame-rate-independent form everything else here eases in.
+            // Stepped whichever view is flying: it is one multiply, and a zoom
+            // that only settled while it was being looked at would arrive
+            // mid-move on the frame the camera came back.
+            //
+            // When there is nothing to catch up with — every headless and
+            // snapshot flight, which take no input at all — the difference is
+            // exactly zero and so is the whole term, so this cannot move a
+            // reference frame by an ulp.
+            self.zoom +=
+                (self.zoom_target - self.zoom) * (1.0 - (-view::ZOOM_EASE * SIM_STEP).exp());
             match self.view {
                 ViewMode::Cockpit => {
                     let cam = self.renderer.camera(&self.ship, self.time);
@@ -244,6 +307,7 @@ impl Flight {
                     ship: &self.ship,
                     model,
                     time: self.time,
+                    zoom: self.zoom,
                 };
                 self.renderer.render_exterior(scene, &cam, &readout);
             }
@@ -365,6 +429,10 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
     // the exception and stays on: against a level starfield it is the best
     // thing in the view.
     let steers = flight.view() == ViewMode::Cockpit;
+    // And the mirror of it. There is no ship to be bigger or smaller from
+    // inside one, so the zoom is connected exactly where it has something to
+    // show, on the same reasoning and in the same shape.
+    let zooms = flight.view() == ViewMode::Side;
 
     match key.code {
         // `q` is on the stick, so it cannot also be the way out: nothing a
@@ -394,10 +462,17 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char('r' | 'R') => {
             flight.ship.reset();
             flight.ship.throttle = args.throttle;
+            flight.reset_zoom();
             *paused = false;
         }
         KeyCode::Char('+' | '=') => flight.resize_pool(1.25, 64),
         KeyCode::Char('-' | '_') => flight.resize_pool(0.8, 64),
+
+        // The outside camera, in and out. Shifted as well as plain for the
+        // same reason `+` is paired with `=` and `-` with `_`: which of the
+        // two arrives depends on the keyboard, not on what was meant.
+        KeyCode::Char('[' | '{') if zooms => flight.nudge_zoom(-1.0),
+        KeyCode::Char(']' | '}') if zooms => flight.nudge_zoom(1.0),
 
         // The camera, and the hangar.
         KeyCode::Char('c' | 'C') => flight.cycle_view(args),
@@ -421,6 +496,31 @@ fn menu_key(key: KeyEvent, flight: &mut Flight) -> Action {
     Action::Continue
 }
 
+/// The wheel, which is the zoom and nothing else.
+///
+/// No [`Action`], because there is nothing here that could end a flight — a
+/// pointer wandering across the window must never be the thing that quits.
+/// Buttons and motion are ignored outright: nothing in this program is aimed
+/// at, so the only mouse event it has a use for is the one that says nearer or
+/// further.
+///
+/// While the picker is up the wheel moves the highlight, matching the arrow
+/// keys the dialogue already owns. The picker forces the outside view, so the
+/// alternative would be scrolling the list and zooming the ship behind it at
+/// the same time.
+fn handle_mouse(mouse: MouseEvent, flight: &mut Flight) {
+    let scroll = match mouse.kind {
+        MouseEventKind::ScrollUp => 1.0,
+        MouseEventKind::ScrollDown => -1.0,
+        _ => return,
+    };
+    if flight.menu_open() {
+        flight.menu_move(-scroll as isize);
+    } else if flight.view() == ViewMode::Side {
+        flight.nudge_zoom(scroll);
+    }
+}
+
 fn run_interactive(args: &Args) -> io::Result<()> {
     // Not `terminal::size()` directly: tmux runs a `lock-command` against a
     // tty whose window size is not set yet, so it can report zero.
@@ -433,7 +533,10 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     // screen with an invisible cursor and no shell prompt.
     let mut flight = Flight::new(args, cols as usize, rows as usize);
 
-    let _guard = RawGuard::new()?;
+    // The wheel is a control, and a screensaver has none — it dies on contact
+    // with anything, so there is nothing for the mouse to do there and no
+    // reason to take it off the terminal for the duration.
+    let _guard = RawGuard::new(!args.screensaver)?;
     let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
     out.queue(terminal::Clear(terminal::ClearType::All))?;
 
@@ -496,6 +599,9 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                         break 'flying;
                     }
                 }
+                // No screensaver arm above this one: capture is not asked for
+                // in that mode, so nothing here can arrive.
+                Event::Mouse(mouse) => handle_mouse(mouse, &mut flight),
                 // Only repaint if the size really changed: terminals emit
                 // resize events that settle on the size already in use, and
                 // clearing on those makes the field blink for no reason.
@@ -586,6 +692,26 @@ mod tests {
     /// existed, which is nine places to miss if the modifier ever matters.
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A notch of the wheel. The column and row are not read by anything here
+    /// — nothing in this program is aimed at — so they are a fixed nowhere.
+    fn wheel(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// A flight already outside, which is where the zoom lives.
+    fn outside(args: &Args) -> Flight {
+        let mut flight = Flight::new(args, 80, 24);
+        let mut paused = false;
+        handle_key(press(KeyCode::Char('c')), &mut flight, args, &mut paused);
+        assert_eq!(flight.view(), ViewMode::Side);
+        flight
     }
 
     #[test]
@@ -1433,6 +1559,251 @@ mod tests {
             flight.field.len(),
             777,
             "an explicit count is not a suggestion"
+        );
+    }
+
+    #[test]
+    fn the_brackets_and_the_wheel_ask_for_the_same_zoom() {
+        // Two ways into one control. They are wired separately — one through
+        // `handle_key`, one through `handle_mouse` — so nothing but a test says
+        // they agree, and a wheel that zoomed the opposite way to the key it
+        // shares a job with would be a very tiresome bug to live with.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        for (code, kind) in [
+            (KeyCode::Char(']'), MouseEventKind::ScrollUp),
+            (KeyCode::Char('['), MouseEventKind::ScrollDown),
+        ] {
+            let mut by_key = outside(&args);
+            let mut by_wheel = outside(&args);
+            let mut paused = false;
+            for _ in 0..5 {
+                handle_key(press(code), &mut by_key, &args, &mut paused);
+                handle_mouse(wheel(kind), &mut by_wheel);
+            }
+            assert_eq!(
+                by_key.zoom_target, by_wheel.zoom_target,
+                "{code:?} and {kind:?} disagree"
+            );
+        }
+
+        // And they run the way round they read: `]` and a wheel pushed away
+        // bring the ship closer.
+        let mut flight = outside(&args);
+        let mut paused = false;
+        handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        assert!(flight.zoom_target > view::ZOOM_DEFAULT, "] should zoom in");
+        // The shifted forms are the same key on a keyboard that sends them.
+        let mut shifted = outside(&args);
+        handle_key(press(KeyCode::Char('}')), &mut shifted, &args, &mut paused);
+        assert_eq!(shifted.zoom_target, flight.zoom_target);
+    }
+
+    #[test]
+    fn the_zoom_clamps_rather_than_running_away() {
+        // The stop has to be on the *target*, or the target winds up somewhere
+        // out past the end while the camera sits at the limit, and the first
+        // notch back does nothing at all — a control that has to be pressed
+        // fifteen times before it answers reads as broken.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = outside(&args);
+        let mut paused = false;
+
+        for _ in 0..100 {
+            handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        }
+        assert_eq!(flight.zoom_target, view::ZOOM_MAX);
+        handle_key(press(KeyCode::Char('[')), &mut flight, &args, &mut paused);
+        assert!(
+            flight.zoom_target < view::ZOOM_MAX,
+            "one notch back off the stop did nothing"
+        );
+
+        for _ in 0..100 {
+            handle_key(press(KeyCode::Char('[')), &mut flight, &args, &mut paused);
+        }
+        assert_eq!(flight.zoom_target, view::ZOOM_MIN);
+        handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        assert!(flight.zoom_target > view::ZOOM_MIN);
+    }
+
+    #[test]
+    fn a_notch_and_its_opposite_land_back_where_they_started() {
+        // Geometric steps, so this is a multiply and a divide rather than a
+        // pair of `powf`s that would each land an ulp or two off.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = outside(&args);
+        let mut paused = false;
+        for _ in 0..6 {
+            handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        }
+        for _ in 0..6 {
+            handle_key(press(KeyCode::Char('[')), &mut flight, &args, &mut paused);
+        }
+        assert!(
+            (flight.zoom_target - view::ZOOM_DEFAULT).abs() < 1e-5,
+            "six in and six out drifted to {}",
+            flight.zoom_target
+        );
+    }
+
+    #[test]
+    fn the_zoom_is_not_connected_in_the_cockpit() {
+        // The mirror of `the_stick_loses_pitch_and_yaw_outside_the_cockpit`:
+        // from the pilot's seat there is no ship to be looking at, so the keys
+        // are plainly not wired rather than quietly swallowing the press.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+        assert_eq!(flight.view(), ViewMode::Cockpit);
+
+        for code in [KeyCode::Char('['), KeyCode::Char(']')] {
+            let action = handle_key(press(code), &mut flight, &args, &mut paused);
+            assert!(matches!(action, Action::Continue), "{code:?} ended it");
+        }
+        handle_mouse(wheel(MouseEventKind::ScrollUp), &mut flight);
+        assert_eq!(flight.zoom_target, view::ZOOM_DEFAULT, "the cockpit zoomed");
+
+        // Outside they work, and coming back in leaves the zoom where it was
+        // rather than resetting it: it is state, not a mode.
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        let out_there = flight.zoom_target;
+        assert!(out_there > view::ZOOM_DEFAULT);
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        assert_eq!(flight.view(), ViewMode::Cockpit);
+        handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        assert_eq!(flight.zoom_target, out_there, "the cockpit moved it");
+    }
+
+    #[test]
+    fn the_zoom_settles_the_same_way_however_the_frames_fall() {
+        // The ease is `1 - exp(-k·dt)` rather than `k·dt` for the same reason
+        // every other ease in the tree is: the second one is the classic
+        // simplification and it silently makes the answer depend on the step
+        // size, so a terminal keeping up would zoom at a different rate to one
+        // that is not.
+        //
+        // A fifth of a second, delivered as twelve frames and as three. Both
+        // come to the same twenty-four simulation steps, so the two answers are
+        // not merely close but identical — which is what stepping the ease
+        // inside the fixed-step loop buys, and what moving it outside to run on
+        // the frame's own `dt` would throw away.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let settled = |dt: f32, steps: usize| {
+            let mut flight = outside(&args);
+            let mut paused = false;
+            for _ in 0..4 {
+                handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+            }
+            for _ in 0..steps {
+                flight.advance(dt);
+            }
+            flight.zoom()
+        };
+        let fine = settled(1.0 / 60.0, 12);
+        let coarse = settled(1.0 / 15.0, 3);
+        assert!(
+            (fine - coarse).abs() < 1e-6,
+            "a fifth of a second came out {fine} in small steps and {coarse} in large"
+        );
+        assert!(fine > view::ZOOM_DEFAULT, "it never left: {fine}");
+        // And it does arrive, rather than easing forever toward it.
+        let arrived = settled(1.0 / 60.0, 300);
+        let mut asked = outside(&args);
+        let mut paused = false;
+        for _ in 0..4 {
+            handle_key(press(KeyCode::Char(']')), &mut asked, &args, &mut paused);
+        }
+        assert!((arrived - asked.zoom_target).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_zoom_moves_the_ship_and_leaves_the_sky_alone() {
+        // Why this is a dolly and not a change of lens, stated as a property.
+        // The star band is laid out against the camera's focal length, so a
+        // zoom that touched the focal length would sweep the whole sky about
+        // and need the field re-folded every notch. Flown at sublight, where
+        // the lens is off and an exactly identical sky is the whole claim:
+        // every subpixel that differs between two zooms has to be one the ship
+        // and its bubble could have reached.
+        let args = args_for(&["--seed", "5", "--stars", "1200", "--size", "80x24"]);
+        let frame = |zoom: f32| {
+            let mut flight = outside(&args);
+            flight.zoom = zoom;
+            flight.zoom_target = zoom;
+            for _ in 0..30 {
+                flight.advance(1.0 / 60.0);
+            }
+            flight.draw(60.0, false, false);
+            flight.renderer.pixels().to_vec()
+        };
+        let (near, far) = (frame(view::ZOOM_MAX), frame(view::ZOOM_MIN));
+        let (w, h) = (80usize, 48usize);
+        assert_eq!(near.len(), w * h);
+
+        // Generous: the hull at the widest zoom, and the bubble that would
+        // hold it. Nothing outside that has any business having changed.
+        let reach = view::ship_half_on_screen(h as f32, view::ZOOM_MAX) * 3.0;
+        let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+        for y in 0..h {
+            for x in 0..w {
+                if near[y * w + x] == far[y * w + x] {
+                    continue;
+                }
+                let r = (x as f32 - cx).hypot(y as f32 - cy);
+                assert!(
+                    r <= reach,
+                    "the zoom moved a star {r} subpixels out, well clear of the ship"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resetting_puts_the_camera_back_where_it_started() {
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = outside(&args);
+        let mut paused = false;
+        for _ in 0..5 {
+            handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        }
+        flight.advance(1.0);
+        assert!(flight.zoom() > view::ZOOM_DEFAULT);
+
+        handle_key(press(KeyCode::Char('r')), &mut flight, &args, &mut paused);
+        assert_eq!(flight.zoom(), view::ZOOM_DEFAULT, "R left it zoomed");
+        assert_eq!(
+            flight.zoom_target,
+            view::ZOOM_DEFAULT,
+            "R left it still gliding back"
+        );
+    }
+
+    #[test]
+    fn the_picker_takes_the_wheel_as_well_as_the_keyboard() {
+        // It is modal, and the wheel is no exception: while a list is up,
+        // scrolling is how a list is read. The brackets go nowhere at all,
+        // like every other flight key.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+        handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
+        assert!(flight.menu_open());
+
+        let first = flight.drawn_model().name;
+        handle_mouse(wheel(MouseEventKind::ScrollDown), &mut flight);
+        assert_ne!(flight.drawn_model().name, first, "the wheel moved nothing");
+        assert_eq!(
+            flight.zoom_target,
+            view::ZOOM_DEFAULT,
+            "the wheel zoomed the ship behind the dialogue"
+        );
+
+        handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
+        assert_eq!(
+            flight.zoom_target,
+            view::ZOOM_DEFAULT,
+            "the brackets got out"
         );
     }
 

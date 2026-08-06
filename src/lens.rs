@@ -42,14 +42,23 @@ const REACH: f32 = 10.0;
 /// so this only ever swallows counter-images.
 const SHADOW_FRAC: f32 = 0.72;
 
-/// Fraction of the canvas height the Einstein radius reaches at full warp.
+/// The Einstein radius at full warp, as a multiple of the ship's own half-length
+/// on screen.
 ///
-/// Sized against the hull rather than by eye. The ship is 0.24 of the canvas
-/// height from nose to centre, so this holds it with a good deal of room to
-/// spare — deliberately more than the geometry demands. A bubble that merely
-/// clears the ship reads as a collar around it; the sky wants somewhere to
-/// bend, and the swept-clear disc is most of what makes the lensing legible.
-const RADIUS_AT_WARP: f32 = 0.48;
+/// Sized against the hull rather than by eye, and now *said* that way. It used
+/// to be a fraction of the canvas height — 0.48, which was twice the ship's
+/// 0.24 by hand and by hand only, with a comment to hold the two together. That
+/// was a fair way to write a constant while the framing was itself constant. It
+/// stopped being one the moment the camera could be pushed in and out: a bubble
+/// pinned to the canvas would have sat there at a fixed size while the hull
+/// inside it grew and shrank, which is exactly the collar this number exists to
+/// avoid.
+///
+/// Two ship-lengths from nose to ring is deliberately more than the geometry
+/// demands. A bubble that merely clears the ship reads as a collar around it;
+/// the sky wants somewhere to bend, and the swept-clear disc is most of what
+/// makes the lensing legible.
+const RADIUS_IN_SHIPS: f32 = 2.0;
 
 /// A thin point-mass lens sitting on the canvas.
 #[derive(Debug, Clone, Copy)]
@@ -96,14 +105,20 @@ impl Lens {
     };
 
     /// The lens the drive is currently making, given the 0..=1 warp ramp and
-    /// the canvas height. Quadratic in the ramp, so it opens up as the drive
-    /// spools rather than snapping on the instant the light barrier is crossed,
-    /// and it is exactly zero at sublight.
-    pub fn for_warp(center: (f32, f32), warp: f32, height: f32) -> Self {
+    /// the ship's half-length on screen in subpixels. Quadratic in the ramp, so
+    /// it opens up as the drive spools rather than snapping on the instant the
+    /// light barrier is crossed, and it is exactly zero at sublight.
+    ///
+    /// The bubble is measured in ships rather than in frames because it belongs
+    /// to the ship: it is the same lump of curved spacetime whether the camera
+    /// is looking from close to or far off, so it has to come and go on screen
+    /// exactly as the hull does. [`crate::view::ship_half_on_screen`] is where
+    /// that half-length comes from.
+    pub fn for_warp(center: (f32, f32), warp: f32, ship_half: f32) -> Self {
         let warp = warp.clamp(0.0, 1.0);
         Self {
             center,
-            radius: height.max(0.0) * RADIUS_AT_WARP * warp * warp,
+            radius: ship_half.max(0.0) * RADIUS_IN_SHIPS * warp * warp,
         }
     }
 
@@ -453,17 +468,40 @@ mod tests {
 
     #[test]
     fn the_ramp_opens_with_the_drive_and_is_shut_at_sublight() {
+        // A ship nine subpixels from nose to centre, which is what a hull comes
+        // out at on a thirty-six-row terminal at the framing a flight opens on.
         let c = (60.0, 30.0);
+        let ship = 9.0;
         assert!(
-            !Lens::for_warp(c, 0.0, 72.0).is_on(),
+            !Lens::for_warp(c, 0.0, ship).is_on(),
             "sublight must not bend"
         );
-        let half = Lens::for_warp(c, 0.5, 72.0).radius;
-        let full = Lens::for_warp(c, 1.0, 72.0).radius;
+        let half = Lens::for_warp(c, 0.5, ship).radius;
+        let full = Lens::for_warp(c, 1.0, ship).radius;
         assert!(half > 0.0 && full > half * 3.0, "{half} then {full}");
         // Out of range in either direction is clamped, not extrapolated.
-        assert_eq!(Lens::for_warp(c, -3.0, 72.0).radius, 0.0);
-        assert_eq!(Lens::for_warp(c, 9.0, 72.0).radius, full);
+        assert_eq!(Lens::for_warp(c, -3.0, ship).radius, 0.0);
+        assert_eq!(Lens::for_warp(c, 9.0, ship).radius, full);
+    }
+
+    #[test]
+    fn the_bubble_grows_and_shrinks_with_the_ship_inside_it() {
+        // The whole of what makes the bubble a bubble rather than a collar
+        // painted on the glass: it is measured in ships, so twice the ship is
+        // twice the bubble, and everything derived from the radius follows
+        // without being asked to. Those three are asserted rather than assumed
+        // exactly because deriving them is what makes them easy to forget.
+        let c = (60.0, 30.0);
+        let small = Lens::for_warp(c, 1.0, 9.0);
+        let large = Lens::for_warp(c, 1.0, 18.0);
+        assert_eq!(large.radius, small.radius * 2.0, "the ring did not follow");
+        assert_eq!(large.shadow(), small.shadow() * 2.0, "the shadow did not");
+        // And the reach, which is what decides whether a streak is bent at all.
+        let far = (c.0 + small.radius * 9.5, c.1);
+        assert!(small.bends(far, far), "the reach must scale with the ring");
+        let further = (c.0 + small.radius * 19.0, c.1);
+        assert!(!small.bends(further, further));
+        assert!(large.bends(further, further), "the larger reach did not");
     }
 
     #[test]

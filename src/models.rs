@@ -29,9 +29,24 @@
 
 use crate::canvas::Canvas;
 use crate::ship::{Ship, MAX_PITCH_RATE, MAX_YAW_RATE};
-use crate::starfield::Camera;
-use crate::view::SHIP_DISTANCE;
+use crate::starfield::{self, Camera};
+use crate::view::{HULL_REACH, MIN_SHIP_DISTANCE};
 use std::sync::OnceLock;
+
+/// The zoom may push the camera in, and pushing it in far enough would put the
+/// near corner of a rolled hull through the plane the projection gives up at —
+/// where `Camera::project` answers `None` and [`plates`] drops the face. The
+/// hull would come apart a plate at a time rather than fail outright, which is
+/// the sort of thing that goes unnoticed for a while, so the closest the zoom
+/// can get is a compile-time fact.
+///
+/// Its opposite number — the ship not reaching *out* into the star band — is in
+/// [`crate::exterior`], beside the near wall it is about.
+const _: () = assert!(
+    MIN_SHIP_DISTANCE - HULL_REACH > starfield::Z_NEAR,
+    "the zoom can push a hull through the near plane, and a plate that cannot \
+     be projected is simply not drawn"
+);
 
 /// How much nearer plates outshine further ones.
 ///
@@ -286,11 +301,12 @@ pub fn by_name(name: &str) -> Option<usize> {
 /// beam the two nacelles line up into one, which is the silhouette everybody
 /// already has in mind, and the reason this hull is the one flown by default.
 ///
-/// Everything vertical is drawn thicker than scale. The whole ship is a little
-/// under half the canvas height long — [`SHIP_SCREEN_FRAC`] of it either side
-/// of centre — so on a thirty-row terminal, sixty subpixels tall, one unit
-/// here is about fourteen subpixels, and an honest saucer would come out a
-/// single subpixel thick: a line, not a shape.
+/// Everything vertical is drawn thicker than scale. The shot opens with the
+/// whole ship a quarter of the canvas height long — [`SHIP_SCREEN_FRAC`] of it
+/// either side of centre — so on a thirty-row terminal, sixty subpixels tall,
+/// one unit here is about seven subpixels, and an honest saucer would not come
+/// out even a subpixel thick: nothing at all, rather than a shape. Zooming in
+/// buys that back, but the hull has to read at the framing it opens on.
 ///
 /// [`SHIP_SCREEN_FRAC`]: crate::view::SHIP_SCREEN_FRAC
 fn enterprise() -> ShipModel {
@@ -521,14 +537,20 @@ fn trident() -> ShipModel {
     )
 }
 
-/// Turn a hull-space point into the side camera's space.
+/// Turn a hull-space point into the side camera's space, `distance` away.
 ///
 /// `(x, y, z) → (z, y, −x)` is a proper quarter turn about the ship's own down
 /// axis — determinant one, so face winding survives it — putting the nose to
 /// screen right and the starboard side toward the camera. The mirror image,
 /// `(z, y, x)`, would look almost the same and invert every facing test.
-fn to_camera(v: [f32; 3]) -> [f32; 3] {
-    [v[2], v[1], SHIP_DISTANCE - v[0]]
+///
+/// The standoff is an argument rather than a constant because the zoom is a
+/// dolly: nothing else about this view moves when the camera does, so this one
+/// number is the whole of it. It arrives as a distance and not as a zoom on
+/// purpose — a hull has no opinion about zooms, only about how far off the eye
+/// is — and [`crate::view::ship_distance`] is what turns one into the other.
+fn to_camera(v: [f32; 3], distance: f32) -> [f32; 3] {
+    [v[2], v[1], distance - v[0]]
 }
 
 /// The attitude the hull is holding, as roll, pitch and yaw in radians.
@@ -557,8 +579,8 @@ fn attitude(ship: &Ship) -> (f32, f32, f32) {
 }
 
 /// Place a hull-space point: roll about the nose, then pitch, then yaw, then
-/// out into the camera's space.
-fn place(v: [f32; 3], (roll, pitch, yaw): (f32, f32, f32)) -> [f32; 3] {
+/// out into the camera's space, `distance` away.
+fn place(v: [f32; 3], (roll, pitch, yaw): (f32, f32, f32), distance: f32) -> [f32; 3] {
     let (sr, cr) = roll.sin_cos();
     let (sp, cp) = pitch.sin_cos();
     let (sy, cy) = yaw.sin_cos();
@@ -570,7 +592,7 @@ fn place(v: [f32; 3], (roll, pitch, yaw): (f32, f32, f32)) -> [f32; 3] {
     let (y, z) = (y * cp + v[2] * sp, -y * sp + v[2] * cp);
     // Positive yaw is nose to starboard: `+z` turns toward `+x`.
     let (x, z) = (x * cy + z * sy, -x * sy + z * cy);
-    to_camera([x, y, z])
+    to_camera([x, y, z], distance)
 }
 
 /// One plate of a hull, ready to draw: where it is on screen, how far off it
@@ -596,20 +618,27 @@ struct Plate {
 /// assemblies of half a dozen separate solids, and a nacelle passing in front
 /// of an engineering hull is two front-facing plates fighting over the same
 /// subpixels. Painting far to near settles it without a depth buffer.
-fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32)) -> Vec<Plate> {
-    let placed: Vec<[f32; 3]> = model.verts.iter().map(|v| place(*v, pose)).collect();
+fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32), distance: f32) -> Vec<Plate> {
+    let placed: Vec<[f32; 3]> = model
+        .verts
+        .iter()
+        .map(|v| place(*v, pose, distance))
+        .collect();
     let screen: Vec<Option<(f32, f32)>> = placed.iter().map(|v| cam.project(*v)).collect();
 
     let mut plates: Vec<Plate> = Vec::with_capacity(model.faces.len());
     for face in &model.faces {
         // A plate with a vertex behind the near plane cannot be measured, let
-        // alone drawn. Nothing should reach that — the whole hull sits well
-        // clear of it, at `SHIP_DISTANCE` less at most `HULL_REACH` against a
-        // near plane of `starfield::Z_NEAR` — but `project` answers with an
+        // alone drawn. Nothing should reach that — the whole hull sits clear of
+        // it at every zoom, at `MIN_SHIP_DISTANCE` less at most `HULL_REACH`
+        // against a near plane of `starfield::Z_NEAR`, which is the `const`
+        // assertion at the top of this module — but `project` answers with an
         // `Option`, and a rolled fin is exactly the thing that would find out.
         // Stated as the constants rather than as the gap between them, which
         // is what it was: that gap has moved every time `SHIP_SCREEN_FRAC`
-        // did, and the number written here had stopped following it.
+        // did, and the number written here had stopped following it. Now that
+        // the zoom moves it every frame, an assertion is the only form of it
+        // that can keep up.
         let Some(points) = face
             .iter()
             .map(|i| screen[*i as usize])
@@ -647,16 +676,19 @@ fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32)) -> Vec<Plate> 
 /// The plates are opaque: they cover the sky rather than adding to it, which is
 /// what makes the ship a ship and not a hologram of one. There is still no
 /// depth buffer and there still does not need to be one — the star band starts
-/// well beyond the hull, so nothing can come between it and the camera, and the
-/// hull sorts against itself.
-pub fn draw(canvas: &mut Canvas, cam: &Camera, ship: &Ship, model: &ShipModel) {
+/// well beyond the hull at every zoom, so nothing can come between it and the
+/// camera, and the hull sorts against itself.
+pub fn draw(canvas: &mut Canvas, cam: &Camera, ship: &Ship, model: &ShipModel, distance: f32) {
     let pose = attitude(ship);
     let bubble = ship.warp_intensity() * BUBBLE_LIGHT;
-    for plate in plates(model, cam, pose) {
+    for plate in plates(model, cam, pose, distance) {
         // Nearer plates read a shade brighter. It is a small effect on purpose:
         // the lighting says which way a plate faces, and this only says which
-        // of two plates facing the same way is the closer.
-        let near = (SHIP_DISTANCE / plate.depth).powf(DEPTH_SHADE);
+        // of two plates facing the same way is the closer. Measured against the
+        // standoff in force rather than a fixed one, so the ratio stays centred
+        // on the hull's own middle — and flattens as the camera pulls back,
+        // which is what a longer standoff really does to a subject.
+        let near = (distance / plate.depth).powf(DEPTH_SHADE);
         let paint = (plate.shade + bubble) * near;
         let mut lit = [0.0; 3];
         for (channel, base) in lit.iter_mut().zip(model.hull) {
@@ -665,7 +697,7 @@ pub fn draw(canvas: &mut Canvas, cam: &Camera, ship: &Ship, model: &ShipModel) {
         canvas.fill_convex(&plate.points, lit);
     }
 
-    draw_engines(canvas, cam, ship, model, pose);
+    draw_engines(canvas, cam, ship, model, pose, distance);
 }
 
 /// A face's outward normal, unit length, in the camera's space.
@@ -701,6 +733,7 @@ fn draw_engines(
     ship: &Ship,
     model: &ShipModel,
     pose: (f32, f32, f32),
+    distance: f32,
 ) {
     let warp = ship.warp_intensity();
     let lit = (ship.speed / crate::ship::CRUISE_MAX)
@@ -715,7 +748,7 @@ fn draw_engines(
     }
 
     for bell in &model.engines {
-        let at = place(bell.at, pose);
+        let at = place(bell.at, pose, distance);
         let Some(screen) = cam.project(at) else {
             continue;
         };
@@ -745,7 +778,12 @@ mod tests {
     use super::*;
     use crate::render::Renderer;
     use crate::term::ColorMode;
+    use crate::view::{ship_distance, ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
     use std::collections::HashMap;
+
+    /// The standoff at the framing a flight opens on — what these tests mean
+    /// when they say "the camera", unless they are about the zoom.
+    const STANDOFF: f32 = crate::view::SIDE_FOCAL / crate::view::SHIP_SCREEN_FRAC;
 
     fn cam(cols: usize, rows: usize, ship: &Ship) -> (Renderer, Camera) {
         let renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
@@ -860,7 +898,7 @@ mod tests {
         let (renderer, cam) = cam(cols, rows, ship);
         let (w, h) = renderer.canvas_dims();
         let mut canvas = Canvas::new(w, h);
-        draw(&mut canvas, &cam, ship, model);
+        draw(&mut canvas, &cam, ship, model, STANDOFF);
         let mut lit = 0;
         let mut total = 0.0;
         for y in 0..h {
@@ -880,6 +918,13 @@ mod tests {
     fn every_ship_shows_itself_at_every_attitude() {
         // The test a zero-thickness plate fails: rolled edge-on, a single quad
         // has no side facing anywhere and simply stops being drawn.
+        //
+        // Flown at twice the rows the subpixel counts here were chosen against,
+        // because the shot has since been pulled back to half the framing it
+        // opened on. Doubling the terminal puts the hull back at the size the
+        // number describes, which is the honest fix — a threshold quietly
+        // lowered to suit a smaller ship would go on passing for a ship that
+        // really had vanished.
         for model in models() {
             for step in 0..12 {
                 let mut ship = Ship::new();
@@ -890,12 +935,55 @@ mod tests {
                     -MAX_PITCH_RATE
                 };
                 ship.yaw_rate = if step % 3 == 0 { MAX_YAW_RATE } else { 0.0 };
-                let (lit, _) = footprint(model, &ship, 120, 36);
+                let (lit, _) = footprint(model, &ship, 120, 72);
                 assert!(
                     lit > 60,
                     "{} nearly vanished at step {step}: {lit} subpixels",
                     model.name
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn every_hull_stays_whole_across_the_whole_zoom_range() {
+        // A plate with one vertex behind the projection's near plane is not
+        // clipped, it is dropped — so a hull pushed too close comes apart a
+        // face at a time and goes on looking like a ship while it does. The
+        // `const` assertion at the top of the module says the geometry cannot
+        // reach that; this says it through the real projection, at attitudes
+        // that swing the corners of the box out toward the eye, and over every
+        // ship so a new one is covered by being added.
+        for model in models() {
+            for step in 0..8 {
+                let mut ship = Ship::new();
+                ship.roll = step as f32 / 8.0 * std::f32::consts::TAU;
+                ship.pitch_rate = MAX_PITCH_RATE;
+                ship.yaw_rate = MAX_YAW_RATE;
+                let pose = attitude(&ship);
+                let (_, cam) = cam(120, 36, &ship);
+
+                for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
+                    let distance = ship_distance(zoom);
+                    for v in &model.verts {
+                        let at = place(*v, pose, distance);
+                        assert!(
+                            cam.project(at).is_some(),
+                            "{} lost a vertex through the near plane at zoom {zoom}: {at:?}",
+                            model.name
+                        );
+                    }
+                    // And the far end: the whole hull stays inside the wall the
+                    // star band starts at, or a star could be drawn over it.
+                    for v in &model.verts {
+                        let at = place(*v, pose, distance);
+                        assert!(
+                            at[2] < crate::exterior::Z_NEAR,
+                            "{} reached into the star band at zoom {zoom}: {at:?}",
+                            model.name
+                        );
+                    }
+                }
             }
         }
     }
@@ -916,7 +1004,7 @@ mod tests {
         let (_, cam) = cam(120, 36, &ship);
 
         for model in models() {
-            let facing = plates(model, &cam, attitude(&ship));
+            let facing = plates(model, &cam, attitude(&ship), STANDOFF);
             assert!(
                 facing.len() < model.faces.len() * 3 / 4,
                 "{}: only {} of {} plates were culled",
@@ -977,7 +1065,7 @@ mod tests {
         ship.roll = 0.5;
         let (_, cam) = cam(120, 36, &ship);
         for model in models() {
-            let painted = plates(model, &cam, attitude(&ship));
+            let painted = plates(model, &cam, attitude(&ship), STANDOFF);
             for pair in painted.windows(2) {
                 assert!(
                     pair[0].depth >= pair[1].depth,
@@ -995,10 +1083,13 @@ mod tests {
         // What "opaque" means, stated in the one way that cannot be faked: the
         // canvas adds light everywhere else, so a subpixel that came out
         // *darker* than the sky it started as can only have been covered.
+        //
+        // Twice the rows the count below was chosen against, for the reason
+        // given at `every_ship_shows_itself_at_every_attitude`.
         let sky = 0.9f32;
         let mut ship = Ship::new();
         ship.throttle = 0.5;
-        let (renderer, cam) = cam(200, 56, &ship);
+        let (renderer, cam) = cam(200, 112, &ship);
         let (w, h) = renderer.canvas_dims();
 
         for model in models() {
@@ -1008,7 +1099,7 @@ mod tests {
                     canvas.splat(x as f32, y as f32, [1.0; 3], sky);
                 }
             }
-            draw(&mut canvas, &cam, &ship, model);
+            draw(&mut canvas, &cam, &ship, model, STANDOFF);
 
             let covered = (0..h)
                 .flat_map(|y| (0..w).map(move |x| (x, y)))
@@ -1026,15 +1117,18 @@ mod tests {
     fn the_ships_do_not_look_like_one_another() {
         // A hangar is only a feature if the ships in it read as different
         // ships. Compared as silhouettes on the canvas the camera actually
-        // uses.
+        // uses, at twice the rows for the reason given at
+        // `every_ship_shows_itself_at_every_attitude` — two ships compared at
+        // a size neither of them has any detail left at would agree, and the
+        // test would be measuring the resolution rather than the hulls.
         let ship = Ship::new();
-        let (renderer, cam) = cam(120, 36, &ship);
+        let (renderer, cam) = cam(120, 72, &ship);
         let (w, h) = renderer.canvas_dims();
         let masks: Vec<Vec<bool>> = models()
             .iter()
             .map(|model| {
                 let mut canvas = Canvas::new(w, h);
-                draw(&mut canvas, &cam, &ship, model);
+                draw(&mut canvas, &cam, &ship, model, STANDOFF);
                 (0..w * h)
                     .map(|i| canvas.light_at(i % w, i / w) > 0.02)
                     .collect()
@@ -1142,16 +1236,22 @@ mod tests {
         let ship = Ship::new();
         let (_, cam) = cam(120, 36, &ship);
         let level = attitude(&ship);
-        let nose = cam.project(place([0.0, 0.0, 1.0], level)).unwrap();
-        let tail = cam.project(place([0.0, 0.0, -1.0], level)).unwrap();
+        let nose = cam
+            .project(place([0.0, 0.0, 1.0], level, STANDOFF))
+            .unwrap();
+        let tail = cam
+            .project(place([0.0, 0.0, -1.0], level, STANDOFF))
+            .unwrap();
         assert!(nose.0 > tail.0, "the ship is flying backwards");
         assert!((nose.1 - tail.1).abs() < 0.5, "level flight is not level");
 
         let mut down = Ship::new();
         down.pitch_rate = MAX_PITCH_RATE; // positive is nose-down, per the flight model
         let pose = attitude(&down);
-        let nose = cam.project(place([0.0, 0.0, 1.0], pose)).unwrap();
-        let tail = cam.project(place([0.0, 0.0, -1.0], pose)).unwrap();
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose, STANDOFF)).unwrap();
+        let tail = cam
+            .project(place([0.0, 0.0, -1.0], pose, STANDOFF))
+            .unwrap();
         assert!(nose.1 > tail.1, "nose-down did not put the nose down");
 
         // And a roll to starboard swings the top of the fin toward the camera
@@ -1161,9 +1261,9 @@ mod tests {
         let mut rolled = Ship::new();
         rolled.roll = std::f32::consts::FRAC_PI_2;
         let pose = attitude(&rolled);
-        let top = place([0.0, -1.0, 0.0], pose);
+        let top = place([0.0, -1.0, 0.0], pose, STANDOFF);
         assert!(
-            top[2] < SHIP_DISTANCE - 0.4,
+            top[2] < STANDOFF - 0.4,
             "a quarter roll did not swing the top toward the camera: {top:?}"
         );
         assert!(
@@ -1197,8 +1297,10 @@ mod tests {
 
         let (_, cam) = cam(120, 36, &ship);
         let pose = attitude(&ship);
-        let nose = cam.project(place([0.0, 0.0, 1.0], pose)).unwrap();
-        let tail = cam.project(place([0.0, 0.0, -1.0], pose)).unwrap();
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose, STANDOFF)).unwrap();
+        let tail = cam
+            .project(place([0.0, 0.0, -1.0], pose, STANDOFF))
+            .unwrap();
         assert!(nose.0 > tail.0, "the ship is flying backwards");
         assert!(
             (nose.1 - tail.1).abs() < 0.5,
@@ -1210,8 +1312,10 @@ mod tests {
         // just a hull that ignores the pilot.
         ship.nudge_pitch(-1.0);
         let pose = attitude(&ship);
-        let nose = cam.project(place([0.0, 0.0, 1.0], pose)).unwrap();
-        let tail = cam.project(place([0.0, 0.0, -1.0], pose)).unwrap();
+        let nose = cam.project(place([0.0, 0.0, 1.0], pose, STANDOFF)).unwrap();
+        let tail = cam
+            .project(place([0.0, 0.0, -1.0], pose, STANDOFF))
+            .unwrap();
         assert!(nose.1 < tail.1 - 1.0, "pulling up did not raise the nose");
     }
 }

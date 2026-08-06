@@ -18,7 +18,7 @@
 use crate::canvas::Canvas;
 use crate::lens::{Image, Lens};
 use crate::starfield::{shift_color, Camera, Streak, CLASSES};
-use crate::view::{HULL_REACH, SHIP_DISTANCE};
+use crate::view::{HULL_REACH, MAX_SHIP_DISTANCE};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::f32::consts::TAU;
@@ -33,8 +33,13 @@ pub const Z_NEAR: f32 = 18.0;
 /// popping in.
 pub const Z_FAR: f32 = 320.0;
 
+/// Measured against the *furthest* the zoom can put the ship, since that is the
+/// case that would fail: pushing the camera back walks the hull out toward this
+/// wall, and the first star to get behind it would be drawn over a ship it is
+/// supposed to be behind. `MAX_SHIP_DISTANCE` is what bounds the zoom, and this
+/// is what bounds `MAX_SHIP_DISTANCE`.
 const _: () = assert!(
-    Z_NEAR > SHIP_DISTANCE + HULL_REACH,
+    Z_NEAR > MAX_SHIP_DISTANCE + HULL_REACH,
     "a star could pass in front of the ship, and nothing here would sort it"
 );
 
@@ -406,6 +411,7 @@ mod tests {
     use crate::render::Renderer;
     use crate::ship::Ship;
     use crate::term::ColorMode;
+    use crate::view::{ship_half_on_screen, ZOOM_DEFAULT};
 
     /// A side camera over a 200x100 canvas, built the way the renderer does.
     fn cam() -> Camera {
@@ -476,7 +482,8 @@ mod tests {
     fn nothing_ever_comes_between_the_camera_and_the_ship() {
         // The whole of the exterior renderer's depth sorting, asserted rather
         // than assumed: the hull is drawn over the sky, so no star may be in
-        // front of it.
+        // front of it — at any zoom, so measured against the furthest back the
+        // camera can be pushed.
         let cam = cam();
         let mut field = ExteriorField::new(2000, 7, &cam);
         for _ in 0..600 {
@@ -484,7 +491,7 @@ mod tests {
         }
         for star in &field.stars {
             assert!(
-                star.pos[2] > SHIP_DISTANCE + HULL_REACH,
+                star.pos[2] > MAX_SHIP_DISTANCE + HULL_REACH,
                 "a star got in front of the ship, at {}",
                 star.pos[2]
             );
@@ -710,7 +717,11 @@ mod tests {
         let cam = cam();
         let mut field = ExteriorField::new(3000, 9, &cam);
         let mut canvas = Canvas::new(200, 100);
-        let lens = Lens::for_warp((cam.cx, cam.cy), 1.0, cam.height);
+        let lens = Lens::for_warp(
+            (cam.cx, cam.cy),
+            1.0,
+            ship_half_on_screen(cam.height, ZOOM_DEFAULT),
+        );
 
         let mut settled = None;
         for frame in 0..120 {
@@ -749,7 +760,11 @@ mod tests {
             let mut canvas = Canvas::new(w, h);
             for _ in 0..30 {
                 field.update(1.0 / 120.0, 400.0, &cam);
-                let lens = Lens::for_warp((cam.cx, cam.cy), 1.0, cam.height);
+                let lens = Lens::for_warp(
+                    (cam.cx, cam.cy),
+                    1.0,
+                    ship_half_on_screen(cam.height, ZOOM_DEFAULT),
+                );
                 field.draw(&mut canvas, &cam, 1.0, 0.0, &lens);
             }
             assert!(field

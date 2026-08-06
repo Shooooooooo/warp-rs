@@ -12,7 +12,7 @@ use crate::models::{self, ShipModel};
 use crate::ship::Ship;
 use crate::starfield::{Camera, StarField};
 use crate::term::{ColorMode, Screen};
-use crate::view::SIDE_FOCAL;
+use crate::view::{self, SIDE_FOCAL};
 use std::io::{self, Write};
 
 /// Colour of the glare down the throat of the tunnel.
@@ -36,6 +36,12 @@ pub struct Exterior<'a> {
     pub ship: &'a Ship,
     pub model: &'a ShipModel,
     pub time: f64,
+    /// How far in or out the camera has been pushed, as a multiple of the
+    /// default framing. It rides in here rather than on the [`Camera`] because
+    /// the camera has not moved: the zoom is a dolly on the *ship*, and the
+    /// sky — which is laid out against the camera's focal length and cached
+    /// against it — is meant to sit perfectly still while it happens.
+    pub zoom: f32,
 }
 
 pub struct Renderer {
@@ -184,14 +190,22 @@ impl Renderer {
             ship,
             model,
             time,
+            zoom,
         } = scene;
         let warp = ship.warp_intensity();
         let (_, h) = self.canvas.dims();
+        // Where the zoom lands: how far off to put the hull, and how big that
+        // makes it. Two readings of one number, taken here rather than in each
+        // of the two places that wants one, so they cannot disagree.
+        let distance = view::ship_distance(zoom);
+        let ship_half = view::ship_half_on_screen(h as f32, zoom);
 
         // The ship sits dead on the camera's axis, so its centre projects to
         // the vanishing point — shake included, which keeps the bend locked to
-        // the hull rather than to the frame.
-        let lens = Lens::for_warp((cam.cx, cam.cy), warp, h as f32);
+        // the hull rather than to the frame. Sized in ships rather than in
+        // frames, so pushing the camera in and out carries the bubble with the
+        // hull instead of leaving a fixed collar hanging in the middle.
+        let lens = Lens::for_warp((cam.cx, cam.cy), warp, ship_half);
 
         self.canvas.clear();
         field.draw(&mut self.canvas, cam, warp, time, &lens);
@@ -210,7 +224,7 @@ impl Renderer {
             );
         }
 
-        models::draw(&mut self.canvas, cam, ship, model);
+        models::draw(&mut self.canvas, cam, ship, model, distance);
 
         // A lighter vignette than the cockpit's: there is no tunnel to be
         // pulled down here, and the ship is off the centre of attention.
@@ -348,6 +362,27 @@ mod tests {
         frames: usize,
         stars: usize,
     ) -> Renderer {
+        fly_outside_zoomed(
+            cols,
+            rows,
+            model,
+            engaged,
+            frames,
+            stars,
+            view::ZOOM_DEFAULT,
+        )
+    }
+
+    /// The same, at a zoom of your choosing.
+    fn fly_outside_zoomed(
+        cols: usize,
+        rows: usize,
+        model: usize,
+        engaged: bool,
+        frames: usize,
+        stars: usize,
+        zoom: f32,
+    ) -> Renderer {
         let mut renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
         let mut ship = Ship::new();
         ship.throttle = 1.0;
@@ -368,6 +403,7 @@ mod tests {
                 ship: &ship,
                 model: &crate::models::models()[model],
                 time,
+                zoom,
             };
             renderer.render_exterior(scene, &cam, &readout);
         }
@@ -392,11 +428,19 @@ mod tests {
         // The lens, seen from the outside of the renderer: at warp the sky
         // immediately around the hull is swept clear and piles up beyond it,
         // and at impulse the two read much the same.
+        //
+        // The two rings are measured in *ships*, which is what they always
+        // were: written as fractions of the canvas height they only worked
+        // while the hull was a fixed fraction of it, and the inner one — the
+        // dark ring — would have come to straddle the bright Einstein ring the
+        // moment the framing moved. Said in the unit the geometry is actually
+        // in, they hold at any framing and at any zoom.
         let sample = |engaged: bool| -> (f32, f32) {
             let renderer = fly_outside(120, 36, 0, engaged, 150, 2500);
             let (w, h) = renderer.canvas_dims();
             let px = renderer.pixels();
             let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+            let ship = view::ship_half_on_screen(h as f32, view::ZOOM_DEFAULT);
             // Two rings: one just outside the hull, one well beyond it.
             let mean = |lo: f32, hi: f32| {
                 let (mut total, mut n) = (0u64, 0u64);
@@ -412,10 +456,12 @@ mod tests {
                 }
                 total as f32 / n.max(1) as f32
             };
-            (
-                mean(h as f32 * 0.22, h as f32 * 0.30),
-                mean(h as f32 * 0.55, h as f32 * 0.75),
-            )
+            // Just outside the hull, which is inside the swept-clear disc; and
+            // well past the Einstein ring, where the sky it pushed out has
+            // piled up. The bubble is two ship-halves across and its shadow is
+            // 0.72 of that, so the first sits between the nose and the shadow's
+            // edge and the second starts beyond the ring entirely.
+            (mean(ship * 0.92, ship * 1.25), mean(ship * 2.3, ship * 3.1))
         };
 
         let (near_hull, far_out) = sample(true);

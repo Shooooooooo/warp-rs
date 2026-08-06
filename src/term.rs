@@ -681,12 +681,32 @@ fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
     (best[0], best[1], best[2])
 }
 
+/// Ask the terminal to report mouse *buttons* — which is where the wheel
+/// arrives — and to report them in SGR, which is the encoding that survives a
+/// window wider than 223 columns.
+///
+/// Written out rather than taken from crossterm's `EnableMouseCapture`, which
+/// is a blanket that also turns on `?1002h` and `?1003h`: drag reporting, and
+/// then reporting of *every* pointer movement over the window. Nothing in this
+/// program is aimed at, so those two buy nothing and cost a stream of events on
+/// every twitch of a mouse — arriving into the one loop that deliberately
+/// spends its slack blocking on the queue rather than sleeping through it,
+/// which is the last place worth handing a torrent of nothing to read. Asking
+/// for less is the whole of the difference.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+/// And giving it back. A superset of what [`MOUSE_ON`] asks for, deliberately:
+/// see [`restore`].
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
 /// Puts the terminal into raw, full-screen mode and — crucially — puts it back
 /// on the way out, including when the way out is a panic.
 pub struct RawGuard;
 
 impl RawGuard {
-    pub fn new() -> io::Result<Self> {
+    /// Take the terminal over. `mouse` asks it for button reports as well, for
+    /// the wheel; a mode with no controls in it has no use for them and should
+    /// not be taking the pointer off the user for the duration.
+    pub fn new(mouse: bool) -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         // Own the undoing before anything else can fail. Constructing the guard
         // last meant a `?` on any of the lines below returned with raw mode
@@ -703,6 +723,9 @@ impl RawGuard {
         // the alternate screen.
         out.queue(terminal::DisableLineWrap)?;
         out.queue(cursor::Hide)?;
+        if mouse {
+            out.write_all(MOUSE_ON.as_bytes())?;
+        }
         out.flush()?;
 
         // A panic mid-render would otherwise leave the user with an invisible
@@ -724,8 +747,17 @@ impl Drop for RawGuard {
 }
 
 /// Undo everything `RawGuard::new` did. Safe to call more than once.
+///
+/// Unconditional throughout, mouse included, and that is not an oversight: this
+/// is what the panic hook calls, and a panic hook has no way of knowing which
+/// modes were asked for. So it gives back every mouse mode rather than the two
+/// that may have been taken — turning off a mode that was never on is nothing,
+/// where leaving one on is a terminal that goes on reporting clicks at whatever
+/// runs next. It already resets colours it may never have set on the same
+/// reasoning.
 pub fn restore() {
     let mut out = io::stdout();
+    let _ = out.write_all(MOUSE_OFF.as_bytes());
     let _ = out.queue(SetForegroundColor(Color::Reset));
     let _ = out.queue(SetBackgroundColor(Color::Reset));
     let _ = out.queue(cursor::Show);

@@ -29,8 +29,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 203 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 204 unit — adds the snapshot-gated one
+cargo test                              # 216 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 217 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked                  # CI runs this too; `exclude` is by hand
@@ -147,7 +147,7 @@ src/main.rs       parse, fly, report — nothing else
 src/app.rs        the three loops (interactive, headless, snapshot) and Flight
 src/autopilot.rs  the hand on the stick for --demo and --screensaver
 src/cli.rs        every flag, and the bounds each one is held to
-src/view.rs       ViewMode, and the geometry constants the side camera needs
+src/view.rs       ViewMode, the side camera's geometry, and the zoom's range
 src/ship.rs       flight model: throttle, warp, steering, transients
 src/starfield.rs  the cockpit's sky — a cone opening forward, plus Camera
 src/exterior.rs   the side view's sky — a band the ship flies through
@@ -195,7 +195,9 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    ramp); side view gets the wash inside the lens shadow, so the swept-clear
    disc reads as a bubble rather than as a hole punched in the sky.
 4. The hull, side view only: `models::draw` — plates via `canvas.fill_convex`,
-   then the engine bells as glows on top of them.
+   then the engine bells as glows on top of them. It takes the standoff as an
+   argument, since the zoom moves it: `view::ship_distance(zoom)`, worked out
+   once in `render_exterior` alongside the half-length the lens is sized from.
 5. `apply_vignette`, then `add_flash` on top of it so a drive catching whites
    out the frame edges included.
 6. `canvas.resolve_into(&tonemap, &mut pixels)` — HDR to 8-bit RGB.
@@ -288,6 +290,17 @@ run. Returning an error is fine: `main` prints after the guard has restored.
 And `let _guard = ...` must keep a real binding name; `let _ =` drops it
 immediately.
 
+It takes the mouse *conditionally* and gives it back *unconditionally*, and the
+asymmetry is deliberate rather than an oversight. `new` asks for it only when
+there is something for it to do — a screensaver has no controls, so it does not
+take the terminal's pointer off the user for the duration — while `restore` is
+what the panic hook calls, and a panic hook has no way of knowing what was
+installed. It also asks for less than crossterm's `EnableMouseCapture`: that
+one turns on any-motion reporting as well, and nothing here is aimed at, so
+`term::MOUSE_ON` is `?1000h` and `?1006h` and nothing else. `MOUSE_OFF` is the
+full set, because turning off a mode that was never on costs nothing and
+leaving one on hands the next program a terminal that reports clicks at it.
+
 **`f64` where a screensaver would otherwise break it.** `Flight::time`,
 `Autopilot::update`'s `elapsed`, the twinkle phase folded once per frame, and
 the four shake terms are `f64` because a screensaver is left running for days
@@ -343,7 +356,14 @@ and all three have to keep holding:
 
 - `exterior::Z_NEAR` (18.0) is beyond the ship, so no star can come between the
   camera and the hull. There is a `const _: () = assert!(...)` in
-  `src/exterior.rs` that fails the build if that stops being true.
+  `src/exterior.rs` that fails the build if that stops being true. It is
+  measured against `view::MAX_SHIP_DISTANCE` — the *furthest* the zoom parks
+  the ship — because the standoff is no longer one number. Its opposite number
+  lives in `src/models.rs` and guards the other end: at
+  `view::MIN_SHIP_DISTANCE` the hull must still clear `starfield::Z_NEAR`, or
+  `plates` starts dropping faces whole and the ship comes apart a plate at a
+  time while going on looking like a ship. Widening `ZOOM_MIN` or `ZOOM_MAX` in
+  `src/view.rs` is what those two are there to stop.
 - Faces are wound anticlockwise seen from outside, so the **sign of a plate's
   projected area** is a complete answer to which way it points. This is only
   true because every hull is a closed solid with no zero-thickness plates — a
@@ -367,13 +387,35 @@ first resize event. Relatedly, a resize only retunes the star pool when
 clamp to `AUTO_MAX_STARS` (20 000) whatever `--stars` said, so with
 `--stars 100000` a single `+` shrinks the pool.
 
-**Pitch and yaw are switched off outside the cockpit.** Not because they could
-not be wired up, but because out there a turn moves nothing an eye can see, and
-a control that swallows input and gives nothing back is worse than one plainly
-not connected. If you change this, the hint tiers in `hud.rs` have to follow —
-they are the only place the *running program* writes the controls down — and so
-does `README.md`, whose `Flying` table annotates pitch and yaw "Cockpit only"
-and says it again in prose further down.
+**Pitch and yaw are switched off outside the cockpit, and the zoom is switched
+off inside it.** Not because either could not be wired up, but because out
+there a turn moves nothing an eye can see and in here there is no ship to be
+made bigger, and a control that swallows input and gives nothing back is worse
+than one plainly not connected. `handle_key` says this twice, as `steers` and
+`zooms`, and they are deliberately the same shape. If you change either, the
+hint tiers in `hud.rs` have to follow — they are the only place the *running
+program* writes the controls down — and so does `README.md`, whose `Flying`
+table annotates pitch and yaw "Cockpit only" and the zoom "Outside only", and
+says both again in prose further down.
+
+**The zoom is a dolly, not a lens.** `Renderer::exterior_camera` keeps
+`cam.focal` at `h * SIDE_FOCAL` whatever the zoom is doing; what moves is the
+standoff in `models::to_camera`, which is now an argument. That is not a
+stylistic choice: `ExteriorField` caches `cam.focal` and lays its whole band out
+against it, so a zoom that touched the focal length would need `retarget` on
+every notch — and `retarget` drops every trail, which is a scratch across the
+frame. The dolly leaves the sky untouched, and
+`the_zoom_moves_the_ship_and_leaves_the_sky_alone` in `app.rs` fails the moment
+anything makes `exterior_camera` read the zoom.
+
+**The warp bubble is measured in ships.** `Lens::for_warp` takes the hull's
+on-screen half-length, not the canvas height, so the bubble scales with the
+zoom instead of hanging in the frame at a fixed size. That constant used to be
+`0.48` of the canvas with a comment saying it was twice `SHIP_SCREEN_FRAC`'s
+`0.24` — a relationship nothing could check, and exactly the sort that rots.
+`the_bubble_is_the_same_number_of_ships_across_at_every_zoom` in `view.rs` is
+what checks it now, through both real arithmetics rather than against a
+constant.
 
 **The hull points along the track, and `models::attitude` is where that is
 kept.** Out there the direction of travel is the one thing that cannot move:
@@ -549,7 +591,12 @@ mode times a face per view — and one test holds all four to the same shape:
 exactly three tiers, strictly decreasing in width so the first that fits is the
 most detailed, and the shortest no wider than `MIN_COLS - 2`. That last budget
 is tighter than it reads; the narrowest cockpit tier already uses 41 of its 44
-columns, so a new control does not simply get appended to all three.
+columns, so a new control does not simply get appended to all three. The zoom
+is the worked example: `[] zoom` costs nine columns with its separator, the
+narrowest side tier has seven spare, and putting it on the middle tier would
+carry that one past sixty columns — which is the width `tests/flight.rs` flies
+at, so those runs would shed the tier and lose the *throttle* to gain the zoom.
+It went on the widest tier only, where `C view` and `M ships` already stop.
 `README.md`'s `Flying` table is the other place the keys are written down.
 
 **Adding a NAV readout.** The panel has one spare row and no test guarding it.
