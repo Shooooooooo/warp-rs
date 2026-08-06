@@ -54,12 +54,14 @@
 #     sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
 #     # and put this comment block back
 #
-# `warp.txt` last moved when the cockpit's tunnel halo was taken down from 0.45
-# to 0.20. It was the only hash to move, which is the whole shape of that
-# change said back: the two `--demo` flights never leave sublight, so the glare
-# block does not run in them at all, and `side.txt` and `orbit.txt` go through
-# `add_glow_oval` rather than the cockpit call site. The other four were
-# regenerated alongside it and were byte-identical.
+# `warp.txt` last moved when the cockpit's tunnel glare was spread out — both
+# glows widened by two to three times and dropped to about a quarter of their
+# strength, so the light arrives diffused rather than as a hard point inside a
+# veil. It was the only hash to move, twice running, and that is the whole
+# shape of such a change said back: the two `--demo` flights never leave
+# sublight, so the glare block does not run in them at all, and `side.txt` and
+# `orbit.txt` go through `add_glow_oval` rather than the cockpit call site. The
+# other four were regenerated alongside it both times and were byte-identical.
 #
 # `side.txt` last moved when the stick was given to the camera out here. Only
 # its hint line changed: with the old `QE roll` text restored and every other
@@ -79,6 +81,6 @@
 # regenerated once.
 dbd77f751ca09625f68f43d092adb3ade0bb2a4751aeb8891e4f7afcf7e98046  truecolor.txt
 38ab01bf301f47a2200644ff65a54819981f866fd63efb6da8a818b5c538d118  ascii.txt
-d1dd1c23aef495a12d89cf2541b8890164789ae6e493c98d6e892a8f1e5411d8  warp.txt
+5699fcf1cdb10bc830649d55cf13e7e030c5fe9817ee6db09c281d5b8e586d19  warp.txt
 95ee5280921b47bd9aa971e5f86d944dab82f074d55326a0843fb3d8c35f3bce  side.txt
 55c5d5abc88b7546c7ddc9a070e50f5e1a7f22ac1c85ee14acc5652ba350d433  orbit.txt
