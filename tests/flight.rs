@@ -37,8 +37,9 @@ fn a_flight_needs_nothing_but_the_library() {
     assert!(!out.is_empty());
     // Twenty frames of twenty rows, each row ending in a newline.
     assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 20 * 20);
-    // The glyphs, with the colour codes between them taken back out — the
-    // panel's shadow means all but the rarest pair of neighbours differ.
+    // The glyphs, with the colour codes between them taken back out — the sky
+    // shows through the panel, so a star behind a word puts a colour code in
+    // the middle of it.
     let glyphs: String = String::from_utf8_lossy(&out)
         .split('\u{1b}')
         .map(|chunk| chunk.split_once('m').map_or(chunk, |(_, rest)| rest))

@@ -60,11 +60,15 @@ type CellColors = (Option<(u8, u8, u8)>, Option<(u8, u8, u8)>);
 /// How an overlaid glyph treats the frame behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backdrop {
-    /// Dim what is behind the glyph so text stays legible over a bright
-    /// streak. For instrument readouts, where legibility wins.
-    Shadow,
-    /// Never darken anything: keep the background pixel, and lighten the glyph
-    /// against the pixel it replaces.
+    /// Write the ink and nothing else, leaving the cell's background exactly
+    /// as it was composed. For instrument readouts, which are marks on the
+    /// canopy rather than a plate bolted over it.
+    Glass,
+    /// Like [`Backdrop::Glass`], except that the ink may only ever add light:
+    /// the glyph comes out as the brighter of itself and the pixel it
+    /// replaces. For a mark that belongs in the scene, where writing a dim
+    /// colour over a bright pixel reads as a hole rather than as an
+    /// instrument.
     Lighten,
     /// Cover what is behind it outright, spaces included. For a dialogue,
     /// which is in front of the scene rather than painted on the glass — and
@@ -330,10 +334,11 @@ impl Screen {
         }
     }
 
-    /// Stamp instrument text over the composed frame, shadowed so it stays
-    /// readable. Anything off the edge is dropped.
+    /// Stamp instrument text over the composed frame without disturbing it:
+    /// the glyph is the only thing written, so the field goes on showing
+    /// through the panel. Anything off the edge is dropped.
     pub fn overlay(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8)) {
-        self.stamp(col, row, text, fg, Backdrop::Shadow);
+        self.stamp(col, row, text, fg, Backdrop::Glass);
     }
 
     /// Stamp a mark that must never darken the frame behind it — for glyphs
@@ -362,8 +367,11 @@ impl Screen {
             let Some(c) = col.checked_add(i).filter(|c| *c < self.cols) else {
                 break;
             };
-            // Keep the starfield showing through the gaps in the panel text —
-            // except under a dialogue, where a space is part of the box.
+            // A space carries no ink, so there is nothing to write and no
+            // reason to spend the cell's upper pixel on it: the gaps between
+            // the words keep both halves of the frame, where every other cell
+            // of the panel keeps only the lower one. Except under a dialogue,
+            // where a space is part of the box.
             if ch == ' ' && how != Backdrop::Panel {
                 continue;
             }
@@ -371,12 +379,20 @@ impl Screen {
             let under = cell.ch;
             cell.ch = ch;
             match how {
-                Backdrop::Shadow => {
+                Backdrop::Glass => {
+                    // The ink and nothing else: whatever `compose` put behind
+                    // the glyph stays exactly as it drew it. The panel used to
+                    // take that pixel down to a quarter first, which bought
+                    // legibility when a streak was blazing directly behind a
+                    // readout and paid for it with a dark box fenced around
+                    // every word — and against a sky that is mostly black, a
+                    // box that was mostly a black one. Left alone, the text
+                    // reads light against the dark and as a silhouette against
+                    // the bright, and the field runs on underneath it unbroken.
+                    //
+                    // It also makes a stamp idempotent, which the shadow was
+                    // not: two overlays landing on one cell dimmed it twice.
                     cell.fg = mark;
-                    // Drop a shadow behind the glyph rather than a solid panel:
-                    // the field still glows through, but text stays readable
-                    // even when a streak happens to be blazing directly behind.
-                    cell.bg = cell.bg.map(|(r, g, b)| (r / 4, g / 4, b / 4));
                 }
                 Backdrop::Panel => {
                     // Both halves of the cell go down, not just the background:
@@ -781,15 +797,43 @@ mod tests {
     }
 
     #[test]
-    fn overlay_shadows_what_is_behind_it() {
-        // The panel's shadow is deliberate — it is what keeps a readout
-        // legible when a streak is blazing directly behind it.
-        let mut screen = Screen::new(8, 2, ColorMode::Truecolor);
-        screen.compose(&pixels(8, 2, [200, 200, 200]));
-        screen.overlay(0, 0, "X", (255, 255, 255));
-        let (fg, bg) = screen.cell_colors(0, 0);
-        assert_eq!(fg, Some((255, 255, 255)));
-        assert_eq!(bg, Some((50, 50, 50)), "the backdrop should be dimmed");
+    fn a_readout_writes_ink_and_leaves_the_sky_alone() {
+        // The panel is glass rather than a plate bolted to it: a cell's
+        // background is the lower subpixel of the frame, and a readout has no
+        // business moving it in either direction. It used to arrive at a
+        // quarter brightness, which fenced every word in a dark box. The whole
+        // range is walked because a divide by four is invisible at the dark
+        // end of it and unmissable at the bright one.
+        for level in [0u8, 1, 3, 17, 128, 200, 255] {
+            let mut screen = Screen::new(8, 2, ColorMode::Truecolor);
+            screen.compose(&pixels(8, 2, [level, level, level]));
+            screen.overlay(0, 0, "X", (255, 255, 255));
+            let (fg, bg) = screen.cell_colors(0, 0);
+            assert_eq!(fg, Some((255, 255, 255)), "the ink went missing");
+            assert_eq!(
+                bg,
+                Some((level, level, level)),
+                "the panel moved the frame behind it at {level}"
+            );
+        }
+    }
+
+    #[test]
+    fn stamping_a_readout_twice_lands_where_stamping_it_once_did() {
+        // The shadow was applied per stamp, so two readouts meeting on one
+        // cell dimmed it twice and left a darker notch where they overlapped.
+        // Transparent, a stamp has nothing to accumulate.
+        let lit = [180u8, 195, 220];
+        let mut once = Screen::new(8, 2, ColorMode::Truecolor);
+        once.compose(&pixels(8, 2, lit));
+        once.overlay(1, 0, "X", (255, 255, 255));
+
+        let mut twice = Screen::new(8, 2, ColorMode::Truecolor);
+        twice.compose(&pixels(8, 2, lit));
+        twice.overlay(1, 0, "X", (255, 255, 255));
+        twice.overlay(1, 0, "X", (255, 255, 255));
+
+        assert_eq!(once.cell_colors(1, 0), twice.cell_colors(1, 0));
     }
 
     #[test]
@@ -874,14 +918,14 @@ mod tests {
         screen.overlay_panel(0, 2, "X", (255, 255, 255));
 
         assert_eq!(
-            screen.cell_colors(0, 0).1,
-            Some((50, 52, 57)),
-            "the shadow is still a quarter of what is behind it"
+            screen.cell_colors(0, 0),
+            (Some((255, 255, 255)), Some((200, 210, 230))),
+            "glass still writes its ink and leaves the frame as it found it"
         );
         assert_eq!(
-            screen.cell_colors(0, 1).1,
-            Some((200, 210, 230)),
-            "a mark still never darkens anything"
+            screen.cell_colors(0, 1),
+            (Some((200, 210, 230)), Some((200, 210, 230))),
+            "a mark still never darkens anything, foreground included"
         );
         assert!(screen.cell_colors(0, 2).1.unwrap().0 < 60, "the panel dims");
     }
