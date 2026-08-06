@@ -111,6 +111,22 @@ nothing is drawn at all: a transparent mass would refill that disc with a
 shrunken copy of the whole sky, and a warp bubble is no more transparent than a
 hull is.
 
+The drive trails. Every engine bell throws exhaust astern down the ship's own
+axis, guttering as it goes, burning blue at impulse and whitening as the drive
+spools. At sublight its reach is how hard the ship is being flown, and a bigger
+bell throws a longer flame, so the ships trail as differently as they look: the
+Trident's three drives leave three separate flames, the Hauler's four merge into
+one thick bar, and the Enterprise leaves two nacelle lances with a shorter
+impulse flame riding above them.
+
+Light the warp drive and it stops being a flame. The lance runs clean off the
+side of the frame, out through the bright rim of the bubble and past the edge of
+the picture, and it gets there the instant the drive catches rather than growing
+into it — the white-out on the engage is what covers the jump. Shutting the
+drive down takes it away again in a single frame while the ship is still doing
+most of its old speed, which is the one thing the speed readout alone will not
+tell you.
+
 The camera rides with the ship rather than with the sky, so a roll turns the
 *hull* against a level starfield — `Q` or `E` held down is a barrel roll you can
 watch from the outside, which is the one thing the view from the cockpit cannot

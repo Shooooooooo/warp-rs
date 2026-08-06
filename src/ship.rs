@@ -158,6 +158,18 @@ impl Ship {
         self.warp_engaged
     }
 
+    /// True while the drive is spinning down after a disengage.
+    ///
+    /// The flight model needs nobody to know this — the steeper bleed off
+    /// `speed` is the whole of its effect in here. What wants it is the trail
+    /// out of the bells, which should visibly quit when the drive is switched
+    /// off rather than fade out with the speed: seen from outside, a dropout
+    /// and a hand easing the throttle back are the same falling number, and
+    /// the flag is the only thing that tells them apart.
+    pub fn dropping_out(&self) -> bool {
+        self.dropping_out
+    }
+
     /// Where the throttle is asking the ship to end up.
     fn target_speed(&self) -> f32 {
         if self.warp_engaged {
@@ -314,6 +326,36 @@ mod tests {
             ship.update(1.0 / 60.0);
         }
         assert!(ship.velocity_c() < 1.0, "got {}", ship.velocity_c());
+    }
+
+    #[test]
+    fn a_disengaged_drive_says_it_is_spinning_down() {
+        // The trail out of the bells reads this to know the drive has quit
+        // rather than been throttled back, so it has to be true for exactly
+        // the stretch the steep bleed applies over — a flag that never came on
+        // and a flag that never went off would both leave the plume looking
+        // right for most of the flight.
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        ship.toggle_warp();
+        assert!(!ship.dropping_out(), "lighting the drive is not a dropout");
+        for _ in 0..600 {
+            ship.update(1.0 / 60.0);
+        }
+        assert!(!ship.dropping_out(), "cruising at warp is not a dropout");
+
+        assert!(!ship.toggle_warp());
+        assert!(ship.dropping_out(), "shutting the drive down is one");
+        ship.update(1.0 / 60.0);
+        assert!(ship.dropping_out(), "and it lasts longer than a frame");
+
+        for _ in 0..600 {
+            ship.update(1.0 / 60.0);
+        }
+        assert!(
+            !ship.dropping_out(),
+            "it should let go once the ship is sublight again"
+        );
     }
 
     #[test]
