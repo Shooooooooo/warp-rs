@@ -147,7 +147,7 @@ src/main.rs       parse, fly, report — nothing else
 src/app.rs        the three loops (interactive, headless, snapshot) and Flight
 src/autopilot.rs  the hand on the stick for --demo and --screensaver
 src/cli.rs        every flag, and the bounds each one is held to
-src/view.rs       ViewMode, the side camera's geometry, and the zoom's range
+src/view.rs       ViewMode, the outside camera: its orbit, its range, the zoom
 src/ship.rs       flight model: throttle, warp, steering, transients
 src/starfield.rs  the cockpit's sky — a cone opening forward, plus Camera
 src/exterior.rs   the side view's sky — a band the ship flies through
@@ -675,6 +675,13 @@ throttle at `rows - 2`, hints at `rows - 1` — while the NAV panel is counted
 *down* from the top and closes at `2 + rows.len()`. At `MIN_ROWS` (12), in the
 side view where the `SHIP` row already makes six, the closing rule lands on row
 8 and the banner on row 9. A seventh row collides.
+
+**Changing what a stick key does.** It is written twice, once per view, in
+`handle_key`'s guard-gated arms — and in four places besides: the hint tiers in
+`hud.rs` (both faces), `README.md`'s two `Flying` tables, and
+`the_stick_flies_the_camera_outside_and_the_ship_inside` in `app.rs`, which is
+the test that says the ship's rates do not move when the camera key is pressed
+and the camera does not move when the ship's is.
 
 **Adding a flag.** `src/cli.rs`, with a bound and a `value_parser`, and
 `conflicts_with`/`requires` if it only means something in combination. Every

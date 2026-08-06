@@ -10,12 +10,12 @@ use crate::hud::Readout;
 use crate::menu::{self, Menu};
 use crate::models::{self, ShipModel};
 use crate::render::{Exterior, Renderer};
-use crate::ship::Ship;
+use crate::ship::{wrap_signed, Ship};
 #[cfg(feature = "snapshot")]
 use crate::snapshot;
 use crate::starfield::StarField;
 use crate::term::RawGuard;
-use crate::view::{self, ViewMode};
+use crate::view::{self, Orbit, ViewMode};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
@@ -103,6 +103,18 @@ pub struct Flight {
     /// cannot reach them.
     zoom: f32,
     zoom_target: f32,
+    /// Which way round the ship the outside camera has been swung, and where it
+    /// is being asked to swing to. The same pair for the same reason, and eased
+    /// the same way — a key held down arrives as auto-repeat, which is a burst
+    /// of steps rather than one.
+    ///
+    /// `f32` too, and this one needs its own excuse: two of the three angles go
+    /// all the way round without stopping, which is exactly the accumulator the
+    /// argument above is about. [`Orbit::held`] is what settles it — both the
+    /// eased angle and the target are folded back into a single turn, so
+    /// neither can grow however long a key is leaned on.
+    orbit: Orbit,
+    orbit_target: Orbit,
     /// Kept so a field built later gets the sky the seed asked for.
     seed: u64,
     /// Wall time since launch, in seconds. `f64` because it only ever grows and
@@ -138,6 +150,8 @@ impl Flight {
             menu: None,
             zoom: view::ZOOM_DEFAULT,
             zoom_target: view::ZOOM_DEFAULT,
+            orbit: args.orbit,
+            orbit_target: args.orbit,
             seed,
             time: 0.0,
             accumulator: 0.0,
@@ -197,6 +211,46 @@ impl Flight {
         self.zoom_target = view::ZOOM_DEFAULT;
     }
 
+    pub fn orbit(&self) -> Orbit {
+        self.orbit
+    }
+
+    /// Where it is being asked to go, which is what a keypress moves. The eased
+    /// value above is what a frame is drawn from.
+    pub fn orbit_target(&self) -> Orbit {
+        self.orbit_target
+    }
+
+    /// Swing the camera round the ship, over it, or about its own view axis, a
+    /// step at a time.
+    ///
+    /// One function for the three axes rather than three, because they arrive
+    /// together and are held together: [`Orbit::held`] wraps the two that go
+    /// all the way round and clamps the one that stops. As with the zoom it is
+    /// the *target* that is held, not the eased value — and unlike the zoom the
+    /// step is additive, since an angle has no far end to be shoved about and
+    /// every part of a turn is worth the same.
+    pub fn nudge_orbit(&mut self, azimuth: f32, elevation: f32, roll: f32) {
+        self.orbit_target = Orbit {
+            azimuth: self.orbit_target.azimuth + azimuth * view::ORBIT_STEP,
+            elevation: self.orbit_target.elevation + elevation * view::ORBIT_STEP,
+            roll: self.orbit_target.roll + roll * view::ORBIT_STEP,
+        }
+        .held();
+    }
+
+    /// Back to the shot the flight opened on, snapped rather than eased, for
+    /// the same reason the zoom is: `R` is the key for when the view has got
+    /// away from you.
+    ///
+    /// Where it opened, not [`Orbit::LEVEL`] — `--orbit` is a starting angle
+    /// the same way `--throttle` is a starting throttle, and `R` has always put
+    /// that one back rather than the flight model's own default.
+    pub fn reset_orbit(&mut self, orbit: Orbit) {
+        self.orbit = orbit.held();
+        self.orbit_target = self.orbit;
+    }
+
     fn set_view(&mut self, view: ViewMode, args: &Args) {
         self.view = view;
         if view == ViewMode::Side && self.exterior.is_none() {
@@ -208,6 +262,7 @@ impl Flight {
                 star_count(args, &self.renderer),
                 self.seed ^ EXTERIOR_SEED,
                 &cam,
+                self.orbit,
             ));
         }
     }
@@ -284,6 +339,22 @@ impl Flight {
             // reference frame by an ulp.
             self.zoom +=
                 (self.zoom_target - self.zoom) * (1.0 - (-view::ZOOM_EASE * SIM_STEP).exp());
+            // And the same for the orbit, with one difference: two of its three
+            // angles wrap, so each chases its target the short way round rather
+            // than unwinding three hundred and fifty degrees to reach a target
+            // ten degrees away. `wrap_signed` of an exact zero is an exact zero,
+            // so a flight nobody is swinging the camera on still adds nothing at
+            // all here.
+            let ease = 1.0 - (-view::ORBIT_EASE * SIM_STEP).exp();
+            self.orbit = Orbit {
+                azimuth: self.orbit.azimuth
+                    + wrap_signed(self.orbit_target.azimuth - self.orbit.azimuth) * ease,
+                elevation: self.orbit.elevation
+                    + (self.orbit_target.elevation - self.orbit.elevation) * ease,
+                roll: self.orbit.roll
+                    + wrap_signed(self.orbit_target.roll - self.orbit.roll) * ease,
+            }
+            .held();
             match self.view {
                 ViewMode::Cockpit => {
                     let cam = self.renderer.camera(&self.ship, self.time);
@@ -299,7 +370,7 @@ impl Flight {
                 ViewMode::Side => {
                     let cam = self.renderer.exterior_camera(&self.ship, self.time);
                     if let Some(field) = &mut self.exterior {
-                        field.update(SIM_STEP, self.ship.speed, &cam);
+                        field.update(SIM_STEP, self.ship.speed, &cam, self.orbit);
                     }
                 }
             }
@@ -327,6 +398,7 @@ impl Flight {
                     model,
                     time: self.time,
                     zoom: self.zoom,
+                    orbit: self.orbit,
                 };
                 self.renderer.render_exterior(scene, &cam, &readout);
             }
@@ -444,13 +516,25 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
     // rides with the ship rather than with the sky, so out there a turn moves
     // nothing an eye can see — the stars stream on exactly as they were and the
     // hull leans a few degrees — and a control that swallows the input and
-    // gives nothing back is worse than one that is plainly not there. Roll is
-    // the exception and stays on: against a level starfield it is the best
-    // thing in the view.
+    // gives nothing back is worse than one that is plainly not there. So the
+    // stick flies the ship in the one view that is looking down its nose.
     let steers = flight.view() == ViewMode::Cockpit;
-    // And the mirror of it. There is no ship to be bigger or smaller from
-    // inside one, so the zoom is connected exactly where it has something to
-    // show, on the same reasoning and in the same shape.
+    // And out there the same six keys fly the *camera*, which is the thing that
+    // can usefully move in a view whose whole subject is the ship. It is not
+    // that pitch and yaw were switched off and something was found for them: a
+    // camera that cannot be walked round the thing it is pointed at is the
+    // control that is missing out here, and these are the keys everything else
+    // puts it on.
+    //
+    // Roll goes with them rather than staying on the hull, which costs the one
+    // thing this view could do that the cockpit cannot — a barrel roll flown
+    // and watched from the beam. The trade is a stick that means one thing in
+    // each view instead of two things in one of them, and the cockpit still
+    // rolls the ship.
+    let flies_the_camera = flight.view() == ViewMode::Side;
+    // The zoom runs the same way and always has. There is no ship to be bigger
+    // or smaller from inside one, so it is connected exactly where it has
+    // something to show.
     let zooms = flight.view() == ViewMode::Side;
 
     match key.code {
@@ -465,8 +549,35 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char('s' | 'S' | 'k' | 'K') if steers => flight.ship.nudge_pitch(1.0),
         KeyCode::Left | KeyCode::Char('a' | 'A') if steers => flight.ship.nudge_yaw(-1.0),
         KeyCode::Right | KeyCode::Char('d' | 'D') if steers => flight.ship.nudge_yaw(1.0),
-        KeyCode::Char('q' | 'Q') => flight.ship.nudge_roll(-1.0),
-        KeyCode::Char('e' | 'E') => flight.ship.nudge_roll(1.0),
+        KeyCode::Char('q' | 'Q') if steers => flight.ship.nudge_roll(-1.0),
+        KeyCode::Char('e' | 'E') if steers => flight.ship.nudge_roll(1.0),
+
+        // The same six, outside, on the camera. These sit below the ones above
+        // rather than inside them: a guard that fails falls through to the next
+        // arm that matches, so each key is written once per view and neither
+        // spelling has to know about the other.
+        //
+        // The keys move the *camera*, not the ship in frame — `W` lifts it over
+        // the hull so the hull is being looked down on, `D` walks it forward
+        // toward the nose. An orbit camera that went the other way would read
+        // as dragging the ship about, and the ship is the one thing out here
+        // that is not being flown from this seat.
+        KeyCode::Char('w' | 'W' | 'i' | 'I') if flies_the_camera => {
+            flight.nudge_orbit(0.0, 1.0, 0.0)
+        }
+        KeyCode::Char('s' | 'S' | 'k' | 'K') if flies_the_camera => {
+            flight.nudge_orbit(0.0, -1.0, 0.0)
+        }
+        KeyCode::Left | KeyCode::Char('a' | 'A') if flies_the_camera => {
+            flight.nudge_orbit(-1.0, 0.0, 0.0)
+        }
+        KeyCode::Right | KeyCode::Char('d' | 'D') if flies_the_camera => {
+            flight.nudge_orbit(1.0, 0.0, 0.0)
+        }
+        // Rolled the way the sky used to turn when these two rolled the ship,
+        // so the key still tips the picture the direction it always tipped it.
+        KeyCode::Char('q' | 'Q') if flies_the_camera => flight.nudge_orbit(0.0, 0.0, 1.0),
+        KeyCode::Char('e' | 'E') if flies_the_camera => flight.nudge_orbit(0.0, 0.0, -1.0),
 
         // The throttle is the up and down arrows, which is where it has
         // always been: only its letters went to the stick. The other two
@@ -482,6 +593,7 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
             flight.ship.reset();
             flight.ship.throttle = args.throttle;
             flight.reset_zoom();
+            flight.reset_orbit(args.orbit);
             *paused = false;
         }
         KeyCode::Char('+' | '=') => flight.resize_pool(1.25, 64),
@@ -1054,11 +1166,16 @@ mod tests {
     }
 
     #[test]
-    fn the_stick_loses_pitch_and_yaw_outside_the_cockpit() {
-        // Out there the camera rides with the ship, so a turn moves nothing an
-        // eye can see: the stars stream on as they were and the hull leans a
-        // few degrees. A control that takes the input and gives nothing back is
-        // worse than one that is plainly switched off, so those two axes are.
+    fn the_stick_flies_the_camera_outside_and_the_ship_inside() {
+        // Out there the camera rides with the ship, so a turn of the *hull*
+        // moves nothing an eye can see: the stars stream on as they were and
+        // the hull leans a few degrees. The six keys that fly the ship in here
+        // fly the camera out there instead, which is the thing that can
+        // usefully move in a view whose whole subject is the ship.
+        //
+        // The ship is what this checks, because the ship is what would go
+        // wrong: a camera control that also nudged the flight model would fly
+        // the ship from a seat that is not in it.
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
@@ -1075,10 +1192,14 @@ mod tests {
             KeyCode::Char('a'),
             KeyCode::Char('d'),
             KeyCode::Char('A'),
+            KeyCode::Char('q'),
+            KeyCode::Char('e'),
+            KeyCode::Char('E'),
             KeyCode::Left,
             KeyCode::Right,
         ] {
             flight.ship.reset();
+            flight.reset_orbit(Orbit::LEVEL);
             let action = handle_key(press(code), &mut flight, &args, &mut paused);
             assert!(
                 matches!(action, Action::Continue),
@@ -1086,34 +1207,76 @@ mod tests {
             );
             assert_eq!(flight.ship.pitch_rate, 0.0, "{code:?} still pitched");
             assert_eq!(flight.ship.yaw_rate, 0.0, "{code:?} still yawed");
-        }
-
-        // Roll is the exception, and the reason to be out here at all: against
-        // a level starfield it is the best thing in the view.
-        for (key, want_negative) in [('q', true), ('e', false)] {
-            flight.ship.reset();
-            handle_key(press(KeyCode::Char(key)), &mut flight, &args, &mut paused);
-            assert_eq!(
-                flight.ship.roll_rate < 0.0,
-                want_negative,
-                "{key} should still roll out here"
+            assert_eq!(flight.ship.roll_rate, 0.0, "{code:?} still rolled the ship");
+            // And it did something: a key that swallows the input and gives
+            // nothing back is the thing this view used to have.
+            assert!(
+                !flight.orbit_target().is_level(),
+                "{code:?} moved neither the ship nor the camera"
             );
         }
-        // As is the throttle, which is what the arrows have always been.
+
+        // Each of the three axes, and each of them on its own.
+        for (code, axis) in [
+            (KeyCode::Char('d'), 0),
+            (KeyCode::Char('w'), 1),
+            (KeyCode::Char('q'), 2),
+        ] {
+            flight.reset_orbit(Orbit::LEVEL);
+            handle_key(press(code), &mut flight, &args, &mut paused);
+            let o = flight.orbit_target();
+            let moved = [o.azimuth, o.elevation, o.roll];
+            assert!(moved[axis] > 0.0, "{code:?} did not move its own axis");
+            for other in (0..3).filter(|o| *o != axis) {
+                assert_eq!(moved[other], 0.0, "{code:?} moved axis {other} as well");
+            }
+        }
+        // And the opposite of each goes the other way.
+        for (code, axis) in [
+            (KeyCode::Char('a'), 0),
+            (KeyCode::Char('s'), 1),
+            (KeyCode::Char('e'), 2),
+        ] {
+            flight.reset_orbit(Orbit::LEVEL);
+            handle_key(press(code), &mut flight, &args, &mut paused);
+            let o = flight.orbit_target();
+            assert!(
+                [o.azimuth, o.elevation, o.roll][axis] < 0.0,
+                "{code:?} did not move its own axis back"
+            );
+        }
+
+        // The throttle is what the arrows have always been.
         flight.ship.reset();
         let before = flight.ship.throttle;
         handle_key(press(KeyCode::Up), &mut flight, &args, &mut paused);
         assert!(flight.ship.throttle > before, "the throttle went quiet too");
 
-        // And coming back inside gives the stick back.
+        // And coming back inside gives the stick back, to the ship this time.
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         assert_eq!(flight.view(), ViewMode::Cockpit);
-        flight.ship.reset();
-        handle_key(press(KeyCode::Char('w')), &mut flight, &args, &mut paused);
-        assert!(flight.ship.pitch_rate < 0.0, "the stick did not come back");
-        flight.ship.reset();
-        handle_key(press(KeyCode::Char('a')), &mut flight, &args, &mut paused);
-        assert!(flight.ship.yaw_rate < 0.0, "the stick did not come back");
+        for (code, check) in [
+            (KeyCode::Char('w'), 0),
+            (KeyCode::Char('a'), 1),
+            (KeyCode::Char('q'), 2),
+        ] {
+            flight.ship.reset();
+            flight.reset_orbit(Orbit::LEVEL);
+            handle_key(press(code), &mut flight, &args, &mut paused);
+            let rates = [
+                flight.ship.pitch_rate,
+                flight.ship.yaw_rate,
+                flight.ship.roll_rate,
+            ];
+            assert!(
+                rates[check] < 0.0,
+                "the stick did not come back for {code:?}"
+            );
+            assert!(
+                flight.orbit_target().is_level(),
+                "{code:?} moved the camera from the pilot's seat"
+            );
+        }
     }
 
     #[test]
@@ -1776,6 +1939,190 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_shot_still_opens_exactly_where_it_always_did() {
+        // The acceptance test for the whole change, asked of pixels rather than
+        // of a hash so that it fails on the machine that broke it rather than
+        // in CI. A flight that never touches the camera has to draw what it
+        // drew before any of this existed — the star band's fast paths, the
+        // bubble's unforeshortened outline and the hull's quarter turn are all
+        // written to be exact at `Orbit::LEVEL` rather than very nearly so, and
+        // this is what says they are.
+        //
+        // Flown twice with the camera swung out and put back in between, which
+        // is the harder half: the ease is asymptotic, so `R` snapping both the
+        // angle and its target is the only thing that gets back to an exact
+        // zero, and a camera that settled to `1e-9` instead would take every
+        // slow path for the rest of the flight.
+        let args = args_for(&["--seed", "9", "--stars", "900", "--size", "80x24"]);
+        let mut paused = false;
+
+        let mut plain = Flight::new(&args, 80, 24);
+        handle_key(press(KeyCode::Char('c')), &mut plain, &args, &mut paused);
+        for _ in 0..40 {
+            plain.advance(1.0 / 60.0);
+        }
+        plain.draw(60.0, false, true);
+        let want: Vec<[u8; 3]> = plain.renderer.pixels().to_vec();
+
+        let mut wandered = Flight::new(&args, 80, 24);
+        handle_key(press(KeyCode::Char('c')), &mut wandered, &args, &mut paused);
+        for key in ['w', 'a', 'q', 'd', 's', 'e'] {
+            for _ in 0..5 {
+                handle_key(press(KeyCode::Char(key)), &mut wandered, &args, &mut paused);
+                wandered.advance(1.0 / 60.0);
+            }
+        }
+        handle_key(press(KeyCode::Char('r')), &mut wandered, &args, &mut paused);
+        assert!(wandered.orbit().is_level(), "R did not put the camera back");
+        // Re-flown from scratch so the two skies have taken the same number of
+        // steps: the point is the camera, not the flight.
+        let mut back = Flight::new(&args, 80, 24);
+        handle_key(press(KeyCode::Char('c')), &mut back, &args, &mut paused);
+        back.reset_orbit(wandered.orbit());
+        for _ in 0..40 {
+            back.advance(1.0 / 60.0);
+        }
+        back.draw(60.0, false, true);
+
+        let got = back.renderer.pixels();
+        let differing = want.iter().zip(got).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            differing, 0,
+            "{differing} subpixels moved with the camera put back where it started"
+        );
+    }
+
+    #[test]
+    fn the_camera_is_not_connected_in_the_cockpit() {
+        // The mirror of `the_zoom_is_not_connected_in_the_cockpit`, and the
+        // other half of `the_stick_flies_the_camera_outside_and_the_ship_inside`
+        // — in here the six keys fly the ship, so none of them may move the
+        // camera, and the camera survives a round trip through `C` because it
+        // is state rather than a mode.
+        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        let mut paused = false;
+
+        for key in ['w', 'a', 's', 'd', 'q', 'e'] {
+            handle_key(press(KeyCode::Char(key)), &mut flight, &args, &mut paused);
+        }
+        assert!(
+            flight.orbit_target().is_level(),
+            "the cockpit moved a camera it cannot see: {:?}",
+            flight.orbit_target()
+        );
+
+        // And out there, put somewhere, it stays there across a trip inside.
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        for _ in 0..4 {
+            handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
+        }
+        let swung = flight.orbit_target();
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        assert_eq!(flight.view(), ViewMode::Side);
+        assert_eq!(
+            flight.orbit_target(),
+            swung,
+            "the camera was re-parked by a trip through the cockpit"
+        );
+    }
+
+    #[test]
+    fn a_camera_notch_and_its_opposite_land_back_where_they_started() {
+        // Stronger than the zoom's version of this, and worth stating because
+        // it is why the step is additive: `x + s - s` is exactly `x` where a
+        // geometric step has to settle for very nearly.
+        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let mut flight = outside(&args);
+        let mut paused = false;
+
+        for (out, back) in [('d', 'a'), ('w', 's'), ('q', 'e')] {
+            for _ in 0..7 {
+                handle_key(press(KeyCode::Char(out)), &mut flight, &args, &mut paused);
+            }
+            for _ in 0..7 {
+                handle_key(press(KeyCode::Char(back)), &mut flight, &args, &mut paused);
+            }
+            assert!(
+                flight.orbit_target().is_level(),
+                "{out} then {back} left the camera at {:?}",
+                flight.orbit_target()
+            );
+        }
+    }
+
+    #[test]
+    fn the_camera_goes_all_the_way_round_and_stays_finite() {
+        // Two of the three angles wrap, which is the whole reason they can be
+        // `f32` beside a `time` that has to be `f64`: a key leaned on for a
+        // week accumulates nothing, because every step is folded back into a
+        // single turn. The elevation stops at the pole instead, and stopping is
+        // not the same as sticking — it comes back.
+        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let mut flight = outside(&args);
+        let mut paused = false;
+
+        for _ in 0..4000 {
+            handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
+            handle_key(press(KeyCode::Char('w')), &mut flight, &args, &mut paused);
+            handle_key(press(KeyCode::Char('q')), &mut flight, &args, &mut paused);
+            flight.advance(1.0 / 60.0);
+        }
+        let o = flight.orbit();
+        assert!(
+            o.azimuth.is_finite() && o.elevation.is_finite() && o.roll.is_finite(),
+            "the camera came apart: {o:?}"
+        );
+        assert!(
+            o.azimuth.abs() <= std::f32::consts::PI && o.roll.abs() <= std::f32::consts::PI,
+            "an angle got away: {o:?}"
+        );
+        assert!(
+            (o.elevation - view::ELEVATION_LIMIT).abs() < 1e-3,
+            "the elevation should be sat on the pole: {o:?}"
+        );
+        // And it comes back off it.
+        for _ in 0..60 {
+            handle_key(press(KeyCode::Char('s')), &mut flight, &args, &mut paused);
+            flight.advance(1.0 / 60.0);
+        }
+        assert!(
+            flight.orbit().elevation < view::ELEVATION_LIMIT - 0.1,
+            "the camera stuck at the pole: {:?}",
+            flight.orbit()
+        );
+        flight.draw(60.0, false, true);
+    }
+
+    #[test]
+    fn the_camera_settles_the_same_way_however_the_frames_fall() {
+        // The ease is `1 - exp(-k·dt)` inside a fixed sim step, exactly as the
+        // zoom's and the flight model's are, so where the camera ends up does
+        // not depend on how the frames happened to land. Rewriting one of these
+        // as `k * dt` is the classic simplification and it makes the answer a
+        // function of the frame rate.
+        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let settle = |frames: usize, dt: f32| {
+            let mut paused = false;
+            let mut flight = outside(&args);
+            for _ in 0..3 {
+                handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
+            }
+            for _ in 0..frames {
+                flight.advance(dt);
+            }
+            flight.orbit().azimuth
+        };
+        let fast = settle(12, 1.0 / 60.0);
+        let slow = settle(3, 1.0 / 15.0);
+        assert!(
+            (fast - slow).abs() < 1e-6,
+            "the camera settled to {fast} at 60 fps and {slow} at 15"
+        );
     }
 
     #[test]

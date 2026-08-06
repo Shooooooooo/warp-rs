@@ -11,7 +11,7 @@
 # drifted it; the `headless` CI job produces the same files from a release
 # binary and runs `sha256sum -c` over this, which also proves the two agree.
 #
-# Four flights, sharing
+# Five flights, sharing
 #
 #     --headless --frames 120 --seed 1 --size 120x36
 #
@@ -21,8 +21,19 @@
 #     ascii.txt       --demo --color ascii
 #     warp.txt        --engage --throttle 1.0 --color truecolor
 #     side.txt        --engage --throttle 1.0 --view side --color truecolor
+#     orbit.txt       the same, --orbit 55,35,20
 #
-# The last two are here because the first two turned out to cover very little.
+# The last one is the camera swung off the beam, and it is here for the reason
+# the two before it are: the outside view's whole geometry is written to reduce
+# *exactly* to the old arithmetic when the camera is abeam, which is where
+# `side.txt` has it. So a change that repainted every angle except that one
+# would have left the reference untouched. `--orbit 55,35,20` has all three
+# angles off zero at once, which is the only configuration that turns the
+# bubble's outline off the horizontal, and it puts the star band's depth travel,
+# its vertical fold and its wall recycle on the path as well.
+#
+# The three before it are here because the first two turned out to cover very
+# little.
 # `--demo` spends its opening six seconds easing the throttle up, and 120 frames
 # at 60 fps is two of them — so the pinned sky was sublight throughout, peaking
 # at a quarter of light speed with the drive cold. Every warp path in the
@@ -39,8 +50,16 @@
 #     ./target/release/warp $common --demo --color ascii     > ascii.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
-#     sha256sum truecolor.txt ascii.txt warp.txt side.txt > tests/golden/frames.sha256
+#     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
+#     sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
 #     # and put this comment block back
+#
+# `side.txt` last moved when the stick was given to the camera out here. Only
+# its hint line changed: with the old `QE roll` text restored and every other
+# part of that change still in place, all four of the then-committed hashes
+# matched, so the camera basis, the star band's vector travel, the Doppler axis
+# and the bubble's projected outline are bit-for-bit a re-expression of what was
+# there before. The panel names the controls, and the controls changed.
 #
 # The case list lives here, in `tests/golden.rs` and in the `headless` CI job.
 # Adding a flight means adding it to all three.
@@ -54,4 +73,5 @@
 dbd77f751ca09625f68f43d092adb3ade0bb2a4751aeb8891e4f7afcf7e98046  truecolor.txt
 38ab01bf301f47a2200644ff65a54819981f866fd63efb6da8a818b5c538d118  ascii.txt
 b1bf6b01e246a956645090d9ec8eeeaa67af98bf69d6c638a55e493cc62fb6a4  warp.txt
-d907a8acf087b270d4ecbe22fe7e34cbe42384d4d476178d2b44149b813e0d97  side.txt
+95ee5280921b47bd9aa971e5f86d944dab82f074d55326a0843fb3d8c35f3bce  side.txt
+55c5d5abc88b7546c7ddc9a070e50f5e1a7f22ac1c85ee14acc5652ba350d433  orbit.txt

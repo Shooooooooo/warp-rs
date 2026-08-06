@@ -8,7 +8,7 @@
 
 use crate::models;
 use crate::term::ColorMode;
-use crate::view::ViewMode;
+use crate::view::{Orbit, ViewMode};
 use clap::{Parser, ValueEnum};
 use crossterm::terminal;
 
@@ -122,6 +122,22 @@ pub struct Args {
     #[arg(long, value_name = "NAME", default_value = "enterprise", value_parser = parse_ship)]
     pub ship: usize,
 
+    /// Where to park the outside camera, in degrees: round the ship, then over
+    /// it, then its own roll. `WASD` and `QE` fly it from there.
+    ///
+    /// `allow_hyphen_values` because half the range starts with a minus sign,
+    /// and without it clap reads `--orbit -75,10` as a flag it does not know
+    /// rather than as a camera behind the ship. The equals form works either
+    /// way; nobody should have to find that out.
+    #[arg(
+        long,
+        value_name = "AZ,EL[,ROLL]",
+        default_value = "0,0",
+        allow_hyphen_values = true,
+        value_parser = parse_orbit
+    )]
+    pub orbit: Orbit,
+
     /// Tonemap exposure. Higher is brighter.
     #[arg(long, default_value_t = 1.9, value_parser = positive)]
     pub exposure: f32,
@@ -198,6 +214,42 @@ fn parse_ship(text: &str) -> Result<usize, String> {
         let known: Vec<&str> = models::models().iter().map(|m| m.name).collect();
         format!("`{text}` is not a ship. Try one of: {}", known.join(", "))
     })
+}
+
+/// Two or three angles in degrees, comma-separated: round the ship, over it,
+/// and the camera's own roll.
+///
+/// Degrees rather than radians because this is the one place a person types the
+/// number, and a right angle is `90` to everyone and `1.5707964` to nobody.
+/// [`Orbit::held`] does the bounding, which is the same bounding a keypress
+/// gets — the clamp lives with the geometry rather than with each of the two
+/// ways of reaching it.
+///
+/// Not bounded here beyond that, and it does not need to be: an angle has no
+/// end to run away past, so unlike every other number on this command line the
+/// failure mode of a preposterous one is a picture, not an allocation.
+fn parse_orbit(text: &str) -> Result<Orbit, String> {
+    let mut angles = [0.0f32; 3];
+    let given: Vec<&str> = text.split(',').collect();
+    if given.len() < 2 || given.len() > 3 {
+        return Err(format!("expected AZ,EL or AZ,EL,ROLL, got `{text}`"));
+    }
+    for (angle, field) in angles.iter_mut().zip(&given) {
+        *angle = field
+            .trim()
+            .parse::<f32>()
+            .map_err(|_| format!("`{field}` is not an angle in degrees"))?;
+        if !angle.is_finite() {
+            return Err(format!("`{field}` is not an angle in degrees"));
+        }
+        *angle = angle.to_radians();
+    }
+    Ok(Orbit {
+        azimuth: angles[0],
+        elevation: angles[1],
+        roll: angles[2],
+    }
+    .held())
 }
 
 fn parse_size(text: &str) -> Result<(u16, u16), String> {
@@ -476,6 +528,41 @@ mod tests {
     /// [`ViewMode::label`] spells the second. Nothing makes them agree, so
     /// this does. Walks `ViewMode::ALL`, so a third camera is covered the day
     /// it is added rather than the day somebody notices.
+    #[test]
+    fn the_camera_can_be_parked_at_the_command_line() {
+        // Degrees in, radians out, and held to the same range a keypress is
+        // held to — the clamp lives with the geometry, so there is only one of
+        // it however the number arrived.
+        let args = args_for(&["--orbit", "90,45"]);
+        assert!((args.orbit.azimuth - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        assert!((args.orbit.elevation - std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+        assert_eq!(args.orbit.roll, 0.0, "an omitted roll is no roll");
+        assert!(
+            args_for(&[]).orbit.is_level(),
+            "the shot does not open on the beam"
+        );
+        // Three angles, and the third is the camera's own roll.
+        assert!(!args_for(&["--orbit", "0,0,30"]).orbit.is_level());
+        // Past the pole it is held rather than believed, and it wraps the two
+        // that go all the way round rather than refusing them.
+        let over = args_for(&["--orbit", "720,400,-900"]).orbit;
+        assert!(over.elevation <= crate::view::ELEVATION_LIMIT);
+        assert!(over.azimuth.abs() <= std::f32::consts::PI);
+        assert!(over.roll.abs() <= std::f32::consts::PI);
+
+        // And behind the ship, which is where half the range is and where a
+        // leading minus sign would otherwise be read as a flag.
+        let behind = args_for(&["--orbit", "-75,15"]).orbit;
+        assert!(behind.azimuth < 0.0 && behind.elevation > 0.0, "{behind:?}");
+
+        for bad in ["", "1", "1,2,3,4", "up,over", "1,nan", "1,inf", "--stars"] {
+            assert!(
+                Args::try_parse_from(["warp", "--orbit", bad]).is_err(),
+                "`{bad}` was accepted as a camera angle"
+            );
+        }
+    }
+
     #[test]
     fn the_command_line_takes_every_view_by_its_name() {
         for view in ViewMode::ALL {

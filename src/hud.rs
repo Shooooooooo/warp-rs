@@ -42,34 +42,39 @@ const ASCII_HINTS: [&str; 3] = [
     "SPACE warp  WASD steer  QE roll  ESC quit",
 ];
 
-/// And the same again for the view from outside, where WASD does nothing.
+/// And the same again for the view from outside, where those same six keys fly
+/// the camera instead of the ship.
 ///
 /// Pointing the nose is a thing you do from behind it: out there the camera
-/// rides with the ship, so a turn moves nothing an eye can see and the two
-/// axes that do it are switched off. The hints are the only place the controls
-/// are written down, so they have to stop naming a key that has gone quiet —
-/// a stick advertised and unresponsive reads as a bug in the flight model.
-/// Roll survives, and is worth more here than it is in the cockpit. And the
-/// zoom appears, which runs the other way — it is the one control that does
-/// nothing from the pilot's seat, since there is no ship to be looking at.
+/// rides with the ship, so a turn moves nothing an eye can see. What can
+/// usefully move in a view whose whole subject is the ship is the eye looking
+/// at it, so `WASD` swings the camera round the hull and over it and `QE` rolls
+/// it. The hints are the only place the controls are written down, and a stick
+/// that means one thing in here and another out there has to say so in both
+/// places or it reads as a bug in the flight model.
 ///
-/// It goes on the widest tier and no further, which is where `C view` and
-/// `M ships` already stop. There is no room for it below: the narrowest tier
-/// has seven columns spare against `MIN_COLS` and the fragment costs nine, and
-/// putting it on the middle tier would push that one past sixty columns — so a
-/// sixty-column window would shed the whole tier and lose the *throttle* to
-/// gain the zoom, which is a poor trade for a control it can barely see the
-/// effect of.
+/// `WASDQE cam` rather than anything longer, and the three columns it costs
+/// over `QE roll` are the entire budget. The narrowest tier had seven spare
+/// against `MIN_COLS` and now has four; spelling it `WASDQE camera` would take
+/// nine of the seven and burst the panel's own minimum. The ASCII middle tier
+/// is the other wall — at 56 it fits a sixty-column window with two columns to
+/// spare, and `tests/flight.rs` flies at exactly sixty, so a longer word there
+/// would shed the tier and lose the *throttle* to gain the camera.
+///
+/// The zoom still appears on the widest tier and no further, which is where
+/// `C view` and `M ships` already stop. It runs the other way from the rest —
+/// the one control that does nothing from the pilot's seat, since there is no
+/// ship in there to be looking at.
 const SIDE_HINTS: [&str; 3] = [
-    "SPACE warp  \u{2191}\u{2193} throttle  QE roll  [] zoom  C view  M ships  P pause  R reset  ESC quit",
-    "SPACE warp  \u{2191}\u{2193} throttle  QE roll  C view  ESC quit",
-    "SPACE warp  QE roll  C view  ESC quit",
+    "SPACE warp  \u{2191}\u{2193} throttle  WASDQE cam  [] zoom  C view  M ships  P pause  R reset  ESC quit",
+    "SPACE warp  \u{2191}\u{2193} throttle  WASDQE cam  C view  ESC quit",
+    "SPACE warp  WASDQE cam  C view  ESC quit",
 ];
 
 const ASCII_SIDE_HINTS: [&str; 3] = [
-    "SPACE warp  UP/DN throttle  QE roll  [] zoom  C view  M ships  P pause  R reset  ESC quit",
-    "SPACE warp  UP/DN throttle  QE roll  C view  ESC quit",
-    "SPACE warp  QE roll  C view  ESC quit",
+    "SPACE warp  UP/DN throttle  WASDQE cam  [] zoom  C view  M ships  P pause  R reset  ESC quit",
+    "SPACE warp  UP/DN throttle  WASDQE cam  C view  ESC quit",
+    "SPACE warp  WASDQE cam  C view  ESC quit",
 ];
 
 /// The characters the panel is drawn from.
@@ -592,15 +597,22 @@ mod tests {
         }
 
         // And the two views differ in exactly the way the controls do: the
-        // cockpit steers, the view from outside does not, and a hint that goes
-        // on offering a key that has been switched off is worse than no hint.
+        // cockpit stick flies the ship, the outside one flies the camera, and a
+        // hint that names the wrong one is worse than no hint. Both are
+        // asserted on every tier rather than on the widest: the whole point of
+        // the shorter ones is that they shed the *rare* controls, and the stick
+        // is not one of them.
         for set in [&HINTS, &ASCII_HINTS] {
             assert!(set.iter().all(|h| h.contains("WASD steer")), "{set:?}");
         }
         for set in [&SIDE_HINTS, &ASCII_SIDE_HINTS] {
             assert!(
-                set.iter().all(|h| !h.contains("WASD")),
-                "the outside view still advertises a stick it ignores: {set:?}"
+                set.iter().all(|h| h.contains("WASDQE cam")),
+                "the outside view does not name the camera it flies: {set:?}"
+            );
+            assert!(
+                set.iter().all(|h| !h.contains("steer")),
+                "the outside view offers a stick that does not fly the ship: {set:?}"
             );
             // And the zoom, which runs the other way: it does nothing at all
             // from the pilot's seat, so it is named out here and nowhere else.
@@ -637,14 +649,26 @@ mod tests {
             );
             screen.row_text(hint_row(34))
         };
-        assert!(read(ViewMode::Cockpit).contains("WASD"));
+        // Word by word rather than phrase by phrase: `overlay` is transparent
+        // and leaves the half-block showing through the gaps between words, so
+        // a row read back has the sky in its spaces.
+        let cockpit = read(ViewMode::Cockpit);
+        let side = read(ViewMode::Side);
         assert!(
-            !read(ViewMode::Side).contains("WASD"),
-            "the outside view offered a stick it ignores"
+            cockpit.contains("WASD") && cockpit.contains("steer"),
+            "{cockpit}"
         );
         assert!(
-            read(ViewMode::Side).contains("QE"),
-            "roll still works there"
+            !cockpit.contains("cam") && !cockpit.contains("zoom"),
+            "the cockpit offered a camera there is nothing to point at: {cockpit}"
+        );
+        assert!(
+            side.contains("WASDQE") && side.contains("cam"),
+            "the outside view did not offer the camera it flies: {side}"
+        );
+        assert!(
+            !side.contains("steer"),
+            "the outside view offered a stick that does not fly the ship: {side}"
         );
     }
 

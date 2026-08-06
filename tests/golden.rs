@@ -134,7 +134,7 @@ const COMMON: [&str; 7] = [
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
 /// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
 /// it to all three.
-const CASES: [(&str, &[&str]); 4] = [
+const CASES: [(&str, &[&str]); 5] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
     (
@@ -149,6 +149,20 @@ const CASES: [(&str, &[&str]); 4] = [
             "1.0",
             "--view",
             "side",
+            "--color",
+            "truecolor",
+        ],
+    ),
+    (
+        "orbit.txt",
+        &[
+            "--engage",
+            "--throttle",
+            "1.0",
+            "--view",
+            "side",
+            "--orbit",
+            "55,35,20",
             "--color",
             "truecolor",
         ],
