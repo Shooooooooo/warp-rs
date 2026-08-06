@@ -277,8 +277,8 @@ pub fn by_name(name: &str) -> Option<usize> {
 /// already has in mind, and the reason this hull is the one flown by default.
 ///
 /// Everything vertical is drawn thicker than scale. The whole ship is a little
-/// over half the canvas height long, so on a thirty-row terminal one unit here
-/// is about twenty subpixels, and an honest saucer would come out a single
+/// under half the canvas height long, so on a thirty-row terminal one unit here
+/// is about seventeen subpixels, and an honest saucer would come out a single
 /// subpixel thick — a line, not a shape.
 fn enterprise() -> ShipModel {
     let mut b = Builder::default();
