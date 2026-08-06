@@ -1,9 +1,11 @@
 //! The instrument panel.
 //!
 //! Drawn last, over the composed frame, so it reads as glass in front of the
-//! stars rather than something painted into the sky. Every element checks the
-//! terminal it has been given: on a small window the panel sheds detail
-//! instead of overflowing.
+//! stars rather than something painted into the sky. Nothing but the ink is
+//! written: the frame behind a readout is left exactly as it was drawn, so the
+//! field runs on under the panel instead of stopping in a box around every
+//! word. Every element checks the terminal it has been given: on a small
+//! window the panel sheds detail instead of overflowing.
 
 use crate::ship::Ship;
 use crate::term::{ColorMode, Screen};
@@ -856,8 +858,8 @@ mod tests {
 
     #[test]
     fn the_status_banner_reports_the_drive_state() {
-        // Over a black frame the shadow colour never changes, so each word
-        // lands in the output as one contiguous run.
+        // Over a black frame nothing behind the panel changes colour, so each
+        // word lands in the output as one contiguous run.
         let flushed = |ship: &Ship, paused: bool| {
             let mut screen = blank(120, 34);
             draw(

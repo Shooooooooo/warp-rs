@@ -294,13 +294,20 @@ twinkles a ring into the sky and makes engaging the drive re-render the field
 instead of bending it.
 
 **A glyph laid over the frame picks one of three backdrops, and they are not
-interchangeable.** `Screen::overlay` shadows what is behind it and skips its
-own spaces — right for an instrument the sky should show between the words.
-`overlay_mark` never darkens: the reticle sits inside the tunnel glare, and a
-shadow there punched four dark notches into the brightest part of the view.
+interchangeable.** `Screen::overlay` is transparent: it writes its ink and
+leaves the cell's background exactly as `compose` drew it, and skips its own
+spaces so the gaps between the words keep *both* halves of the frame rather
+than only the lower one. It used to drop a quarter-brightness shadow behind
+every glyph, which bought legibility when a streak was blazing directly behind
+a readout and paid for it with a dark box fenced around the whole panel —
+mostly a black box, against a sky that is mostly black. `overlay_mark` will not
+darken the *foreground* either, taking the brighter of the ink and the pixel it
+replaces: the reticle sits inside the tunnel glare, and writing its dim rule
+colour as given punched four dark notches into the brightest part of the view.
 `overlay_panel` covers outright, spaces included, because a dialogue is in
-front of the scene rather than painted on the glass. The shadow is applied per
-stamp, not per frame, so two overlays on one cell dim it twice.
+front of the scene rather than painted on the glass — and its dimming is
+applied per stamp, not per frame, so two panel overlays on one cell dim it
+twice. The other two are idempotent, which the shadow was not.
 
 **There is no depth buffer and none is needed.** Three things stand in for one,
 and all three have to keep holding:
