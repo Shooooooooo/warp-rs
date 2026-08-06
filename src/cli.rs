@@ -17,8 +17,8 @@ const FALLBACK_SIZE: (u16, u16) = (160, 48);
 
 /// Ceiling on the canvas, in terminal cells. A cell costs about 54 bytes across
 /// the four buffers a frame needs — two subpixels of HDR float, two of resolved
-/// RGB, and a front and back cell — so this is roughly 110 MB. Far past any real
-/// terminal, and small enough that it allocates instead of aborting.
+/// RGB, and a front and back cell — so this is roughly 110 MB. Far past any
+/// real terminal, and small enough that it allocates instead of aborting.
 const MAX_CELLS: usize = 2_000_000;
 /// And no single dimension past this, so the error names the obvious mistake
 /// rather than quoting a product.
@@ -26,6 +26,20 @@ const MAX_DIM: u16 = 10_000;
 /// Ceiling on `--stars`, fifty times the automatic maximum. A `Star` is 40
 /// bytes, so this is 40 MB of pool.
 const MAX_STARS: usize = 1_000_000;
+/// Ceiling on the two counts that are spent rather than allocated — `--frames`
+/// and `--warmup`. Nothing runs out of memory over these; a `u32` of them is
+/// simply a process that never comes back, and at sixty a second this is
+/// already four hours of flying. Bounded anyway, because a number on this
+/// command line that answers "how many" and has no limit is how the two above
+/// went wrong.
+const MAX_COUNT: u32 = 1_000_000;
+/// Ceiling on `--scale`. This one *is* an allocation, and it enters squared:
+/// the image is the canvas magnified on both axes, so at the snapshot's
+/// default 240x68 — 240 by 136 subpixels — sixteen comes to 3840 by 2176, or
+/// 25 MB of RGB. Past that the useful range has long since been left behind;
+/// the README's snapshots are taken at 2 and 3.
+#[cfg(feature = "snapshot")]
+const MAX_SCALE: usize = 16;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -71,7 +85,13 @@ pub struct Args {
     pub headless: bool,
 
     /// Frames to print in headless mode.
-    #[arg(long, default_value_t = 1, value_name = "N", requires = "headless")]
+    #[arg(
+        long,
+        default_value_t = 1,
+        value_name = "N",
+        requires = "headless",
+        value_parser = clap::value_parser!(u32).range(1..=MAX_COUNT as i64)
+    )]
     pub frames: u32,
 
     /// Colour depth. Auto-detected from COLORTERM and TERM by default.
@@ -113,12 +133,24 @@ pub struct Args {
 
     /// Frames to simulate before taking the snapshot.
     #[cfg(feature = "snapshot")]
-    #[arg(long, default_value_t = 300, value_name = "N", requires = "snapshot")]
+    #[arg(
+        long,
+        default_value_t = 300,
+        value_name = "N",
+        requires = "snapshot",
+        value_parser = clap::value_parser!(u32).range(0..=MAX_COUNT as i64)
+    )]
     pub warmup: u32,
 
     /// Magnification of the snapshot image.
     #[cfg(feature = "snapshot")]
-    #[arg(long, default_value_t = 3, value_name = "N", requires = "snapshot")]
+    #[arg(
+        long,
+        default_value_t = 3,
+        value_name = "N",
+        requires = "snapshot",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=MAX_SCALE as u64)
+    )]
     pub scale: usize,
 }
 
@@ -311,6 +343,39 @@ mod tests {
     }
 
     #[test]
+    fn the_counts_and_the_magnification_are_bounded_too() {
+        // Regression: these three were the numbers this module's own header
+        // said could not exist. `--frames` and `--warmup` took a whole `u32`,
+        // which is a run that never ends; `--scale` took a whole `usize` and
+        // is worse than slow, because the image is the canvas magnified on
+        // both axes and the buffer for it grows as the square. `--scale 0` was
+        // legal too, and was patched over three separate times at the far end
+        // by a `.max(1)` rather than refused here where the answer can be a
+        // message.
+        let frames = |n: &str| Args::try_parse_from(["warp", "--headless", "--frames", n]);
+        assert!(frames("1000001").is_err());
+        assert!(frames("1000000").is_ok());
+        assert!(frames("0").is_err(), "a flight of no frames is not one");
+
+        #[cfg(feature = "snapshot")]
+        {
+            let shot = |flag: &str, n: &str| {
+                Args::try_parse_from(["warp", "--snapshot", "a.png", flag, n])
+            };
+            assert!(shot("--warmup", "1000001").is_err());
+            assert!(shot("--warmup", "1000000").is_ok());
+            assert!(shot("--warmup", "0").is_ok(), "no warm-up is a legal ask");
+
+            assert!(shot("--scale", "17").is_err());
+            assert!(shot("--scale", "16").is_ok());
+            assert!(
+                shot("--scale", "0").is_err(),
+                "a magnification of nothing is an image of nothing"
+            );
+        }
+    }
+
+    #[test]
     fn sizes_parse_and_bad_ones_are_rejected() {
         assert_eq!(parse_size("200x50").unwrap(), (200, 50));
         assert_eq!(parse_size(" 80 X 24 ").unwrap(), (80, 24));
@@ -406,6 +471,25 @@ mod tests {
         }
     }
 
+    /// `ViewArg` and `ViewMode` are two enums for one idea, and the names on
+    /// the command line come from clap's derive over the first while
+    /// [`ViewMode::label`] spells the second. Nothing makes them agree, so
+    /// this does. Walks `ViewMode::ALL`, so a third camera is covered the day
+    /// it is added rather than the day somebody notices.
+    #[test]
+    fn the_command_line_takes_every_view_by_its_name() {
+        for view in ViewMode::ALL {
+            let parsed = Args::try_parse_from(["warp", "--view", view.label()])
+                .unwrap_or_else(|e| panic!("`--view {}` was refused: {e}", view.label()));
+            assert_eq!(
+                parsed.view.resolve(),
+                view,
+                "`--view {}` flew a different camera",
+                view.label()
+            );
+        }
+    }
+
     #[test]
     fn an_unknown_ship_is_refused_and_the_message_says_what_there_is() {
         let err = Args::try_parse_from(["warp", "--ship", "millennium falcon"])
@@ -422,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn color_modes_resolve() {
+    fn colour_modes_resolve() {
         assert_eq!(
             args_for(&["--color", "256"]).color.resolve(),
             ColorMode::Ansi256

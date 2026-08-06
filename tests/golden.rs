@@ -125,15 +125,15 @@ const COMMON: [&str; 7] = [
 /// The reference flights, by the file each one is recorded under.
 ///
 /// The last two are here because the first two turned out to cover very little.
-/// `--demo` spends its opening six seconds easing the throttle up and 120 frames
-/// at 60 fps is two of them, so the pinned sky was sublight throughout, peaking
-/// at a quarter of light speed with the drive cold — leaving the streak ramp,
-/// the glare, the flash, the Doppler shift and the whole view from outside
-/// unpinned. A change to any of those could repaint the sky unremarked.
+/// `--demo` spends its opening six seconds easing the throttle up and 120
+/// frames at 60 fps is two of them, so the pinned sky was sublight throughout,
+/// peaking at a quarter of light speed with the drive cold — leaving the streak
+/// ramp, the glare, the flash, the Doppler shift and the whole view from
+/// outside unpinned. A change to any of those could repaint the sky unremarked.
 ///
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
-/// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding it
-/// to all three.
+/// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
+/// it to all three.
 const CASES: [(&str, &[&str]); 4] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
@@ -195,12 +195,46 @@ fn the_digest_agrees_with_the_published_answers() {
         sha256::hex(&[b'a'; 1000]),
         "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"
     );
-    // And the block boundaries either side of where the padding has to spill.
-    for len in [55usize, 56, 63, 64, 65, 119, 120] {
-        assert_eq!(
-            sha256::hex(&vec![0u8; len]).len(),
+    // And the block boundaries either side of where the padding has to spill,
+    // against the published digest of that many zero bytes. This used to
+    // assert that the digest was sixty-four characters long, which `hex` gets
+    // right by construction — it formats eight `u32`s — so the one case the
+    // loop exists for, the length word landing in a second block, was checked
+    // by an assertion that could not fail.
+    for (len, want) in [
+        (
+            55,
+            "02779466cdec163811d078815c633f21901413081449002f24aa3e80f0b88ef7",
+        ),
+        (
+            56,
+            "d4817aa5497628e7c77e6b606107042bbba3130888c5f47a375e6179be789fbb",
+        ),
+        (
+            63,
+            "c7723fa1e0127975e49e62e753db53924c1bd84b8ac1ac08df78d09270f3d971",
+        ),
+        (
             64,
-            "a {len}-byte message did not produce a digest"
+            "f5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b",
+        ),
+        (
+            65,
+            "98ce42deef51d40269d542f5314bef2c7468d401ad5d85168bfab4c0108f75f7",
+        ),
+        (
+            119,
+            "f616b0d54e78571a9611f343c9f8e022e859e920381ab0e4d3da01e193a7bd7e",
+        ),
+        (
+            120,
+            "6edd9f6f9cc92cded36e6c4a580933f9c9f1b90562b46903b806f21902a1a54f",
+        ),
+    ] {
+        assert_eq!(
+            sha256::hex(&vec![0u8; len]),
+            want,
+            "{len} zero bytes hashed to the wrong thing"
         );
     }
 }
@@ -247,8 +281,8 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
     // of `--demo` never leaves sublight and a sublight streak is shorter than a
     // subpixel, so it takes the branch that never reads the constant.
     //
-    // Stated as the property the case list has to keep: some flight in it lights
-    // the drive, some flight in it gets outside the ship.
+    // Stated as the property the case list has to keep: some flight in it
+    // lights the drive, some flight in it gets outside the ship.
     let engaged = CASES.iter().any(|(_, case)| case.contains(&"--engage"));
     let outside = CASES.iter().any(|(_, case)| case.contains(&"side"));
     assert!(engaged, "no reference flight ever lights the drive");

@@ -81,8 +81,15 @@ pub struct Lensed {
 }
 
 impl Lens {
-    /// A lens that does nothing. Placed off-canvas as well as zero-sized so a
-    /// caller that only checks one of the two still gets the identity.
+    /// A lens that does nothing, and does it exactly rather than very nearly:
+    /// the zero radius is what every path here checks, through [`Self::is_on`],
+    /// so a sublight frame takes the same bytes it would if this module were
+    /// not in the tree.
+    ///
+    /// The centre is not a second line of defence, whatever it looks like.
+    /// This once claimed to be "placed off-canvas as well as zero-sized", and
+    /// `(0.0, 0.0)` is the top-left subpixel — as on the canvas as a point can
+    /// be. The radius is the whole of it.
     pub const OFF: Lens = Lens {
         center: (0.0, 0.0),
         radius: 0.0,
@@ -153,10 +160,17 @@ impl Lens {
 
     /// How sharply the lens is bending things at `p`, as a 0..=1 ramp.
     ///
-    /// The deflection falls off as the square of the distance, so a streak out
-    /// at the edge of the frame is displaced almost uniformly along its length
-    /// — which is to say not curved at all — and does not need chopping up.
-    /// This is what keeps a lensed frame close to the price of an unlensed one.
+    /// This is the *gradient* of the deflection, not the deflection: what
+    /// matters for chopping a streak up is how much the bend changes along it,
+    /// and that falls off as the inverse square of the distance where the
+    /// deflection itself only falls off as `e²/r`. So a streak out at the edge
+    /// of the frame is displaced almost uniformly along its length — which is
+    /// to say not curved at all — and can be laid down straight. That is what
+    /// keeps a lensed frame close to the price of an unlensed one.
+    ///
+    /// (Said here as "the deflection falls off as the square of the distance",
+    /// which is the wrong quantity and the wrong power, and disagreed with
+    /// [`Self::bends`] thirty lines above.)
     pub fn curvature(&self, p: (f32, f32)) -> f32 {
         if !self.is_on() {
             return 0.0;

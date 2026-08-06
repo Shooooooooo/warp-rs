@@ -53,7 +53,7 @@ impl ColorMode {
 }
 
 /// A cell's foreground and background, either of which may be the terminal's
-/// own default rather than a colour we chose.
+/// own default rather than a colour the frame set.
 #[cfg(test)]
 type CellColors = (Option<(u8, u8, u8)>, Option<(u8, u8, u8)>);
 
@@ -233,7 +233,7 @@ pub struct Screen {
     mode: ColorMode,
     /// What the terminal is currently showing.
     front: Vec<Cell>,
-    /// What we want it to show.
+    /// What it is to show next.
     back: Vec<Cell>,
     dirty: bool,
     /// A frame's bytes, reused across frames rather than reallocated.
@@ -463,7 +463,7 @@ impl Screen {
         let colored = self.colored();
         let mut last_fg: Option<Option<(u8, u8, u8)>> = None;
         let mut last_bg: Option<Option<(u8, u8, u8)>> = None;
-        // Where the terminal's cursor sits, if we know it.
+        // Where the terminal's cursor sits, when that is known.
         let mut cursor_at: Option<(usize, usize)> = None;
 
         for row in 0..self.rows {
@@ -562,6 +562,18 @@ fn to_color(rgb: Option<(u8, u8, u8)>) -> Color {
     }
 }
 
+/// Cut a line to `max` *characters*, which is what a cell holds. Counting
+/// bytes would slice a box rule or a degree sign in half and put the tail of
+/// it on the wire.
+///
+/// Here rather than in the panel or the picker because both draw text into a
+/// grid and both had a copy — the picker's this one, the panel's the same
+/// thing behind a `chars().count()` guard that bought nothing, since taking
+/// `max` characters from a shorter string already yields all of it.
+pub(crate) fn truncate(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
 /// The brighter of two colours, channel by channel.
 fn lighten(under: (u8, u8, u8), mark: (u8, u8, u8), mode: ColorMode) -> (u8, u8, u8) {
     let lit = (
@@ -606,8 +618,8 @@ const fn gap(level: u8, value: usize) -> u8 {
 /// of them. Built at compile time, so it costs nothing at startup either.
 ///
 /// Ties break downward, the way `min_by_key` broke them by keeping the first
-/// minimum. 115, 155, 195 and 235 all sit exactly between two levels, and a test
-/// pins every value against the scan this stands in for.
+/// minimum. 115, 155, 195 and 235 all sit exactly between two levels, and a
+/// test pins every value against the scan this stands in for.
 const NEAREST_CUBE: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut value = 0usize;
@@ -641,8 +653,8 @@ fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
         NEAREST_CUBE[rgb[2] as usize],
     ];
 
-    // The 24-step grey ramp is finer than the cube's grey diagonal, so near-grey
-    // colours come out visibly better if we let it compete.
+    // The 24-step grey ramp is finer than the cube's grey diagonal, so
+    // near-grey colours come out visibly better for letting it compete.
     //
     // Which step, in integers. This was a float divide, a `round` and a
     // `clamp` — a round trip through the FPU for what is a table lookup's worth
@@ -685,9 +697,10 @@ impl RawGuard {
         out.queue(terminal::EnterAlternateScreen)?;
         // No autowrap. The grid is painted with explicit cursor moves and never
         // relies on it, and leaving it on means a terminal that shrinks between
-        // our idea of its width and the next flush shears the frame diagonally
-        // instead of harmlessly clipping. It also keeps the bottom-right cell —
-        // which every full repaint writes — from scrolling the alternate screen.
+        // the width last measured and the next flush shears the frame
+        // diagonally instead of harmlessly clipping. It also keeps the
+        // bottom-right cell — which every full repaint writes — from scrolling
+        // the alternate screen.
         out.queue(terminal::DisableLineWrap)?;
         out.queue(cursor::Hide)?;
         out.flush()?;
@@ -739,11 +752,19 @@ mod tests {
         out
     }
 
-    /// What we put on the wire instead.
-    fn ours(write: impl FnOnce(&mut Sink<Vec<u8>>)) -> String {
+    /// What `Sink` puts on the wire instead. Named to pair with the helper
+    /// above: the whole point of these tests is that the two agree.
+    fn sink_ansi(write: impl FnOnce(&mut Sink<Vec<u8>>)) -> String {
         let mut buf = Vec::new();
         write(&mut Sink::<Vec<u8>>::Ansi(&mut buf));
         String::from_utf8(buf).expect("escape sequences are utf-8")
+    }
+
+    #[test]
+    fn truncate_counts_characters_not_bytes() {
+        let text = "\u{27E8} WARP \u{27E9}";
+        assert_eq!(truncate(text, 3).chars().count(), 3);
+        assert_eq!(truncate(text, 999), text);
     }
 
     #[test]
@@ -753,34 +774,34 @@ mod tests {
         // do that while the two agree to the byte.
         for (col, row) in [(0, 0), (7, 3), (79, 23), (199, 59), (1234, 999)] {
             assert_eq!(
-                ours(|s| s.move_to(col, row).unwrap()),
+                sink_ansi(|s| s.move_to(col, row).unwrap()),
                 crossterm_ansi(cursor::MoveTo(col as u16, row as u16)),
                 "MoveTo({col}, {row})"
             );
         }
         for rgb in [(0, 0, 0), (255, 255, 255), (1, 10, 100), (58, 92, 118)] {
             assert_eq!(
-                ours(|s| s.set_color(Some(rgb), Ground::Foreground).unwrap()),
+                sink_ansi(|s| s.set_color(Some(rgb), Ground::Foreground).unwrap()),
                 crossterm_ansi(SetForegroundColor(to_color(Some(rgb)))),
                 "foreground {rgb:?}"
             );
             assert_eq!(
-                ours(|s| s.set_color(Some(rgb), Ground::Background).unwrap()),
+                sink_ansi(|s| s.set_color(Some(rgb), Ground::Background).unwrap()),
                 crossterm_ansi(SetBackgroundColor(to_color(Some(rgb)))),
                 "background {rgb:?}"
             );
         }
         assert_eq!(
-            ours(|s| s.set_color(None, Ground::Foreground).unwrap()),
+            sink_ansi(|s| s.set_color(None, Ground::Foreground).unwrap()),
             crossterm_ansi(SetForegroundColor(Color::Reset))
         );
         assert_eq!(
-            ours(|s| s.set_color(None, Ground::Background).unwrap()),
+            sink_ansi(|s| s.set_color(None, Ground::Background).unwrap()),
             crossterm_ansi(SetBackgroundColor(Color::Reset))
         );
         for ch in [' ', HALF_BLOCK, '@', '\n', '\u{250C}'] {
             assert_eq!(
-                ours(|s| s.glyph(ch).unwrap()),
+                sink_ansi(|s| s.glyph(ch).unwrap()),
                 crossterm_ansi(Print(ch)),
                 "{ch:?}"
             );
@@ -824,7 +845,7 @@ mod tests {
         screen.flush(&mut second).unwrap();
         assert!(second.is_empty(), "an unchanged frame should cost nothing");
 
-        // ...until we invalidate what we think the terminal is showing.
+        // ...until what the terminal is believed to be showing is invalidated.
         screen.force_redraw();
         screen.compose(&px);
         let mut third = Vec::new();

@@ -3,7 +3,9 @@
 //! The unit tests can reach into private state; these deliberately cannot.
 //! They fly through the same surface any other program would have to use, so
 //! they fail if the library stops being usable without the binary — which is
-//! the whole reason `main.rs` is fifteen lines.
+//! the whole reason `main.rs` does nothing but parse, fly and report. Said
+//! that way rather than as a line count, which is what it used to be and had
+//! already drifted by one.
 
 use clap::Parser;
 use std::time::{Duration, Instant};
@@ -101,7 +103,12 @@ fn the_seed_is_still_the_whole_of_the_state_from_outside() {
 fn every_ship_can_be_flown_from_the_command_line() {
     // A ship the picker offers but the command line will not take is a ship
     // that cannot be screenshotted, which is most of what these flags are for.
-    for ship in ["dart", "hauler", "needle", "beetle", "trident"] {
+    //
+    // Read off `models()` rather than written out. The list here was five names
+    // long against a hangar of six — `enterprise`, the default and the one
+    // every run flies unless told otherwise, was the one missing — and a
+    // seventh hull would have gone uncovered the same silent way.
+    for ship in warp_rs::models::models().iter().map(|m| m.name) {
         let out = fly(
             &[
                 "--seed", "1", "--stars", "200", "--view", "side", "--ship", ship,

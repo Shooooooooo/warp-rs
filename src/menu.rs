@@ -10,7 +10,7 @@
 //! describes — which is also why opening it takes the camera outside.
 
 use crate::models;
-use crate::term::{ColorMode, Screen};
+use crate::term::{truncate, ColorMode, Screen};
 
 const FRAME: (u8, u8, u8) = (96, 176, 208);
 const TITLE: (u8, u8, u8) = (226, 240, 255);
@@ -240,8 +240,8 @@ fn wanted_cols() -> usize {
 ///
 /// Shedding a blurb is a detail going quietly, and the rest of this module does
 /// that without comment. Hiding whole ships is not the same thing: there would
-/// otherwise be nothing at all to tell a six-ship hangar shortened to three from
-/// a hangar that only has three ships in it.
+/// otherwise be nothing at all to tell a six-ship hangar shortened to three
+/// from a hangar that only has three ships in it.
 fn title(menu: &Menu, total: usize, shown: usize, inner: usize) -> String {
     if shown >= total {
         return pad("SELECT SHIP", inner);
@@ -294,10 +294,6 @@ fn pad(text: &str, width: usize) -> String {
         out.push(' ');
     }
     out
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
 }
 
 #[cfg(test)]

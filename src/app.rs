@@ -29,12 +29,13 @@ const MAX_FRAME_DT: f32 = 0.25;
 /// The widest step [`Flight::advance`] will take, whatever it is handed.
 ///
 /// Deliberately looser than `MAX_FRAME_DT`, which is the interactive loop's own
-/// limit and is tight because a frame on a real terminal is never a quarter of a
-/// second. This one sits underneath *every* caller, so it has to leave the
+/// limit and is tight because a frame on a real terminal is never a quarter of
+/// a second. This one sits underneath *every* caller, so it has to leave the
 /// legitimate ones alone: headless and snapshot step at `1.0 / --fps` and
-/// `--fps` is floored at 1, so a second is the longest step anything in the tree
-/// asks for. Past that it is not a frame, and the fixed-step loop below would
-/// grind through a hundred and twenty simulation steps for every second of it.
+/// `--fps` is floored at 1, so a second is the longest step anything in the
+/// tree asks for. Past that it is not a frame, and the fixed-step loop below
+/// would grind through a hundred and twenty simulation steps for every second
+/// of it.
 const MAX_STEP_DT: f32 = 1.0;
 /// Stars per subpixel when the count is chosen automatically.
 const AUTO_DENSITY: f32 = 0.05;
@@ -380,8 +381,9 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char('q' | 'Q') => flight.ship.nudge_roll(-1.0),
         KeyCode::Char('e' | 'E') => flight.ship.nudge_roll(1.0),
 
-        // The throttle is the arrows, which is where it has always been: only
-        // its letters went to the stick.
+        // The throttle is the up and down arrows, which is where it has
+        // always been: only its letters went to the stick. The other two
+        // arrows are yaw, four lines above.
         KeyCode::Up => flight.ship.nudge_throttle(1.0),
         KeyCode::Down => flight.ship.nudge_throttle(-1.0),
 
@@ -495,7 +497,7 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                     }
                 }
                 // Only repaint if the size really changed: terminals emit
-                // resize events that settle on the size we already have, and
+                // resize events that settle on the size already in use, and
                 // clearing on those makes the field blink for no reason.
                 Event::Resize(cols, rows) => {
                     let changed = flight.resize(args, cols as usize, rows as usize);
@@ -567,8 +569,8 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
     eprintln!(
         "wrote {} ({}x{} px) at velocity {:.1} c",
         path.display(),
-        w * args.scale.max(1),
-        h * args.scale.max(1),
+        w * args.scale,
+        h * args.scale,
         flight.ship.velocity_c()
     );
     Ok(())
@@ -579,6 +581,12 @@ mod tests {
     use super::*;
     use crate::cli::args_for;
     use crate::term::ColorMode;
+
+    /// A key going down, with nothing held. Written out nine times before this
+    /// existed, which is nine places to miss if the modifier ever matters.
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
 
     #[test]
     fn a_flight_that_has_been_up_for_days_still_advances() {
@@ -729,7 +737,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         let before = flight.ship.throttle;
         handle_key(press(KeyCode::Up), &mut flight, &args, &mut paused);
@@ -768,7 +775,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         // Pitch, yaw, roll — the first key of each pair is the negative end.
         let rates = |ship: &Ship| [ship.pitch_rate, ship.yaw_rate, ship.roll_rate];
@@ -787,8 +793,9 @@ mod tests {
                         "{key} moved the stick the wrong way: {}",
                         rates[axis]
                     );
-                    // One key, one axis: the stick must not cross-couple, and
-                    // W and S must no longer touch the throttle they used to be.
+                    // One key, one axis: the stick must not cross-couple,
+                    // and W and S must no longer touch the throttle they
+                    // used to be.
                     for other in (0..3).filter(|o| *o != axis) {
                         assert_eq!(rates[other], 0.0, "{key} also moved axis {other}");
                     }
@@ -826,7 +833,6 @@ mod tests {
         let args = args_for(&["--stars", "300", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         for _ in 0..30 {
             handle_key(press(KeyCode::Char('e')), &mut flight, &args, &mut paused);
@@ -911,7 +917,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         assert_eq!(flight.view(), ViewMode::Side);
@@ -984,7 +989,6 @@ mod tests {
         let frames = |pitched: bool| {
             let mut flight = Flight::new(&args, 80, 24);
             let mut paused = false;
-            let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
             for _ in 0..120 {
                 if pitched {
@@ -1115,7 +1119,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
         assert!(flight.menu_open(), "M did not open the picker");
@@ -1141,7 +1144,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
 
         let throttle = flight.ship.throttle;
@@ -1167,7 +1169,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let flown = |f: &Flight| f.drawn_model().name;
 
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
@@ -1226,7 +1227,6 @@ mod tests {
         let args = args_for(&["--stars", "500", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         let outside = flight.stars();

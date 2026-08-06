@@ -312,13 +312,14 @@ impl StarField {
 
             // Two quite different events wear the same disguise here. Flying
             // past the canopy — or fanning out beyond the edge of the frustum
-            // on the way in, which is the same thing — leaves the star behind
-            // us, and the far plane is the only place it can honestly come back
+            // on the way in, which is the same thing — leaves the star astern,
+            // and the far plane is the only place it can honestly come back
             // from. But a turn that *swings* a star out of view has not passed
             // it: the sky making room is the sky on the other side, already at
             // whatever distance it had. Sending that to the far plane too is
-            // what emptied the edges of the frame during a hard turn, and roll,
-            // which sweeps the whole frame at once, makes it impossible to miss.
+            // what emptied the edges of the frame during a hard turn, and
+            // roll, which sweeps the whole frame at once, makes it
+            // impossible to miss.
             let swung_out = match (here, escaped(offset(coasted))) {
                 (Some(offset), false) => Some(offset),
                 _ => None,
@@ -764,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn colors_stay_in_gamut() {
+    fn colours_stay_in_gamut() {
         for class in CLASSES {
             for f in 0..=20 {
                 for a in 0..=20 {

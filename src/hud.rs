@@ -8,7 +8,7 @@
 //! window the panel sheds detail instead of overflowing.
 
 use crate::ship::Ship;
-use crate::term::{ColorMode, Screen};
+use crate::term::{truncate, ColorMode, Screen};
 use crate::view::ViewMode;
 
 const LABEL: (u8, u8, u8) = (96, 176, 208);
@@ -110,8 +110,15 @@ impl Glyphs {
     /// Chosen against [`crate::term`]'s brightness ramp as much as against the
     /// alphabet: in this mode the panel has no colour to set it apart from the
     /// starfield, so a glyph the ramp also draws — `#`, `.`, `+`, `*` — reads
-    /// as a bright star rather than as an instrument. The bar and the reticle,
-    /// which are shapes rather than words, avoid the ramp entirely.
+    /// as a bright star rather than as an instrument.
+    ///
+    /// That rule binds the *shapes* and not the words, and only the shapes:
+    /// the bar, the rules and the reticle keep out of the ramp entirely, and
+    /// `the_ascii_shapes_stay_clear_of_the_brightness_ramp` is what holds them
+    /// there. The frame corners and the degree sign are `+` and `*`, both of
+    /// which are in it — a corner is read from the box it closes and a degree
+    /// sign from the number in front of it, so neither is mistakable for a
+    /// star the way a bar of `#` against a sky of `#` would be.
     const ASCII: Glyphs = Glyphs {
         frame_top: '+',
         frame_bottom: '+',
@@ -372,15 +379,6 @@ fn roll_text(ship: &Ship, g: &Glyphs) -> String {
     format!("{:>+6.1}{d}", ship.roll.to_degrees())
 }
 
-/// Character-aware truncation — the panel is full of multi-byte glyphs.
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        text.chars().take(max).collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,20 +434,42 @@ mod tests {
 
     #[test]
     fn the_panel_renders_at_every_point_in_the_flight_envelope() {
+        // This used to assert nothing at all, so the only failure it could
+        // report was a panic — which is worth having, since the panel indexes
+        // a grid, but it is not what the name promises. A panel that quietly
+        // drew nothing at some speed would have passed.
         let mut ship = Ship::new();
         let mut screen = blank(100, 30);
+        let drawn = |screen: &Screen| {
+            (0..30)
+                .flat_map(|row| screen.row_text(row).chars().collect::<Vec<_>>())
+                .filter(|ch| !ch.is_whitespace() && *ch != '\u{2580}')
+                .count()
+        };
+
         draw(&mut screen, &readout(&ship));
+        assert!(drawn(&screen) > 20, "the panel drew nothing at rest");
 
         ship.throttle = 1.0;
         ship.toggle_warp();
-        for _ in 0..1200 {
+        for frame in 0..1200 {
             ship.update(1.0 / 60.0);
             draw(&mut screen, &readout(&ship));
+            assert!(
+                drawn(&screen) > 20,
+                "the panel emptied at frame {frame} on the way up, at {:.1} c",
+                ship.velocity_c()
+            );
         }
         ship.toggle_warp();
-        for _ in 0..1200 {
+        for frame in 0..1200 {
             ship.update(1.0 / 60.0);
             draw(&mut screen, &readout(&ship));
+            assert!(
+                drawn(&screen) > 20,
+                "the panel emptied at frame {frame} on the way down, at {:.1} c",
+                ship.velocity_c()
+            );
         }
     }
 
@@ -675,9 +695,9 @@ mod tests {
         // readouts out of their columns on exactly the terminals least able
         // to spare the room.
         let ship = Ship::new();
-        // The hints are left out: "UP/DN" is genuinely wider than "\u{2191}\u{2193}",
-        // so that one line is expected to differ, and it is right-aligned on a
-        // row of its own precisely so it can.
+        // The hints are left out: "UP/DN" is genuinely wider than
+        // "\u{2191}\u{2193}", so that one line is expected to differ, and it is
+        // right-aligned on a row of its own precisely so it can.
         let quiet = Readout {
             ship: &ship,
             fps: 60.0,
@@ -712,13 +732,6 @@ mod tests {
                 "the two faces disagree about the layout at {cols}x{rows}"
             );
         }
-    }
-
-    #[test]
-    fn truncate_counts_characters_not_bytes() {
-        let text = "\u{27E8} WARP \u{27E9}";
-        assert_eq!(truncate(text, 3).chars().count(), 3);
-        assert_eq!(truncate(text, 999), text);
     }
 
     #[test]
@@ -802,8 +815,12 @@ mod tests {
 
     #[test]
     fn the_hints_shed_detail_rather_than_vanishing() {
-        // The full hint needs 63 columns. Below that a shorter one still has
-        // to name the keys that matter, down to the panel's own minimum.
+        // Each tier needs its own width plus the two columns that keep it off
+        // the right-hand edge, so the widest fits only a wide terminal and
+        // most of this range gets a shorter one. Whichever is chosen still has
+        // to name the keys that matter, down to the panel's own minimum. Said
+        // as the rule rather than as a column count, which is what it was and
+        // had outlived the hints it was counting by nearly thirty columns.
         let ship = Ship::new();
         let rows = 24;
         for cols in MIN_COLS..=120 {
