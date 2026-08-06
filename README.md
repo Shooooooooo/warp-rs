@@ -32,11 +32,19 @@ cargo run --release -- --demo
 
 ## Flying
 
+The stick flies the ship from the pilot's seat and the camera from outside it —
+six keys, two jobs, and which one you get is which view you are in:
+
+| Key | Cockpit | Outside |
+| --- | --- | --- |
+| `W` `S` / `I` `K` | Pitch — nose up and nose down | Swing the camera over the ship and under it |
+| `A` `D` / `←` `→` | Yaw — nose left and nose right | Swing the camera round toward the tail and the nose |
+| `Q` `E` | Roll — port and starboard | Roll the camera |
+
+Everything else means the same thing in both:
+
 | Key | |
 | --- | --- |
-| `W` `S` / `I` `K` | Pitch — nose up and nose down. Cockpit only |
-| `A` `D` / `←` `→` | Yaw — nose left and nose right. Cockpit only |
-| `Q` `E` | Roll — port and starboard |
 | `↑` `↓` | Throttle |
 | `Space` | Engage or disengage the warp drive |
 | `C` | Cycle the camera — cockpit, then outside |
@@ -44,7 +52,7 @@ cargo run --release -- --demo
 | `M` | Pick a ship |
 | `+` `-` | More or fewer stars |
 | `P` | Pause |
-| `R` | Reset |
+| `R` | Reset — the throttle, the ship's attitude, and the camera |
 | `Esc` / `Ctrl-C` / `Ctrl-D` | Quit |
 
 Throttle and steering are impulse-driven — a press nudges the ship and it eases
@@ -63,7 +71,8 @@ It is the only thing that will tell you the ship is inverted once the sky has
 stopped turning.
 
 `Q` steers rather than quits, so a hand on the stick cannot end the flight by
-accident. `Esc` or `Ctrl-C` gets you out.
+accident — and from outside it swings the camera rather than quitting, which is
+the same promise kept the same way. `Esc` or `Ctrl-C` gets you out.
 
 ## What you are looking at
 
@@ -94,10 +103,11 @@ day underway, which is about 5 light years per second at full warp.
 
 ![The warp bubble lensing the sky around the ship](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/side.png)
 
-`C` moves the camera off the ship's starboard beam. The hull is there in
-profile, the sky streams astern past it, and the stars nearest the camera sweep
-by while the far ones crawl — the same depth parallax the cockpit view has, seen
-sideways on.
+`C` opens the shot off the ship's starboard beam. The hull is there in profile,
+the sky streams astern past it, and the stars nearest the camera sweep by while
+the far ones crawl — the same depth parallax the cockpit view has, seen sideways
+on. That is where the camera *starts*; `WASD` takes it anywhere round the ship
+from there.
 
 Light the drive out here and the sky bends. A warp bubble is a lump of curved
 spacetime and it lenses starlight exactly as any other mass would: the sky
@@ -137,17 +147,26 @@ drive down takes it away again in a single frame while the ship is still doing
 most of its old speed, which is the one thing the speed readout alone will not
 tell you.
 
-The camera rides with the ship rather than with the sky, so a roll turns the
-*hull* against a level starfield — `Q` or `E` held down is a barrel roll you can
-watch from the outside, which is the one thing the view from the cockpit cannot
-show you.
+The camera rides with the ship rather than with the sky, and out here the stick
+flies the camera. `W` and `S` lift it up over the hull and drop it under, `A`
+and `D` walk it round toward the tail and the nose, and `Q` and `E` roll it.
+There are no stops on any of them. A quarter turn of `W` looks straight down on
+the ship, and holding it carries the camera on over the top, past an upside-down
+view from the far beam and back round to where it started — one continuous loop,
+the same as `A` and `D` make horizontally. Dead ahead is the nose coming at you;
+dead astern is the drive coming at you. `R` puts the camera back on the beam.
 
-The same fact switches the other two axes off. Pointing the nose is something
-you do from behind it: out here a turn moves nothing an eye can see, since the
-stars stream on exactly as they were and the hull leans a few degrees, so pitch
-and yaw are simply not connected in this view and the hint line stops offering
-them. Press `C` to go back inside and the stick comes back with it. Throttle,
-warp and roll work in both.
+Pointing the nose is something you do from behind it, so out here that is not
+what the stick is for. A turn of the *hull* moves nothing an eye can see — the
+stars stream on exactly as they were and the ship leans a few degrees — and a
+control that swallows the input and gives nothing back is worse than one that
+plainly is not connected. Press `C` to go back inside and the six keys fly the
+ship again. Throttle and warp work in both.
+
+The sky comes with the camera, which is the thing that makes this a camera move
+rather than a barrel roll: swing round the ship and the stars swing past. Lift
+the camera over the hull and they sweep down the frame, which is the only thing
+distinguishing looking down on a ship from watching it roll.
 
 One control runs the other way. `[` and `]` — or the scroll wheel — push the
 camera out and in, and they do nothing from the pilot's seat, where there is no
@@ -156,9 +175,11 @@ of the frame's height, so it reads as something crossing the view rather than
 parked in it; `]` walks it in from there and `R` puts it back. The warp bubble
 is sized and seated against the *ship* rather than against the frame, so it
 comes and goes with the hull instead of hanging there at a fixed size, and the
-wake keeps its length in ships however far off the camera is. The sky does not
-move at all — pulling the camera back a few units against stars that are
-hundreds away is no parallax worth drawing.
+wake keeps its length in ships however far off the camera is. It is a solid and
+not a decal, so swinging round to look down the track shows it end-on — a
+circle rather than the ellipse it is from the beam. The star band does not
+otherwise move for the zoom: pulling the camera back a few units against stars
+that are hundreds away is no parallax worth drawing.
 
 `M` opens a picker for the six hulls. It takes the camera outside if it is not
 already, and moving through the list flies each ship rather than naming it:
@@ -248,6 +269,7 @@ Or just as a window: `tmux new-window -n warp 'warp --screensaver'`.
 | `--color auto\|truecolor\|256\|ascii` | Colour depth. Auto-detected by default. |
 | `--engage` | Start with the drive already lit. |
 | `--view cockpit\|side` | Which camera to start behind. `C` cycles them. |
+| `--orbit AZ,EL[,ROLL]` | Where to park the outside camera, in degrees. |
 | `--ship NAME` | Which ship to fly. Only visible from outside. |
 | `--throttle 0..1` | Starting throttle. |
 | `--exposure N` | Tonemap exposure. Higher is brighter. |

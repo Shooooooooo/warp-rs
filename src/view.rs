@@ -1,9 +1,23 @@
 //! Which camera the flight is being flown behind, and where the outside one
 //! is parked.
 //!
-//! A leaf module on purpose: the flight loop, the renderer, the panel and the
+//! Nearly a leaf on purpose: the flight loop, the renderer, the panel and the
 //! command line all need to name a view, and none of them should have to reach
-//! through another to do it.
+//! through another to do it. The one thing it reaches for is
+//! [`crate::ship::wrap_signed`], because an eye swung round a ship and a ship
+//! rolled about its own nose have exactly the same arithmetic to do and there
+//! is no sense in two answers to it.
+//!
+//! Two things live here that a reader might expect to find beside the hull or
+//! beside the sky. [`Orbit`] is where the outside camera is pointed and [`Eye`]
+//! is that plus how far off it is, and both are here rather than in
+//! [`crate::models`] because they are what the *sky* is streamed against as
+//! well as what the hull is posed by — putting them next to the hull would make
+//! [`crate::exterior`] reach through the ship models to find out which way it
+//! is being looked at.
+
+use crate::ship::wrap_signed;
+use std::f32::consts::{PI, TAU};
 
 /// Focal length of the side camera, as a multiple of the canvas height. Longer
 /// than the cockpit's 0.85: a long lens flattens the hull into a profile, which
@@ -96,6 +110,229 @@ const _: () = assert!(
     "the near and far ends of the zoom have been swapped"
 );
 
+/// One press of a camera key. Sixty of them go all the way round, which is a
+/// visible nudge on a single tap and about two seconds of auto-repeat for a
+/// full turn — the same bargain the zoom strikes with its fourteen notches.
+/// Additive rather than geometric, because an angle has no far end to be shoved
+/// about: every part of the swing is worth the same.
+pub const ORBIT_STEP: f32 = TAU / 60.0;
+/// How quickly the camera catches up with the angle it has been asked for.
+///
+/// Its own constant rather than [`ZOOM_EASE`], which it happens to equal: the
+/// two settle at the same rate because a third of a second is what a camera
+/// move wants either way, not because they are the same control. Tune one and
+/// the other should not follow.
+pub const ORBIT_EASE: f32 = 9.0;
+
+/// An angle folded onto a single turn, and left exactly alone if it is already
+/// on one.
+///
+/// The guard is not an optimisation. [`wrap_signed`] goes through `rem_euclid`
+/// and back, which does not return an angle already in range bit for bit — and
+/// this is applied on every press and every eased step, so without it a notch
+/// and its opposite would not cancel, `Orbit::is_level` would stop answering
+/// yes to a camera that had been put back, and every fast path that turns on
+/// that answer would quietly stop firing. `crate::exterior` guards its own
+/// vertical fold for exactly the same reason and it is the same trap.
+fn turn_of(angle: f32) -> f32 {
+    if (-PI..PI).contains(&angle) {
+        angle
+    } else {
+        wrap_signed(angle)
+    }
+}
+
+/// Where the camera outside is pointed, as three angles about the ship.
+///
+/// All of them are the *camera's*, not the hull's. Out here the direction of
+/// travel is the one thing that cannot move — the ship flies where its nose
+/// points and the band of sky streams along that track — so the way to look at
+/// the ship from somewhere else is to go somewhere else, and these three say
+/// where. The ship goes on flying dead ahead through all of them.
+///
+/// All three go all the way round, and none of them stops. The elevation used
+/// to stop at the quarter turn, on the argument that a turn of the azimuth
+/// already reaches everything past it — which is true about *coverage* and
+/// says nothing about how a camera behaves under a held key. A control that
+/// stops dead halfway through the gesture that is being made with it is a
+/// control that has failed, whatever the reachable set looks like. Going over
+/// the top turns the picture upside down and keeps turning, because that is
+/// what going over the top is.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Orbit {
+    /// Round the ship, about its own down axis. Zero is dead abeam to
+    /// starboard — the shot as it opens — and positive walks the camera
+    /// forward toward the nose, so at a quarter turn it is ahead looking back
+    /// down the throat and at three-quarters it is astern in the wake. Wraps.
+    pub azimuth: f32,
+    /// Up over the hull and down under it, about the track. Zero is level with
+    /// it, positive lifts the camera, and a quarter turn is the plan view.
+    /// Wraps, so half a turn is the view from the far beam, inverted.
+    ///
+    /// The flight model's `PITCH_LIMIT` does stop short of straight up, and the
+    /// contrast is the point rather than an inconsistency: a *ship* pitched
+    /// past the vertical has no way back over the top, and a camera swung past
+    /// it has nothing to recover from.
+    pub elevation: f32,
+    /// The camera's own roll, about the axis it is looking down. Turns the
+    /// picture — hull and sky together — rather than anything in it. Wraps.
+    pub roll: f32,
+}
+
+impl Orbit {
+    /// The shot as it opens, and where `R` puts it back: off the starboard
+    /// beam, level, and upright.
+    pub const LEVEL: Orbit = Orbit {
+        azimuth: 0.0,
+        elevation: 0.0,
+        roll: 0.0,
+    };
+
+    /// Whether this is that shot, exactly.
+    ///
+    /// Asked rather than approximated, and the callers lean on it hard: the
+    /// star band skips its whole rotation path here, the bubble takes an
+    /// unforeshortened outline, and between them that is what keeps a default
+    /// flight producing the bytes it produced before any of this existed.
+    pub fn is_level(self) -> bool {
+        self == Self::LEVEL
+    }
+
+    /// This orbit, folded onto a single turn on all three axes, and sent home
+    /// outright if any of them is not a number.
+    ///
+    /// The NaN case is the reason this is not three calls to `clamp`: `clamp`
+    /// passes a NaN straight out the other side, and a NaN angle here is not a
+    /// frame drawn slightly wrong, it is a frame with no sky in it at all.
+    ///
+    /// Nothing is clamped any more, and nothing needs to be. The basis below is
+    /// orthonormal and right-handed at every angle on every axis — there is no
+    /// pole for it to go singular at, because the screen-right axis does not
+    /// depend on the elevation at all — so the only thing a limit ever bought
+    /// was a smaller set of numbers to think about, at the price of a camera
+    /// that stopped dead under a held key.
+    pub fn held(self) -> Self {
+        if !self.azimuth.is_finite() || !self.elevation.is_finite() || !self.roll.is_finite() {
+            return Self::LEVEL;
+        }
+        Self {
+            azimuth: turn_of(self.azimuth),
+            elevation: turn_of(self.elevation),
+            roll: turn_of(self.roll),
+        }
+    }
+
+    /// The camera's axes, in the hull's own frame: screen right, screen down,
+    /// and the direction it is looking.
+    ///
+    /// The hull's frame is `+z` out the nose, `+x` to starboard, `+y` down, so
+    /// before the camera's own roll is applied:
+    ///
+    /// ```text
+    /// R = (-sin a,       0,     cos a      )
+    /// D = ( sin e cos a, cos e, sin e sin a)
+    /// F = (-cos e cos a, sin e, -cos e sin a)
+    /// ```
+    ///
+    /// and the roll turns the first two about the third. Orthonormal and of
+    /// determinant one at every angle, which is what lets [`crate::models`] go
+    /// on deciding which way a plate faces from the sign of its projected
+    /// area: the mirror image of this would look almost right and invert every
+    /// facing test.
+    ///
+    /// At [`Self::LEVEL`] every sine is exactly zero and every cosine exactly
+    /// one, so this comes out as `R = (0, 0, 1)`, `D = (0, 1, 0)`,
+    /// `F = (-1, 0, 0)` — the quarter turn about the ship's down axis that put
+    /// the nose to screen right and the starboard side toward the camera for as
+    /// long as this view has existed. Not approximately: every product in
+    /// [`Eye::to_camera`] then has an exact zero or an exact one in it, so a
+    /// level frame is drawn from the same bytes it always was. That is a
+    /// property the reference frames check, not a claim.
+    pub fn basis(self) -> [[f32; 3]; 3] {
+        let (sa, ca) = self.azimuth.sin_cos();
+        let (se, ce) = self.elevation.sin_cos();
+        let (sk, ck) = self.roll.sin_cos();
+
+        let right = [-sa, 0.0, ca];
+        let down = [se * ca, ce, se * sa];
+        let forward = [-ce * ca, se, -ce * sa];
+
+        let mut rolled_right = [0.0; 3];
+        let mut rolled_down = [0.0; 3];
+        for i in 0..3 {
+            rolled_right[i] = right[i] * ck + down[i] * sk;
+            rolled_down[i] = down[i] * ck - right[i] * sk;
+        }
+        [rolled_right, rolled_down, forward]
+    }
+
+    /// Which way the ship is pointing, in the camera's space.
+    ///
+    /// The nose is `(0, 0, 1)` in the hull's frame, so this is the third column
+    /// of [`Self::basis`] and nothing more. Two things want it: the sky, which
+    /// streams the other way along it, and the bubble, which is drawn out along
+    /// it and has to know how much of that length the camera can still see.
+    pub fn nose_in_camera(self) -> [f32; 3] {
+        let b = self.basis();
+        [b[0][2], b[1][2], b[2][2]]
+    }
+
+    /// Which way the sky runs, in the camera's space: the opposite of the nose,
+    /// because the ship is what is moving.
+    ///
+    /// Exactly `(-1, 0, 0)` at [`Self::LEVEL`], which is the assumption the
+    /// star band was written under and still takes its fast path on.
+    pub fn sky_travel(self) -> [f32; 3] {
+        let n = self.nose_in_camera();
+        [-n[0], -n[1], -n[2]]
+    }
+}
+
+/// The whole of where the outside camera is: which way it is pointed, and how
+/// far off it is parked.
+///
+/// A bundle rather than two arguments threaded side by side through six
+/// functions, and it is the honest unit anyway — a hull has no opinion about
+/// zooms or orbits, only about where the eye is.
+#[derive(Debug, Clone, Copy)]
+pub struct Eye {
+    /// Screen right, screen down, and the way it is looking, in the hull's own
+    /// frame. From [`Orbit::basis`].
+    pub basis: [[f32; 3]; 3],
+    /// Range to the ship. From [`ship_distance`].
+    pub distance: f32,
+}
+
+impl Eye {
+    pub fn new(orbit: Orbit, zoom: f32) -> Self {
+        Self {
+            basis: orbit.held().basis(),
+            distance: ship_distance(zoom),
+        }
+    }
+
+    /// Turn a hull-space point into the camera's space.
+    ///
+    /// Three dot products and a standoff. The rotation is about the *ship's own
+    /// centre*, so the range comes out in `[distance - HULL_REACH, distance +
+    /// HULL_REACH]` whatever the orbit is doing — which is exactly how the two
+    /// `const` assertions either side of the hull are worded, in
+    /// [`crate::models`] and [`crate::exterior`], and why swinging the camera
+    /// all the way round does not disturb either of them.
+    ///
+    /// At [`Orbit::LEVEL`] this is `(x, y, z) → (z, y, distance - x)`, to the
+    /// bit. See [`Orbit::basis`] for why that matters more than it looks like
+    /// it should.
+    pub fn to_camera(&self, v: [f32; 3]) -> [f32; 3] {
+        let [right, down, forward] = self.basis;
+        [
+            v[0] * right[0] + v[1] * right[1] + v[2] * right[2],
+            v[0] * down[0] + v[1] * down[1] + v[2] * down[2],
+            v[0] * forward[0] + v[1] * forward[1] + v[2] * forward[2] + self.distance,
+        ]
+    }
+}
+
 /// Which camera the flight is being flown behind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -139,6 +376,7 @@ impl ViewMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::FRAC_PI_2;
 
     #[test]
     fn the_cycle_comes_all_the_way_round() {
@@ -240,8 +478,12 @@ mod tests {
                     .project([1.0, 0.0, ship_distance(zoom)])
                     .expect("the ship is in front of its own camera");
                 let half = nose.0 - cam.cx;
-                let lens =
-                    Lens::for_warp((cam.cx, cam.cy), 1.0, ship_half_on_screen(cam.height, zoom));
+                let lens = Lens::for_warp(
+                    (cam.cx, cam.cy),
+                    1.0,
+                    ship_half_on_screen(cam.height, zoom),
+                    Orbit::LEVEL.nose_in_camera(),
+                );
                 let ships_across = lens.radius / half;
                 let want = *first.get_or_insert(ships_across);
                 assert!(
@@ -259,6 +501,227 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_level_orbit_is_the_quarter_turn_it_replaced() {
+        // The whole of why the reference frames did not move. `Eye::to_camera`
+        // is three dot products where this used to be a hand-written swizzle,
+        // and at the shot the flight opens on it has to be that swizzle to the
+        // bit — not to a tolerance. Every sine in the basis is an exact zero
+        // and every cosine an exact one, so every product has an exact zero or
+        // an exact one in it and nothing rounds.
+        //
+        // Flown over the real vertex data rather than over a few made-up
+        // points, because a hull is where a stray `-0.0` would come from, and
+        // over every zoom because the standoff is the one term that is not a
+        // literal.
+        for zoom in [ZOOM_MIN, 0.77, ZOOM_DEFAULT, 1.9, ZOOM_MAX] {
+            let eye = Eye::new(Orbit::LEVEL, zoom);
+            let distance = ship_distance(zoom);
+            for model in crate::models::models() {
+                for v in &model.verts {
+                    let got = eye.to_camera(*v);
+                    let want = [v[2], v[1], distance - v[0]];
+                    assert_eq!(
+                        got, want,
+                        "{} at zoom {zoom}: {v:?} placed at {got:?} rather than {want:?}",
+                        model.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_camera_goes_all_the_way_round_on_every_axis() {
+        // All three angles wrap and none of them stops. The elevation used to
+        // clamp at the quarter turn, on the argument that a turn of azimuth
+        // already reaches everything past it — which is a fact about the
+        // reachable set and not about the control, and the control is what a
+        // hand on the key is using. Holding `W` now carries the camera over the
+        // top rather than parking it there.
+        for n in [-1000, -7, 0, 7, 1000] {
+            let o = Orbit {
+                azimuth: n as f32 * 0.7,
+                elevation: n as f32 * 0.5,
+                roll: n as f32 * -0.9,
+            }
+            .held();
+            for (name, angle) in [
+                ("azimuth", o.azimuth),
+                ("elevation", o.elevation),
+                ("roll", o.roll),
+            ] {
+                assert!(
+                    angle.abs() <= PI,
+                    "a camera swung {n} steps kept {angle} on the {name}"
+                );
+            }
+        }
+
+        // Over the top is a *turn*, not a stop and not a jump: the basis is
+        // periodic in the elevation, so a quarter turn past the pole and the
+        // same angle short of it differ by a rotation rather than by a seam.
+        // Stated as the thing that would break — a discontinuity here would
+        // read as the sky tearing as the camera crossed the top.
+        for step in 0..24 {
+            let e = step as f32 * TAU / 24.0;
+            let here = Orbit {
+                azimuth: 0.3,
+                elevation: e,
+                roll: 0.0,
+            }
+            .held()
+            .basis();
+            let round = Orbit {
+                azimuth: 0.3,
+                elevation: e + TAU,
+                roll: 0.0,
+            }
+            .held()
+            .basis();
+            for (a, b) in here.iter().flatten().zip(round.iter().flatten()) {
+                assert!(
+                    (a - b).abs() < 1e-5,
+                    "a full turn of elevation did not come back: {here:?} against {round:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_orbit_outside_the_range_is_held_rather_than_believed() {
+        // The clamp lives with the geometry rather than at the keyboard, for
+        // the same reason the zoom's does. A NaN is sent home outright rather
+        // than through `clamp`, which passes one straight out the other side —
+        // and a NaN angle is not a frame drawn slightly wrong, it is a frame
+        // with no sky in it at all.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for which in 0..3 {
+                let mut o = Orbit::LEVEL;
+                [&mut o.azimuth, &mut o.elevation, &mut o.roll][which].clone_from(&bad);
+                assert!(o.held().is_level(), "a {bad} on axis {which} was believed");
+            }
+        }
+        // And every angle it does accept produces a basis worth projecting
+        // through: orthonormal, right-handed, and finite.
+        //
+        // Swept past the quarter turn on the elevation as well, which is newly
+        // reachable and is the reason this matters more than it reads.
+        // `models::plates` decides which way a plate faces from the *sign* of
+        // its projected area, so a basis that went left-handed anywhere in here
+        // would invert every facing test in the hangar and go on looking lit.
+        for az in [-3.0f32, -0.4, 0.0, 1.2, 3.0] {
+            for el in [-3.0f32, -FRAC_PI_2, -0.3, 0.0, 1.1, FRAC_PI_2, 2.4, 3.0] {
+                for roll in [-3.0f32, 0.0, 2.5] {
+                    let b = Orbit {
+                        azimuth: az,
+                        elevation: el,
+                        roll,
+                    }
+                    .held()
+                    .basis();
+                    let dot = |i: usize, j: usize| {
+                        b[i][0] * b[j][0] + b[i][1] * b[j][1] + b[i][2] * b[j][2]
+                    };
+                    for i in 0..3 {
+                        assert!((dot(i, i) - 1.0).abs() < 1e-5, "{b:?} is not unit");
+                        for j in i + 1..3 {
+                            assert!(dot(i, j).abs() < 1e-5, "{b:?} is not square");
+                        }
+                    }
+                    // Right-handed: screen right crossed with screen down is
+                    // the way the camera is looking. The mirror image of this
+                    // looks almost identical and inverts every facing test in
+                    // `models::plates`.
+                    let cross = [
+                        b[0][1] * b[1][2] - b[0][2] * b[1][1],
+                        b[0][2] * b[1][0] - b[0][0] * b[1][2],
+                        b[0][0] * b[1][1] - b[0][1] * b[1][0],
+                    ];
+                    for k in 0..3 {
+                        assert!(
+                            (cross[k] - b[2][k]).abs() < 1e-5,
+                            "the camera basis has been mirrored: {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn elevating_the_camera_leaves_the_ship_the_same_size() {
+        // Lifting the camera over the hull turns it about the ship's own
+        // centre, and the standoff is the radius of that turn — so the range
+        // does not change and neither does how big the ship comes out. This is
+        // the claim the bubble's sizing rests on: `ship_half_on_screen` reads
+        // the zoom and nothing else, and if an orbit could resize the hull it
+        // would have to read that too.
+        //
+        // It also guards against the obvious wrong implementation, which is to
+        // slide the eye rather than swing it.
+        use crate::render::Renderer;
+        use crate::ship::Ship;
+        use crate::term::ColorMode;
+
+        let renderer = Renderer::new(120, 36, ColorMode::Truecolor, 1.9);
+        let cam = renderer.exterior_camera(&Ship::new(), 0.0);
+        for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
+            let want = ship_half_on_screen(cam.height, zoom);
+            for elevation in [-3.0, -FRAC_PI_2, -0.9, 0.0, 0.4, FRAC_PI_2, 2.2, 3.0] {
+                let orbit = Orbit {
+                    azimuth: 0.0,
+                    elevation,
+                    roll: 0.0,
+                };
+                let eye = Eye::new(orbit, zoom);
+                let nose = cam
+                    .project(eye.to_camera([0.0, 0.0, 1.0]))
+                    .expect("the ship is in front of its own camera");
+                let half = ((nose.0 - cam.cx).powi(2) + (nose.1 - cam.cy).powi(2)).sqrt();
+                assert!(
+                    (half - want).abs() < 1e-3,
+                    "elevated {elevation} the ship is {half} rather than {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_sky_runs_the_way_the_ship_is_pointing() {
+        // The travel direction is the nose reversed, and abeam it is exactly
+        // `(-1, 0, 0)` — which is not merely close to what the star band was
+        // written against, it *is* what the star band was written against, and
+        // the fast path there tests it for equality.
+        assert_eq!(Orbit::LEVEL.sky_travel()[0], -1.0);
+        for elevation in [-FRAC_PI_2, -0.5, 0.0, 0.5, FRAC_PI_2] {
+            for roll in [-2.0f32, 0.0, 2.0] {
+                let travel = Orbit {
+                    azimuth: 0.0,
+                    elevation,
+                    roll,
+                }
+                .sky_travel();
+                assert_eq!(
+                    travel[2], 0.0,
+                    "the sky gained depth from a camera square to the track"
+                );
+            }
+        }
+        // Swung round toward the nose it does gain depth, which is the whole
+        // reason the band had to learn to move in three dimensions.
+        let ahead = Orbit {
+            azimuth: 1.2,
+            elevation: 0.0,
+            roll: 0.0,
+        }
+        .sky_travel();
+        assert!(
+            ahead[2].abs() > 0.5,
+            "swinging the camera ahead left the sky running flat: {ahead:?}"
+        );
     }
 
     #[test]
