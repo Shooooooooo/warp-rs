@@ -77,6 +77,17 @@ impl Renderer {
         }
     }
 
+    /// How finely a hull's outline is measured, per axis — `--aa`.
+    ///
+    /// A builder rather than a fifth argument to [`Self::new`]. There are
+    /// seventeen renderers in this tree and sixteen of them are tests, which
+    /// want the default and would otherwise all have to say so; the one caller
+    /// that has an opinion is the one holding the command line.
+    pub fn with_hull_samples(mut self, samples: usize) -> Self {
+        self.canvas.set_hull_samples(samples);
+        self
+    }
+
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let (cols, rows) = (cols.max(1), rows.max(1));
         self.canvas.resize(cols, rows * 2);

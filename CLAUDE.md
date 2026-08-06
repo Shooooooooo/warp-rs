@@ -29,8 +29,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 247 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 248 unit — adds the snapshot-gated one
+cargo test                              # 255 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 256 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked                  # CI runs this too; `exclude` is by hand
@@ -67,7 +67,7 @@ live in the character grid, not in the pixel buffer, so they are not in it.
 seed produces byte-identical output. `tests/golden/frames.sha256` pins those
 bytes, and they are checked two ways from that one file: `cargo test --test
 golden` reproduces them in process through `app::render_headless`, and the
-`headless` CI job produces the same four files from a release binary and runs
+`headless` CI job produces the same five files from a release binary and runs
 `sha256sum -c`. Between them the two also prove they agree — a library that
 renders one thing and a binary another would be a bug of its own.
 
@@ -117,6 +117,13 @@ common="--headless --frames 120 --seed 1 --size 120x36"
 sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
+
+Diff the old hashes against the new ones before committing and say which moved.
+The split is usually the sharpest thing you have: a change aimed at the hull
+moves `side.txt` and `orbit.txt` and must leave the three cockpit flights alone,
+and one aimed at the tunnel glare moves `warp.txt` and only `warp.txt`, since
+the two `--demo` flights never leave sublight and the outside view goes through
+`add_glow_oval` instead. A hash moving outside that shape has leaked.
 
 Say in the commit message what moved and why. Regenerating without explanation
 throws away the only thing that file is for.
@@ -207,8 +214,9 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    about the *bubble's* centre and to the shadow's own two axes, both of which
    are astern of the vanishing point — so the swept-clear region reads as a
    bubble rather than as a hole punched in the sky.
-4. The hull, side view only: `models::draw` — plates via `canvas.fill_convex`,
-   then the drive on top of them, which is each bell's glow and the exhaust it
+4. The hull, side view only: `models::draw` — every plate handed to
+   `canvas.fill_hull` in *one* call, still in far-to-near order, then the drive
+   on top of them, which is each bell's glow and the exhaust it
    throws. It takes the standoff as an argument, since the zoom moves it:
    `view::ship_distance(zoom)`, worked out once in `render_exterior` alongside
    the half-length the lens is sized from. It also takes `time`, and only the
@@ -326,11 +334,33 @@ and never drifts. Do not "unify" these.
 
 **Light adds; hulls write.** Everything in `Canvas` accumulates, because
 everything in it is light and a hundred streaks crossing a subpixel ought to
-pile up. `fill_convex` is the one exception — a hull is not light, so it covers
+pile up. `fill_hull` is the one exception — a hull is not light, so it covers
 what is behind it. Values run past 1.0 and are pulled back once, at the end, by
 the tonemap; that is what makes overlapping streaks bloom instead of clip. It
 is also why the drive is drawn *after* the plates: an opaque write over a glow
 erases it.
+
+A subpixel the hull only partly stands on is written in proportion —
+`buf·(1 − cov) + colour·cov` — and that is the one place a hull and the sky
+behind it are ever mixed. It is not a hole in the rule: coverage is geometry
+rather than transparency, and it is counted in whole samples and divided, so a
+fully covered subpixel comes out at exactly one and takes exactly all of what
+was under it. It is also why every plate goes over in **one call**. Coverage
+composes only once per sample; blend them one at a time and each edge two plates
+share *inside* the hull is blended twice, leaving `(1 − a)(1 − b)` of the sky in
+a line down the middle of the ship. There is no per-plate fix — the composition
+is what is wrong. `two_plates_that_share_an_edge_paint_the_rectangle_they_make`
+in `canvas.rs` holds it bit for bit on two synthetic quads, and
+`the_sky_never_shows_through_the_seams_of_a_hull` in `models.rs` holds it on the
+real fleet by drawing both ways round and counting the difference.
+
+`--aa` sets the grid, `HULL_SAMPLES` is its default, and **at one sample the
+whole thing reduces to the rasteriser it replaced, byte for byte** — that is why
+the sample grid is entered by scaling the coordinates (`x·n + (n−1)/2`) rather
+than by offsetting them, since at `n = 1` that is a multiply by one and an add
+of zero. `one_sample_a_subpixel_is_the_rasteriser_this_replaced` checks it
+against the old body, kept in the test module as its oracle. Do not delete that
+oracle to tidy up; it is the only thing the reduction is measured against.
 
 That rule is what settles where the exhaust goes, and it costs something to
 keep. Five of the six ships put every bell a hair aft of the hull, so their
@@ -407,7 +437,9 @@ and all three have to keep holding:
   true because every hull is a closed solid with no zero-thickness plates — a
   fin is a thin box, not a quad, because a quad has no outside and would wink
   out every time the ship rolled it edge-on.
-- What survives is painted far to near.
+- What survives is painted far to near, and handed over in one call, because
+  that order now has to be settled *between the samples* of a subpixel rather
+  than between whole ones.
 
 **`q` steers, it does not quit.** The only quits are `Esc`, `Ctrl-C` and
 `Ctrl-D` — and in screensaver mode, any key at all. While the picker is up it
@@ -590,10 +622,13 @@ colour cube in `quantize_256`, and it went when that scan became the
 `NEAREST_CUBE` lookup table.
 
 Buffers a frame needs are allocated once and reused — `Renderer::pixels`,
-`Screen::scratch`, the exterior field's two arc scratches — and nothing
+`Screen::scratch`, the exterior field's two arc scratches, and the canvas's
+hull band, which is one output row of subpixels `HULL_SAMPLES` sample rows deep
+and therefore grows with the width alone rather than with the area — and nothing
 allocates per star. The hull path is the exception there:
 `models::plates` builds its vertex, screen and plate vectors fresh each
-side-view frame, which is only cheap because a hull is a few dozen faces.
+side-view frame, and `models::draw` maps them into a `Vec` of `Facet` on top of
+that, which is only cheap because a hull is a few dozen faces.
 
 ### Tests
 

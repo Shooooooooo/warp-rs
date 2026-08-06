@@ -134,7 +134,8 @@ impl Flight {
             ship.toggle_warp();
         }
 
-        let renderer = Renderer::new(cols, rows, args.color.resolve(), args.exposure);
+        let renderer = Renderer::new(cols, rows, args.color.resolve(), args.exposure)
+            .with_hull_samples(args.aa);
         let cam = renderer.camera(&ship, 0.0);
         let seed = seed(args);
         let field = StarField::new(star_count(args, &renderer), seed, &cam);

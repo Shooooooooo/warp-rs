@@ -211,6 +211,18 @@ an engineering hull. One lamp and a Lambert term do the shading — at a
 resolution where a plate is a handful of subpixels, anything subtler is spent
 where nobody can see it.
 
+That resolution is also why the outline is measured on a three-by-three grid
+inside every subpixel and written in proportion to how much of it the hull
+covers. A plate is one or two subpixels thick at the framing the shot opens on,
+and a hard edge on something that small does not move when the ship rolls: it
+sits still and then jumps a whole subpixel, which reads as crawling. Measured
+finer, an edge that travels a third of a subpixel moves a third of a subpixel's
+worth of light. The whole hull goes to the renderer in one pass for the same
+reason — coverage composes only once per sample, so blending the plates in turn
+would leave a share of the sky in a line down every seam between two of them.
+`--aa` sets the grid, and `--aa 1` is the hard-edged rasteriser this replaced,
+exactly rather than approximately.
+
 ## As a tmux screensaver
 
 `--screensaver` flies on autopilot indefinitely and quits on **any** key, which
@@ -273,6 +285,7 @@ Or just as a window: `tmux new-window -n warp 'warp --screensaver'`.
 | `--ship NAME` | Which ship to fly. Only visible from outside. |
 | `--throttle 0..1` | Starting throttle. |
 | `--exposure N` | Tonemap exposure. Higher is brighter. |
+| `--aa N` | Samples per subpixel, per axis, for the hull's outline. Default 3; `1` is a hard edge. |
 | `--seed N` | Fix the sky. Omit for a different one each run. |
 | `--size COLSxROWS` | Override the terminal size. |
 | `--headless --frames N` | Print frames to stdout instead of taking over the terminal. |
@@ -327,10 +340,11 @@ cargo run --release -- --headless --frames 120 --seed 1 --size 120x36 --demo | s
 
 Repeatable is not the same as unchanged, though — a renderer that draws every
 frame differently is still perfectly repeatable about it — so the bytes
-themselves are committed, in `tests/golden/frames.sha256`. Four flights are
-pinned: sublight in truecolor and in ASCII, one at full warp, and one at full
-warp from outside the ship, which between them reach the streak ramp, the
-tunnel glare, the lens and the hulls. `cargo test` reproduces them in process
+themselves are committed, in `tests/golden/frames.sha256`. Five flights are
+pinned: sublight in truecolor and in ASCII, one at full warp, one at full warp
+from outside the ship, and one of those with the camera swung off the beam,
+which between them reach the streak ramp, the tunnel glare, the lens and the
+hulls. `cargo test` reproduces them in process
 and CI re-checks the same hashes against a release binary, so an edit meant to
 touch one thing that touched the whole sky fails on your own machine; when the
 change was the point, that file says how to regenerate it. The hashes hold
