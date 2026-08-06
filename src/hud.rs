@@ -427,20 +427,42 @@ mod tests {
 
     #[test]
     fn the_panel_renders_at_every_point_in_the_flight_envelope() {
+        // This used to assert nothing at all, so the only failure it could
+        // report was a panic — which is worth having, since the panel indexes
+        // a grid, but it is not what the name promises. A panel that quietly
+        // drew nothing at some speed would have passed.
         let mut ship = Ship::new();
         let mut screen = blank(100, 30);
+        let drawn = |screen: &Screen| {
+            (0..30)
+                .flat_map(|row| screen.row_text(row).chars().collect::<Vec<_>>())
+                .filter(|ch| !ch.is_whitespace() && *ch != '\u{2580}')
+                .count()
+        };
+
         draw(&mut screen, &readout(&ship));
+        assert!(drawn(&screen) > 20, "the panel drew nothing at rest");
 
         ship.throttle = 1.0;
         ship.toggle_warp();
-        for _ in 0..1200 {
+        for frame in 0..1200 {
             ship.update(1.0 / 60.0);
             draw(&mut screen, &readout(&ship));
+            assert!(
+                drawn(&screen) > 20,
+                "the panel emptied at frame {frame} on the way up, at {:.1} c",
+                ship.velocity_c()
+            );
         }
         ship.toggle_warp();
-        for _ in 0..1200 {
+        for frame in 0..1200 {
             ship.update(1.0 / 60.0);
             draw(&mut screen, &readout(&ship));
+            assert!(
+                drawn(&screen) > 20,
+                "the panel emptied at frame {frame} on the way down, at {:.1} c",
+                ship.velocity_c()
+            );
         }
     }
 

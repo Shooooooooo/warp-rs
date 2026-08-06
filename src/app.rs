@@ -581,6 +581,12 @@ mod tests {
     use crate::cli::args_for;
     use crate::term::ColorMode;
 
+    /// A key going down, with nothing held. Written out nine times before this
+    /// existed, which is nine places to miss if the modifier ever matters.
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
     #[test]
     fn a_flight_that_has_been_up_for_days_still_advances() {
         // Regression: `time` was an `f32` accumulator. At 1/60 s steps it
@@ -730,7 +736,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         let before = flight.ship.throttle;
         handle_key(press(KeyCode::Up), &mut flight, &args, &mut paused);
@@ -769,7 +774,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         // Pitch, yaw, roll — the first key of each pair is the negative end.
         let rates = |ship: &Ship| [ship.pitch_rate, ship.yaw_rate, ship.roll_rate];
@@ -828,7 +832,6 @@ mod tests {
         let args = args_for(&["--stars", "300", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         for _ in 0..30 {
             handle_key(press(KeyCode::Char('e')), &mut flight, &args, &mut paused);
@@ -913,7 +916,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         assert_eq!(flight.view(), ViewMode::Side);
@@ -986,7 +988,6 @@ mod tests {
         let frames = |pitched: bool| {
             let mut flight = Flight::new(&args, 80, 24);
             let mut paused = false;
-            let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
             for _ in 0..120 {
                 if pitched {
@@ -1117,7 +1118,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
         assert!(flight.menu_open(), "M did not open the picker");
@@ -1143,7 +1143,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
 
         let throttle = flight.ship.throttle;
@@ -1169,7 +1168,6 @@ mod tests {
         let args = args_for(&["--stars", "200", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let flown = |f: &Flight| f.drawn_model().name;
 
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
@@ -1228,7 +1226,6 @@ mod tests {
         let args = args_for(&["--stars", "500", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
-        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
 
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         let outside = flight.stars();
