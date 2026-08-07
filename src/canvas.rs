@@ -640,15 +640,28 @@ impl Canvas {
             return;
         }
 
-        // The sample columns the band is cleared over and — because they are
-        // the same two numbers — the only ones anything below may write to.
-        // `round` is monotone, so one row's span can never reach outside the
-        // hull's own bound; clamping into it states that rather than changes it.
+        // The sample columns anything below may write to. `round` is monotone,
+        // so one row's span can never reach outside the hull's own bound;
+        // clamping into it states that rather than changes it.
         let u_lo = left.round().max(0.0) as usize;
         let u_hi = (right.round().min(max_u)).max(0.0) as usize;
         if u_lo > u_hi {
             return;
         }
+        // And the wider span that has to be *cleared*, which is not the same
+        // pair of numbers however much it looks like it should be. The resolve
+        // loop below reads whole subpixels — every sample of the column a
+        // written sample falls in — so it reaches `u_lo % n` samples below
+        // `u_lo` and `n - 1 - u_hi % n` above `u_hi`. Clearing only the written
+        // span left those holding whatever the previous call put there, and a
+        // stale sample still flagged `covered` hands its old colour and its
+        // whole share of the coverage to the hull's outermost subpixel column:
+        // at the default three samples, up to six ninths of one column taken
+        // from the band row above it, or on a frame's first row from the frame
+        // before. In range by construction — `u_hi <= grid_w - 1` gives
+        // `u_hi / n <= width - 1`, so this comes to at most `grid_w - 1`.
+        let clear_lo = (u_lo / n) * n;
+        let clear_hi = (u_hi / n) * n + n - 1;
         let first = top.round().max(0.0) as usize;
         let last = (bottom.round().min(max_v)).max(0.0) as usize;
         let n2 = (n * n) as f32;
@@ -656,7 +669,7 @@ impl Canvas {
         for y in (first / n)..=(last / n) {
             for j in 0..n {
                 let base = j * grid_w;
-                self.band[base + u_lo..=base + u_hi].fill(Sample::EMPTY);
+                self.band[base + clear_lo..=base + clear_hi].fill(Sample::EMPTY);
             }
             // Far to near, exactly as handed over: a sample belongs to the last
             // face that reached it, which is the nearest one that did.
@@ -1534,6 +1547,58 @@ mod tests {
                 "the sky came through the seam between two plates of one hull"
             );
         }
+    }
+
+    #[test]
+    fn a_hull_is_drawn_the_same_whatever_the_band_last_held() {
+        // Regression: the band was cleared over the span an outline is
+        // *written* to and read over the wider one a whole subpixel spans, so
+        // the samples between the two arrived in the sum still carrying the
+        // previous call's coverage. A hull drawn after another one wore a
+        // fringe of it down both sides of its own bounding box — and on the
+        // first band row of a frame, that previous call was the frame before,
+        // which is the whole of why this is worth a test rather than an
+        // inspection.
+        let sky = |canvas: &mut Canvas| {
+            for y in 0..32 {
+                for x in 0..48 {
+                    canvas.splat(x as f32, y as f32, [1.0; 3], 3.0);
+                }
+            }
+        };
+        // Neither edge of the second hull lands on a subpixel boundary, which
+        // is what leaves it a fringe for the first one's samples to survive in.
+        // A hull whose box happens to be aligned on both sides is the one case
+        // that was never wrong, so it is the wrong one to test with.
+        let first = [(1.0, 1.0), (46.0, 1.0), (46.0, 30.0), (1.0, 30.0)];
+        let second = [(8.0, 6.0), (20.0, 6.0), (20.0, 24.0), (8.0, 24.0)];
+        let color = [0.2, 0.24, 0.31];
+
+        // The buffer is put back to exactly what the lone run starts from, so
+        // the band is the only thing left that differs between the two.
+        let mut after = Canvas::new(48, 32);
+        after.fill_hull(&[Facet {
+            points: &first,
+            color: [0.9, 0.12, 0.1],
+        }]);
+        after.clear();
+        sky(&mut after);
+        after.fill_hull(&[Facet {
+            points: &second,
+            color,
+        }]);
+
+        let mut alone = Canvas::new(48, 32);
+        sky(&mut alone);
+        alone.fill_hull(&[Facet {
+            points: &second,
+            color,
+        }]);
+
+        assert_eq!(
+            after.buf, alone.buf,
+            "a hull came out differently for having been drawn after another one"
+        );
     }
 
     #[test]
