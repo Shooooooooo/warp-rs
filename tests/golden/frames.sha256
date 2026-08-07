@@ -54,10 +54,20 @@
 #     sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
 #     # and put this comment block back
 #
-# `side.txt` and `orbit.txt` last moved when the engine lance was given a tail
-# that fades to nothing, and was aimed at its vanishing point instead of being
-# stopped short of it. The lance used to give up 8% of the way out, and that
-# margin was never about the geometry: `draw_streak` ramps down to
+# All five moved together when the automatic star count was halved and its floor
+# taken away, and this is the one change where the split between these hashes
+# carries no information at all. None of the five passes `--stars`, so every one
+# of them flies on the automatic count, and at 120x36 — 8 640 subpixels — that
+# went from the old floor of 300 stars to 43. Two things changed in every frame
+# for it: the sky, and the panel's STARS readout that names the number. So the
+# usual reading is inverted here — a hash that had *not* moved would have been
+# the thing needing an explanation, since it would mean a flight was not sizing
+# its pool from the density at all.
+#
+# Before that, `side.txt` and `orbit.txt` moved when the engine lance was given
+# a tail that fades to nothing, and was aimed at its vanishing point instead of
+# being stopped short of it. The lance used to give up 8% of the way out, and
+# that margin was never about the geometry: `draw_streak` ramps down to
 # `TAIL_BRIGHTNESS` rather than to nothing, and every bell on a ship shares one
 # vanishing point, so a lance ending *on* it left a third of full brightness
 # from every lane of every bell on a single subpixel — a bead hanging in the sky
@@ -100,7 +110,7 @@
 # is the reason this file could be regenerated with any confidence about what
 # had changed.
 #
-# `warp.txt` last moved when the cockpit's tunnel glare was spread out — both
+# And `warp.txt` moved when the cockpit's tunnel glare was spread out — both
 # glows widened by two to three times and dropped to about a quarter of their
 # strength, so the light arrives diffused rather than as a hard point inside a
 # veil. It was the only hash to move, twice running, and that is the whole
@@ -132,8 +142,8 @@
 # turns a one-ulp difference into a different sky. So this is checked on
 # ubuntu-latest only, and a runner image moving to a new glibc may need it
 # regenerated once.
-dbd77f751ca09625f68f43d092adb3ade0bb2a4751aeb8891e4f7afcf7e98046  truecolor.txt
-38ab01bf301f47a2200644ff65a54819981f866fd63efb6da8a818b5c538d118  ascii.txt
-5699fcf1cdb10bc830649d55cf13e7e030c5fe9817ee6db09c281d5b8e586d19  warp.txt
-7b4b27bca74e46b004f0649bca67ababda994c733ef0d7a8a4985ff569ca398e  side.txt
-47afe36b084cdc90431a61912adc88a199358a8b943a5afee473d3e3f99eebf2  orbit.txt
+3f464c72e7091c0964f8800399af693e7e091b508b21e35b51ecfee0e05149e0  truecolor.txt
+3c33f4c8f3d25fff908687f3a51c88058ce1095a4c5bffa1139086535080ad89  ascii.txt
+917e650b079f5b7753695005c7a16c6f56c8c42a6659d82a004d7eb556fc748a  warp.txt
+e9ad79e933ff7862086e57250fcc8edf5f2994f919cfd5d92ac0f725eb3b3bd0  side.txt
+d892d11a7fda9c32287b69ed82d397876aab5730197819b805da3ecd8d74ef02  orbit.txt

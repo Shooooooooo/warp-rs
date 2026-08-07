@@ -24,9 +24,20 @@ const MAX_CELLS: usize = 2_000_000;
 /// And no single dimension past this, so the error names the obvious mistake
 /// rather than quoting a product.
 const MAX_DIM: u16 = 10_000;
-/// Ceiling on `--stars`, fifty times the automatic maximum. A `Star` is 40
-/// bytes, so this is 40 MB of pool.
-const MAX_STARS: usize = 1_000_000;
+/// Ceiling on a star pool, however the pool was asked for.
+///
+/// Three doors reach it and this is the only number behind all three: `--stars`
+/// here, the automatic count in [`crate::app`] when `--stars` is 0, and the `+`
+/// key. That key used to have a ceiling of its own, 20 000, which sat *under*
+/// what this file already allowed — so `--stars 100000` and a single press
+/// shrank the pool by four fifths, which is not what that key says.
+///
+/// It is also the one bound in this file not enforced only at parse time, and
+/// for a reason rather than by omission: a pool is the one thing on the list
+/// that can still be resized after the command line has been read. A `Star` is
+/// 40 bytes, so this is 40 MB of it — an allocation rather than an abort on
+/// anything this will run on.
+pub const MAX_STARS: usize = 1_000_000;
 /// Ceiling on the two counts that are spent rather than allocated — `--frames`
 /// and `--warmup`. Nothing runs out of memory over these; a `u32` of them is
 /// simply a process that never comes back, and at sixty a second this is
