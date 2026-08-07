@@ -78,6 +78,24 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+# `orbit.txt` moved on its own when the drive stopped shining through the hull.
+# The bells and the exhaust they throw are light, the plates are opaque, and
+# `models::draw` laid the first over the second unconditionally — so from
+# anywhere forward of the beam the enterprise's nacelle bells burned as two blue
+# lamps in the middle of a saucer that was standing squarely in front of them.
+# The drive is now drawn on whichever side of the plates it belongs on, which is
+# a question about where the exhaust is pointed rather than about the camera.
+#
+# One hash and only one, and that is the shape this change has to have. The
+# three cockpit flights draw no hull and no bells at all. `side.txt` is the
+# abeam shot, where the ship's axis lies flat in the image plane and the nozzles
+# point across the eye rather than away from it: the depth the axis gains over a
+# unit of its length is a hard zero there — the standoff is on both sides of the
+# subtraction and cancels bit for bit — so the drive is drawn after the plates
+# exactly as it always was, in one call with its share at exactly 1.0. Only the
+# flight with the camera swung round to 55 degrees of azimuth is looking at a
+# ship whose drive it should not be able to see through.
+#
 # All five moved together when the automatic star count was halved and its floor
 # taken away, and this is the one change where the split between these hashes
 # carries no information at all. None of the five passes `--stars`, so every one
@@ -171,4 +189,4 @@
 9455b1bb7cc7003a701015cbc202e2cf5b5323f155e26fe38d4de2bddb925294  ansi256.txt
 917e650b079f5b7753695005c7a16c6f56c8c42a6659d82a004d7eb556fc748a  warp.txt
 e9ad79e933ff7862086e57250fcc8edf5f2994f919cfd5d92ac0f725eb3b3bd0  side.txt
-d892d11a7fda9c32287b69ed82d397876aab5730197819b805da3ecd8d74ef02  orbit.txt
+196058eccea7c9cf96e5b02fe82bbb76c479d4cf3dc0feeb6f240d78a36ec063  orbit.txt

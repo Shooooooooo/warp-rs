@@ -58,8 +58,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 268 unit + 7 flight + 3 golden, ~11s
-cargo test --locked --all-features      # 269 unit — adds the snapshot-gated one
+cargo test                              # 272 unit + 7 flight + 3 golden, ~11s
+cargo test --locked --all-features      # 273 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -176,8 +176,10 @@ the two `--demo` flights never leave sublight and the outside view goes through
 lot: a change to something the outside view only does *off* the beam moves
 `orbit.txt` alone, because the whole of that geometry reduces exactly to the old
 arithmetic where `side.txt` has the camera. Stopping the engine lance at its
-vanishing point moved that one hash and no other. A hash moving outside the
-shape its change predicts has leaked.
+vanishing point moved that one hash and no other, and so did putting the drive
+behind the hull from ahead — both turn on a quantity that is exactly zero abeam
+and neither could reach the shot recorded there. A hash moving outside the shape
+its change predicts has leaked.
 
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
@@ -288,12 +290,12 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    the swept-clear region reads as a bubble rather than as a hole punched in
    the sky.
 4. The hull, side view only: `models::draw` — every plate handed to
-   `canvas.fill_hull` in *one* call, still in far-to-near order, then the drive
-   on top of them, which is each bell's glow and the exhaust it throws. It takes
-   a `view::Eye` — the camera's basis and its standoff together, built once in
-   `render_exterior` from the orbit and the zoom, alongside the half-length the
-   lens is sized from. It also takes `time`, and only the flame's gutter reads
-   it.
+   `canvas.fill_hull` in *one* call, still in far-to-near order, with the drive
+   on whichever side of them it belongs on, which is each bell's glow and the
+   exhaust it throws. It takes a `view::Eye` — the camera's basis and its
+   standoff together, built once in `render_exterior` from the orbit and the
+   zoom, alongside the half-length the lens is sized from. It also takes `time`,
+   and only the flame's gutter reads it.
 5. `apply_vignette`, then `add_flash` on top of it so a drive catching whites
    out the frame edges included.
 6. `canvas.resolve_into(&tonemap, &mut pixels)` — HDR to 8-bit RGB.
@@ -552,8 +554,9 @@ everything in it is light and a hundred streaks crossing a subpixel ought to
 pile up. `fill_hull` is the one exception — a hull is not light, so it covers
 what is behind it. Values run past 1.0 and are pulled back once, at the end, by
 the tonemap; that is what makes overlapping streaks bloom instead of clip. It
-is also why the drive is drawn *after* the plates: an opaque write over a glow
-erases it.
+is also what makes the order of the drive and the plates the whole of the
+occlusion between them: an opaque write over a glow erases it, so the side the
+drive goes down on is the only depth test there is.
 
 A subpixel the hull only partly stands on is written in proportion —
 `buf·(1 − cov) + colour·cov` — and that is the one place a hull and the sky
@@ -591,15 +594,47 @@ of zero. `one_sample_a_subpixel_is_the_rasteriser_this_replaced` checks it
 against the old body, kept in the test module as its oracle. Do not delete that
 oracle to tidy up; it is the only thing the reduction is measured against.
 
-That rule is what settles where the exhaust goes, and it costs something to
-keep. Five of the six ships put every bell a hair aft of the hull, so their
-plumes stream into clear sky and the order could not matter less; the
-enterprise's impulse bell is mid-ship, and its plume clears the nacelle tops by
-0.165 hull units — a subpixel and a half at the reference framing, so a roll
-walks it straight across them. Drawn *under* the plates it would be chopped by
-a silhouette it is barely clear of. Over them it shines through as the wash a
-hot plume genuinely puts on structure it plays over, which is the cheaper of
-the two mistakes.
+**Which side of the plates the drive goes down on is a question, not a rule, and
+`models::drive_behind_hull` is where it is asked.** Bells fire along the hull's
+own `-z`, so one answer covers every bell on every ship: once the exhaust is
+leaving the ship away from the eye, the hull is between the two and the drive
+belongs underneath. That is the whole of the fix for the drive shining through
+the ship from ahead — the enterprise's nacelle bells used to burn as two blue
+lamps in the middle of a saucer standing squarely in front of them, because
+`draw_engines` ran after `fill_hull` unconditionally and everything in it adds.
+
+The measure is the depth the ship's axis gains over a unit of its length, taken
+of the *posed* axis so the lean the hull is holding is in it, and it comes out a
+hard zero abeam — `place` puts the standoff on both sides of the subtraction and
+it cancels bit for bit, which is what left `side.txt` untouched.
+
+Square to the track and behind it the plume genuinely is the nearer of the two,
+and saying so costs something. Five of the six ships put every bell a hair aft
+of the hull, so their plumes stream into clear sky and the order could not
+matter less; the enterprise's impulse bell is mid-ship, and its plume clears the
+nacelle tops by 0.165 hull units — a subpixel and a half at the reference
+framing, so a roll walks it straight across them. Drawn *under* the plates it
+would be chopped by a silhouette it is barely clear of. Over them it shines
+through as the wash a hot plume genuinely puts on structure it plays over, which
+is still the cheaper mistake and is still the one made, on that side of the beam.
+`the_drive_still_washes_the_hull_it_plays_over` is what holds that half, and
+`the_drive_does_not_shine_through_the_hull` the other; both measure only the
+subpixels the hull covers *whole*, because a silhouette subpixel is part sky
+whichever way round the two were drawn and would pass either test.
+
+**The swap is a short ramp and not a switch, and the ramp is load-bearing.** At
+the beam the bells sit *on* the silhouette's edge, half in and half out, and
+neither order is the right one — so the drive is drawn twice there, sharing its
+light between the two sides, each pass skipped when its share is nothing. A hard
+swap was tried first and measured: crossing the beam moved a subpixel by 137 of
+255 and shifted thirty of them at once, on a ship nobody had touched, because
+the autopilot's weave carries the hull's lean across square every ten seconds.
+With the ramp the crossing is indistinguishable from the frame either side of
+it. `OCCLUSION_BAND` is what sets the width, and both ends of it are held: any
+narrower and the step comes back, any wider and the drive goes on shining
+through a hull plainly in front of it. Everything the drive draws is linear in
+its intensity, so the two passes lay down the one pass they were split from
+wherever no plate covers either.
 
 **The streak falloff is physics for a star and a bug for the drive, which is
 what `Canvas::streak_spread` is for.** `draw_streak` divides a streak's
@@ -697,8 +732,8 @@ front of the scene rather than painted on the glass — and its dimming is
 applied per stamp, not per frame, so two panel overlays on one cell dim it
 twice. The other two are idempotent, which the shadow was not.
 
-**There is no depth buffer and none is needed.** Three things stand in for one,
-and all three have to keep holding:
+**There is no depth buffer and none is needed.** Four things stand in for one,
+and all four have to keep holding:
 
 - `exterior::Z_NEAR` (18.0) is beyond the ship, so no star can come between the
   camera and the hull. There is a `const _: () = assert!(...)` in
@@ -718,6 +753,11 @@ and all three have to keep holding:
 - What survives is painted far to near, and handed over in one call, because
   that order now has to be settled *between the samples* of a subpixel rather
   than between whole ones.
+- The drive is drawn on the side of the plates its exhaust is pointed toward.
+  It is the one light in the frame that can be either side of a hull — the sky
+  is always beyond and the vignette and the flash are over everything — so it
+  is the one thing the three rules above cannot place, and `drive_behind_hull`
+  is the whole of the answer.
 
 **`q` flies something, it does not quit.** It rolls the ship inside and the
 camera outside, and it has never been the way out since it went on the stick.

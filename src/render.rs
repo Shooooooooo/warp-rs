@@ -216,7 +216,10 @@ impl Renderer {
     /// glass — with the hull between them. There is no depth buffer and none
     /// is needed: [`crate::exterior`]'s near wall is beyond the furthest any
     /// hull reaches, so nothing can be in front of it, and the far side of the
-    /// hull is culled on the winding of each plate. The clearance is kept as a
+    /// hull is culled on the winding of each plate. The one thing here that is
+    /// genuinely on both sides of the ship is the drive, and [`models::draw`]
+    /// settles that itself rather than handing the question up. The clearance
+    /// is kept as a
     /// `const` assertion in that module rather than quoted here as a distance,
     /// which is what it used to be and what had silently gone wrong: the
     /// number outlived the constants it was measured from by some margin, and

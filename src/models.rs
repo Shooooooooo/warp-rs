@@ -22,10 +22,12 @@
 //!
 //! Hulls are drawn opaque, which means the plates cover what is behind them
 //! instead of adding to it — the one place in the renderer where light is not
-//! accumulated. There is still no depth buffer. Three things stand in for one:
+//! accumulated. There is still no depth buffer. Four things stand in for one:
 //! the star band starts well beyond the ship, so nothing can be in front of it;
-//! plates facing away are culled; and the rest are painted far to near, which
-//! is what sorts a nacelle against the engineering hull behind it.
+//! plates facing away are culled; the rest are painted far to near, which is
+//! what sorts a nacelle against the engineering hull behind it; and the drive,
+//! which is the only light in the frame that can be on either side of a plate,
+//! is drawn on the side its exhaust is pointed toward.
 
 use crate::canvas::{Canvas, Facet};
 use crate::ship::{Ship, MAX_PITCH_RATE, MAX_YAW_RATE};
@@ -232,6 +234,30 @@ const TRAIL_SURGE_REACH: f32 = 0.6;
 /// say this: from out here a dropout and a throttle eased back are the same
 /// falling number, and only one of them should put the flame out.
 const TRAIL_DROPOUT: f32 = 0.35;
+
+/// How far the track has to be turned out of the image plane before the hull
+/// counts as wholly in front of the drive, as the sine of that angle. About six
+/// degrees.
+///
+/// The hull hides the drive or it does not, and [`drive_behind_hull`] would be a
+/// `bool` if the beam were not exactly where the answer runs out. Square to the
+/// track the bells sit *on* the silhouette's edge, half in and half out, and
+/// neither answer is the right one — so a hard swap there is a step, and it was
+/// measured before this ramp went in: crossing the beam moved a subpixel by 137
+/// of 255 and shifted thirty of them at once, on a ship the pilot had not
+/// touched. Sixty times a second, a weave of under a degree either side of
+/// square is enough to sit on that edge and blink.
+///
+/// Both ends are held. Narrower and the step comes back; wider and the drive
+/// goes on shining through a hull that is plainly in front of it. Six degrees is
+/// one press of a camera key ([`crate::view::ORBIT_STEP`]) and about nine times
+/// the lean the autopilot's weave holds, which is the pair of scales that matter
+/// — a control that swings the shot cannot outrun the swap, and a ship nobody is
+/// flying cannot cross it. Both are pinned rather than left as prose:
+/// `the_swap_takes_a_whole_press_of_the_key_that_crosses_it` and
+/// `a_ship_nobody_is_flying_never_crosses_the_swap`, which flies the real
+/// autopilot and finds it a ninth of the way over.
+const OCCLUSION_BAND: f32 = 0.1045;
 
 /// Lean the hull takes from a turn, in radians at full deflection. The
 /// camera rides with the ship, so this is the only thing that says a turn
@@ -864,9 +890,66 @@ pub fn draw(
             }
         })
         .collect();
-    canvas.fill_hull(&faces);
 
-    draw_engines(canvas, cam, ship, model, pose, eye, time);
+    // Which of the two goes down first is the whole of the occlusion between
+    // them: the plates are opaque and the drive is light, so a drive laid down
+    // first is covered by whatever hull stands in front of it and shows
+    // wherever none does. That is a depth test, at the only granularity a
+    // renderer with one opaque write per frame can offer.
+    //
+    // Both passes rather than one or the other, because the answer at the beam
+    // is neither. The drive is drawn twice, sharing its light between the two
+    // sides of the hull, and each side is skipped when its share is nothing at
+    // all — so square to the track this is exactly the single call after the
+    // plates that it has always been, and from ahead it is exactly the single
+    // call before them. Everything the drive draws is linear in its intensity,
+    // so what the two passes lay down where the hull does not stand is the one
+    // pass they were split from.
+    let behind = drive_behind_hull(pose, eye);
+    let pass = |share| Drive {
+        ship,
+        model,
+        pose,
+        eye,
+        time,
+        share,
+    };
+    if behind > 0.0 {
+        draw_engines(canvas, cam, pass(behind));
+    }
+    canvas.fill_hull(&faces);
+    if behind < 1.0 {
+        draw_engines(canvas, cam, pass(1.0 - behind));
+    }
+}
+
+/// How much of the drive the hull stands in front of: none of it while the
+/// bells are still pointed at the camera, all of it once they are turned
+/// [`OCCLUSION_BAND`] past square.
+///
+/// Every bell on every hull in the hangar fires along the ship's own `-z`, so
+/// this is one question rather than one per bell: once the exhaust is leaving
+/// the ship away from the eye, every nozzle is pointed into the far side of the
+/// hull and everything the drive throws is behind it. That is exactly the shot
+/// the bug was reported from — from ahead, the enterprise's nacelle bells sat
+/// as two blue lamps in the middle of a saucer that should have been hiding
+/// them, because [`draw_engines`] ran after [`Canvas::fill_hull`] and
+/// everything in it adds.
+///
+/// The measure is the depth the ship's own axis gains over a unit of its
+/// length, which is the sine of how far the track is turned out of the image
+/// plane. Asked of the *posed* axis rather than of the camera's azimuth, so the
+/// lean the hull is holding is in the answer: a ship yawed toward the eye
+/// really has swung its bells round into sight, and [`attitude`] is where that
+/// lean lives. Both points go through [`place`], so the standoff sits on both
+/// sides of the subtraction and cancels exactly — and at
+/// [`crate::view::Orbit::LEVEL`] the ship's axis lies flat in the image plane,
+/// the two depths are the same float, and this is a hard zero rather than
+/// something very close to one.
+fn drive_behind_hull(pose: (f32, f32, f32), eye: &Eye) -> f32 {
+    let root = place([0.0, 0.0, 0.0], pose, eye);
+    let aft = place([0.0, 0.0, -1.0], pose, eye);
+    ((aft[2] - root[2]) / OCCLUSION_BAND).clamp(0.0, 1.0)
 }
 
 /// A face's outward normal, unit length, in the camera's space.
@@ -894,29 +977,71 @@ fn normal_of(placed: &[[f32; 3]], face: &[u16]) -> [f32; 3] {
     }
 }
 
+/// One pass of the drive over the canvas: the ship, the pose and the eye it is
+/// drawn from, and how much of the flame this pass is carrying.
+///
+/// A bundle for the same reason [`Flame`] below is one and `render::Exterior` is
+/// another — clippy stops at seven arguments and CI runs it as an error — and it
+/// is the honest unit besides: [`draw`] makes this call twice with everything
+/// the same but the last field.
+struct Drive<'a> {
+    ship: &'a Ship,
+    model: &'a ShipModel,
+    pose: (f32, f32, f32),
+    eye: &'a Eye,
+    time: f64,
+    /// How much of the drive this pass is drawing, which is how [`draw`] splits
+    /// one flame across both sides of the hull. It multiplies the light and
+    /// nothing else — not the reach, not the fan, not the gutter — so the two
+    /// passes put the same flame on the canvas that one pass would have, and
+    /// the only difference between them is which of the two the plates got to
+    /// cover.
+    share: f32,
+}
+
 /// The drive: a glow out of each bell — blue on impulse, whitening at warp, and
 /// out with the throttle — with the exhaust it throws behind it.
 ///
-/// Both are drawn here, after the plates, and that placement is the one thing
-/// in this function that is a decision rather than a number. Everything in
-/// `Canvas` accumulates except `fill_hull`, so an opaque write over a glow
-/// erases it and the bells have always had to come last. The trail inherits
-/// that, and it is not free: the Enterprise's impulse engine is the one bell in
-/// the fleet that is not on the tail, and its plume clears the nacelle tops by
-/// 0.165 hull units — a subpixel and a half at the reference framing, so a roll
-/// walks it straight across them. Drawn under the plates it would be chopped by
-/// a silhouette it is barely clear of; drawn over them it shines through as the
-/// wash a hot plume genuinely puts on structure it plays over. The second is
-/// the cheaper mistake, and it leaves one rule here instead of two.
-fn draw_engines(
-    canvas: &mut Canvas,
-    cam: &Camera,
-    ship: &Ship,
-    model: &ShipModel,
-    pose: (f32, f32, f32),
-    eye: &Eye,
-    time: f64,
-) {
+/// Where this runs relative to the plates is [`draw`]'s decision and not this
+/// function's, and it is worth reading the two together. Everything in `Canvas`
+/// accumulates except `fill_hull`, so the order is the whole of the occlusion:
+/// after the plates the drive shines through the hull, before them the hull
+/// covers it.
+///
+/// Neither answer is right at every angle, which is why it is a question rather
+/// than a rule. Once the bells are pointed away from the eye the hull is
+/// between the two and the drive belongs underneath — from ahead it is behind
+/// the whole ship. Square to the track and behind it the plume is genuinely in
+/// front, and it costs something to say so: the Enterprise's impulse engine is
+/// the one bell in the fleet that is not on the tail, and its plume clears the
+/// nacelle tops by 0.165 hull units — a subpixel and a half at the reference
+/// framing, so a roll walks it straight across them. Drawn under the plates it
+/// would be chopped by a silhouette it is barely clear of; drawn over them it
+/// shines through as the wash a hot plume genuinely puts on structure it plays
+/// over. That is still the cheaper mistake, and it is still the one made — but
+/// only on the side of the beam where the plume really is the nearer of the
+/// two.
+///
+/// That same bell is where the answer stops being clean, and it is worth saying
+/// rather than discovering. Forward of the beam its own nozzle is behind the
+/// saucer and belongs under the plates, while the plume it throws runs aft past
+/// two nacelles it can be nearer than — so the bell and its own exhaust want
+/// opposite sides of the same frame, and a per-*bell* question could not answer
+/// that either, since the plume is in front of the port nacelle and behind the
+/// starboard one at the same instant. One order for the drive is the honest
+/// limit of a renderer with a single opaque write, and the side it takes is the
+/// one the saucer argues for, because the saucer is the thing actually standing
+/// in front. Measured at `--orbit 55,35,20` and `--orbit 65,0,0`: what goes is
+/// the bell, and the plume runs on unbroken out of the silhouette.
+fn draw_engines(canvas: &mut Canvas, cam: &Camera, drive: Drive<'_>) {
+    let Drive {
+        ship,
+        model,
+        pose,
+        eye,
+        time,
+        share,
+    } = drive;
     let warp = ship.warp_intensity();
     let lit = (ship.speed / crate::ship::CRUISE_MAX)
         .clamp(0.0, 1.0)
@@ -966,6 +1091,7 @@ fn draw_engines(
                 gutter,
                 flicker_amt,
                 time,
+                share,
             },
         );
         canvas.add_glow(
@@ -973,7 +1099,7 @@ fn draw_engines(
             screen.1,
             radius * (1.0 + 0.9 * lit),
             color,
-            0.10 + 0.75 * lit,
+            (0.10 + 0.75 * lit) * share,
         );
     }
 }
@@ -1009,6 +1135,11 @@ struct Flame<'a> {
     gutter: f32,
     flicker_amt: f32,
     time: f64,
+    /// How much of this flame the pass being drawn is carrying — see
+    /// [`draw_engines`]. One when the drive is drawn on one side of the hull
+    /// only, which is every camera angle but the few degrees either side of
+    /// square to the track.
+    share: f32,
 }
 
 /// The exhaust behind one bell: a short fan of streaks laid down the ship's
@@ -1176,7 +1307,8 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         * flame.gutter
         * flame.surge
         * (1.0 + flame.warp * TRAIL_WARP_LIFT)
-        * (flame.bell.radius / NOMINAL_BELL);
+        * (flame.bell.radius / NOMINAL_BELL)
+        * flame.share;
     // A flame comes to a tip; a lance runs off the frame in every lane. Left at
     // the flame's figure, a full-length plume draws a wide wedge that peaks
     // somewhere in the middle of the frame with a single thin whisker carrying
@@ -1779,6 +1911,212 @@ mod tests {
                 model.name
             );
         }
+    }
+
+    /// The same ship with its bells taken off: the hull alone, lit exactly as
+    /// it is in the frame beside it.
+    ///
+    /// A *cold* ship is not the same picture with one thing missing — the warp
+    /// bubble lights the plates as well, and the drive and the bubble come up
+    /// together — so the only honest way to ask what the drive put on the canvas
+    /// is to fly the same ship without anything to put it there.
+    fn hull_only(model: &ShipModel) -> ShipModel {
+        ShipModel {
+            name: model.name,
+            blurb: model.blurb,
+            verts: model.verts.clone(),
+            faces: model.faces.clone(),
+            engines: Vec::new(),
+            hull: model.hull,
+        }
+    }
+
+    #[test]
+    fn the_drive_does_not_shine_through_the_hull() {
+        // Regression: the bells and the exhaust they throw are light, the
+        // plates are opaque, and `draw` laid the first over the second whatever
+        // the camera was doing. From anywhere forward of the beam that put the
+        // drive on the wrong side of its own ship — head-on, the enterprise's
+        // nacelle bells burned as two blue lamps in the middle of a saucer
+        // standing squarely in front of them, and the impulse bell as a third
+        // between them.
+        //
+        // Asked as an exact equality, which the arithmetic allows rather than
+        // merely tolerates. `fill_hull` writes a fully covered subpixel as
+        // `buf * (1 - 1) + colour`, so nothing under it survives at any part in
+        // anything: with the drive laid down first, the inside of the ship has
+        // to come out the same bytes it comes out with no drive on board at
+        // all.
+        //
+        // Which subpixels those are is asked of the canvas rather than worked
+        // out here. A hull drawn over black and the same hull drawn over a lit
+        // canvas agree exactly where — and only where — its coverage came to
+        // one. `the_sky_never_shows_through_the_seams_of_a_hull` measures with
+        // the same pair and keeps the other half of it: what a subpixel gained
+        // from the sky is what it let through, and this wants the ones that let
+        // through nothing.
+        let sky = 0.9f32;
+        let (renderer, cam) = cam(200, 112, &at_warp());
+        let (w, h) = renderer.canvas_dims();
+
+        for ship in [at_impulse(), at_warp()] {
+            for model in models() {
+                let bare = hull_only(model);
+                // Every angle in this spread has the ship's axis turned well
+                // past `OCCLUSION_BAND`, so the drive goes entirely under the
+                // plates and the equality below is the whole claim rather than
+                // most of it.
+                for orbit in forward_quarter() {
+                    let eye = eye_at(orbit, ZOOM_DEFAULT);
+                    let lay = |model: &ShipModel, behind: f32| {
+                        let mut canvas = Canvas::new(w, h);
+                        for y in 0..h {
+                            for x in 0..w {
+                                canvas.splat(x as f32, y as f32, [1.0; 3], behind);
+                            }
+                        }
+                        draw(&mut canvas, &cam, &ship, model, &eye, 0.0);
+                        canvas
+                    };
+                    let (over_black, over_sky) = (lay(&bare, 0.0), lay(&bare, sky));
+                    let flown = lay(model, 0.0);
+
+                    let (mut solid, mut leaked) = (0usize, 0usize);
+                    for y in 0..h {
+                        for x in 0..w {
+                            if over_sky.light_at(x, y) != over_black.light_at(x, y) {
+                                continue;
+                            }
+                            solid += 1;
+                            leaked +=
+                                usize::from(flown.light_at(x, y) != over_black.light_at(x, y));
+                        }
+                    }
+                    // Which is worth nothing at all unless the ship is
+                    // genuinely standing in the way of something, so say so:
+                    // a hull that missed the canvas would pass the line above
+                    // without ever covering a subpixel.
+                    assert!(
+                        solid > 100,
+                        "{} at {orbit:?} covered only {solid} subpixels outright, \
+                         so this measured nothing",
+                        model.name
+                    );
+                    assert_eq!(
+                        leaked, 0,
+                        "{} at {orbit:?}: the drive lit {leaked} subpixels the hull \
+                         covers whole",
+                        model.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_drive_still_washes_the_hull_it_plays_over() {
+        // The other half, and the reason the order is a question rather than a
+        // rule. Square to the track and behind it the plume is genuinely the
+        // nearer of the two — the enterprise's impulse bell is mid-ship and its
+        // plume clears the nacelle tops by a subpixel and a half, so a roll
+        // walks it straight across them — and it is meant to shine through as
+        // the wash a hot plume puts on structure it plays over. An occlusion
+        // rule that fired at every angle would take that away and read as a
+        // drive going out whenever the camera moved.
+        //
+        // Measured on the subpixels the hull covers *whole*, which is the same
+        // set the test above demands nothing on and the only set that says
+        // anything: a silhouette subpixel is part sky whichever side the drive
+        // was laid on, so it lights up either way and would pass this line with
+        // the plume buried under the ship.
+        //
+        // Flown rolled, which is what walks the plume over the nacelles rather
+        // than past them, and from the beam and from astern — the two sides the
+        // exhaust is genuinely the nearer of the two on.
+        let sky = 0.9f32;
+        let mut ship = at_impulse();
+        ship.roll = 0.6;
+        let (renderer, cam) = cam(200, 112, &ship);
+        let (w, h) = renderer.canvas_dims();
+        let model = &models()[index_of("enterprise")];
+        let bare = hull_only(model);
+
+        for orbit in [Orbit::LEVEL, orbit(-60.0, 0.0, 0.0)] {
+            let eye = eye_at(orbit, ZOOM_DEFAULT);
+            let lay = |model: &ShipModel, behind: f32| {
+                let mut canvas = Canvas::new(w, h);
+                for y in 0..h {
+                    for x in 0..w {
+                        canvas.splat(x as f32, y as f32, [1.0; 3], behind);
+                    }
+                }
+                draw(&mut canvas, &cam, &ship, model, &eye, 0.0);
+                canvas
+            };
+            let (over_black, over_sky) = (lay(&bare, 0.0), lay(&bare, sky));
+            let flown = lay(model, 0.0);
+
+            let washed = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .filter(|(x, y)| {
+                    over_sky.light_at(*x, *y) == over_black.light_at(*x, *y)
+                        && flown.light_at(*x, *y) > over_black.light_at(*x, *y)
+                })
+                .count();
+            assert!(
+                washed > 0,
+                "at {orbit:?} the drive stopped lighting the hull it plays over"
+            );
+        }
+    }
+
+    #[test]
+    fn the_swap_takes_a_whole_press_of_the_key_that_crosses_it() {
+        // `OCCLUSION_BAND` is sized against two scales and its doc names both,
+        // which is exactly the sort of relationship that rots quietly. This is
+        // the first of them: the camera steps by `ORBIT_STEP`, so a band wider
+        // than one notch would strand the drive half-buried at an angle a
+        // single press cannot get off, and one narrower than that lets a press
+        // do the whole swap in the frames of one ease.
+        //
+        // Compared as a sine because that is the unit `drive_behind_hull`
+        // measures in: the depth the ship's axis gains over a unit of its
+        // length, not the angle itself.
+        let notch = crate::view::ORBIT_STEP.sin();
+        assert!(
+            OCCLUSION_BAND > 0.0 && OCCLUSION_BAND <= notch,
+            "the drive swaps sides over {OCCLUSION_BAND}, and one press of a \
+             camera key is {notch}"
+        );
+    }
+
+    #[test]
+    fn a_ship_nobody_is_flying_never_crosses_the_swap() {
+        // The second scale, and the load-bearing one. The autopilot weaves, so
+        // the hull's own lean carries the track across square every few seconds
+        // whether or not anything has touched the camera — and a swap that fired
+        // on that would blink the drive on and off in a screensaver parked on
+        // the beam. Before the ramp went in it did: 137 of 255 on a subpixel,
+        // thirty of them at once.
+        //
+        // Asked through the real function at the shot the flight opens on,
+        // rather than of the yaw rate, because what has to stay small is what
+        // the renderer reads.
+        use crate::autopilot::Autopilot;
+        let dt = 1.0 / 60.0;
+        let mut ship = Ship::new();
+        let mut autopilot = Autopilot::default();
+        let mut worst = 0.0f32;
+        for frame in 0..(2.0 * Autopilot::CYCLE / dt as f64) as usize {
+            autopilot.update(&mut ship, frame as f64 * dt as f64);
+            ship.update(dt);
+            worst = worst.max(drive_behind_hull(attitude(&ship), &abeam()));
+        }
+        assert!(
+            worst < 0.25,
+            "the autopilot's weave carries the drive {worst} of the way across \
+             the swap, which is close enough to the far side to read as a blink"
+        );
     }
 
     #[test]
