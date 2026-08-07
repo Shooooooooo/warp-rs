@@ -155,6 +155,13 @@ is, and every bell on the ship ends at the same one. They do not stop dead there
 either: a lance thins out as it goes and is gone by the time it arrives, which
 is what keeps the place they all meet from lighting up as a bead.
 
+Keep going and the ship starts putting itself in the way. Bells fire aft, so
+from anywhere ahead of the beam they are pointed into the far side of their own
+hull, and what the drive throws goes behind it: the plumes stream out past the
+silhouette and the rest is simply not there to be seen. Head-on there is nothing
+of it left at all — the Enterprise from dead ahead is a saucer with the lights
+out, which is what a starship coming at you looks like.
+
 The camera rides with the ship rather than with the sky, and out here the stick
 flies the camera. `W` and `S` lift it up over the hull and drop it under, `A`
 and `D` walk it round toward the tail and the nose, and `Q` and `E` roll it.
