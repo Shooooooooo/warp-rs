@@ -78,6 +78,17 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+# All six moved together when `AUTO_DENSITY` went from 0.005 to 0.02, and this
+# is the second time this file has recorded that shape for that constant — see
+# the halving below, which is the change this one partly walks back. The reading
+# is the same and it is inverted from the usual one: none of the six passes
+# `--stars`, so every one flies on the automatic count, and at 120x36 — 8 640
+# subpixels — that took the pool from 43 stars to 172. Two things move in every
+# frame for it, the sky and the panel's STARS readout that names the number, so
+# a hash standing still would have been the thing wanting an explanation. The
+# split between the six carries no information about this change at all; what it
+# would carry is news that some flight was not sizing its pool from the density.
+#
 # `orbit.txt` moved on its own when the drive stopped shining through the hull.
 # The bells and the exhaust they throw are light, the plates are opaque, and
 # `models::draw` laid the first over the second unconditionally — so from
@@ -184,9 +195,9 @@
 # turns a one-ulp difference into a different sky. So this is checked on
 # ubuntu-latest only, and a runner image moving to a new glibc may need it
 # regenerated once.
-3f464c72e7091c0964f8800399af693e7e091b508b21e35b51ecfee0e05149e0  truecolor.txt
-3c33f4c8f3d25fff908687f3a51c88058ce1095a4c5bffa1139086535080ad89  ascii.txt
-9455b1bb7cc7003a701015cbc202e2cf5b5323f155e26fe38d4de2bddb925294  ansi256.txt
-917e650b079f5b7753695005c7a16c6f56c8c42a6659d82a004d7eb556fc748a  warp.txt
-e9ad79e933ff7862086e57250fcc8edf5f2994f919cfd5d92ac0f725eb3b3bd0  side.txt
-196058eccea7c9cf96e5b02fe82bbb76c479d4cf3dc0feeb6f240d78a36ec063  orbit.txt
+b0b11b243027c81eac96a641df34cf484920e626819d363a7171233e848eb2cd  truecolor.txt
+c745fb56071a4065ffe72cc6ce1da35bc06e1d49230df88f20c2049ac7f6f1bc  ascii.txt
+6aaef3142e7323ce74789c573d906e48b2b2fabd87601a2f0bb7709ee4445de1  ansi256.txt
+8e4d6fe37cf5ebbb63c6af30f858185ed2741ec63ea5771e4fd35e7daff3175a  warp.txt
+7ddd93a5ecf1b158daa8782a69d84477f5c33196067dfc945b0d0a30066823b9  side.txt
+cb12ad22e17ccce4af63b846a38adc4f3f8fba6fa48a2b7e8a3226e48550478a  orbit.txt

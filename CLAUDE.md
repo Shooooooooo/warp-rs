@@ -1,10 +1,11 @@
 # CLAUDE.md
 
 Notes for AI assistants working in this repository. [`README.md`](README.md) is
-the user-facing document — what the program does, which keys fly it, how to
-wire it into tmux. This one is about the inside: how the code is arranged, what
-it depends on that is not obvious, and how to write changes that read like what
-is already here.
+the user-facing document, and it is deliberately thin: what the program is, how
+to run it, and what the flags do. It no longer lists the keys or the tmux
+wiring, so it is not a second copy of anything here to be kept in step. This one
+is about the inside: how the code is arranged, what it depends on that is not
+obvious, and how to write changes that read like what is already here.
 
 ## What this is
 
@@ -780,9 +781,11 @@ so they cannot walk the pool past what the command line would have accepted.
 They used to clamp to a separate 20 000 that sat *under* what `--stars` allowed,
 which meant `--stars 100000` and a single `+` shrank the pool by four fifths.
 Their *floor* moved with the density and is now `POOL_FLOOR`: 64 was chosen
-against an automatic minimum of 300, and at 0.005 an ordinary terminal opens at
-nineteen stars, so a floor up there made `-` *add* forty-five of them and landed
-both keys on the same number. It is 8 rather than 1 because `+` multiplies by
+against an automatic minimum of 300, and a floor up there sits over the count on
+any window the density opens thin, so `-` *added* stars and landed both keys on
+the same number. Which windows those are moves with `AUTO_DENSITY` — at 0.005 it
+was an ordinary 80x24, at today's 0.02 it is 40x12 — so the test that holds it
+flies both. It is 8 rather than 1 because `+` multiplies by
 1.25 and truncates, so below four stars the key gives the same number back and
 swallows the press — `the_star_keys_move_the_pool_the_way_they_point` holds both
 halves of that.
@@ -807,10 +810,10 @@ this view could do that the cockpit cannot — a barrel roll flown and watched
 from the beam — and bought a stick that means one thing in each view instead of
 two things in one of them.
 
-Four places have to move together if you change any of it: `handle_key`, the
+Three places have to move together if you change any of it: `handle_key`, the
 four hint arrays in `hud.rs` (a face per colour mode times a face per view —
-they are the only place the *running program* writes the controls down),
-`README.md`'s two `Flying` tables, and the tests that pin the split.
+and since the README stopped listing the keys, the only place the controls are
+written down at all), and the tests that pin the split.
 `the_stick_flies_the_camera_outside_and_the_ship_inside` says the ship's rates
 never move when a camera key is pressed and that every one of those keys moves
 *something*; `the_camera_is_not_connected_in_the_cockpit` and
@@ -1152,8 +1155,8 @@ naming the camera cost three columns over `QE roll`: `WASDQE cam` rather than
 `draw_hints` needs `chars + 2 <= cols`, so it fits a sixty-column window with
 two columns to spare — and sixty is the width `tests/flight.rs` flies at, so a
 longer word there would shed the tier and lose the *throttle* to gain the
-camera. `README.md`'s two `Flying` tables are the other place the keys are
-written down.
+camera. Those tiers are now the only place the keys are written down anywhere,
+so a control that fits none of them is one nothing ever tells the user about.
 
 **Adding a NAV readout.** The panel has one spare row and no test guarding it.
 The bottom three rows are counted *up* from the bottom — status at `rows - 3`,
@@ -1165,9 +1168,9 @@ side view where the `SHIP` row already makes six, the closing rule lands on row
 **Changing what a stick key does.** It is written twice, once per view, in
 `handle_key`'s guard-gated arms — the cockpit block first, the camera block
 below it, each key spelled once per view and falling through from one to the
-other — and in four places besides: the hint tiers in `hud.rs` (both faces),
-`README.md`'s two `Flying` tables, and the pair of tests in `app.rs` that pin
-the split, `the_stick_flies_the_camera_outside_and_the_ship_inside` and
+other — and in three places besides: the hint tiers in `hud.rs` (both faces)
+and the pair of tests in `app.rs` that pin the split,
+`the_stick_flies_the_camera_outside_and_the_ship_inside` and
 `the_camera_is_not_connected_in_the_cockpit`. Between them they say the ship's
 rates do not move when a camera key is pressed, the camera does not move when a
 ship key is, and every one of the six keys moves *something* in both views — a
