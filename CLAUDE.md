@@ -27,17 +27,29 @@ of the shell.
 Four dependencies, on purpose: `clap`, `crossterm`, `rand`, and `png` behind
 the optional `snapshot` feature. **Do not add a dependency** without saying why
 the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
-`anyhow` for the `io::Result` that is already enough.
+`anyhow` for the `io::Result` that is already enough. The rule reaches inside
+the four as well: `crossterm` and `rand` are taken with `default-features =
+false` and only the features something here calls, and `Cargo.toml` says which
+and why beside each. Dropping `derive-more` alone takes a whole proc-macro
+stack — `convert_case`, `unicode-segmentation`, `rustc_version`, `semver` and a
+second `syn` — out of the tree.
+
+`tests/golden.rs` is the rule taken to its conclusion: it spells SHA-256 out in
+a page of shifts and adds rather than adding a fifth dependency for one test,
+and `the_digest_agrees_with_the_published_answers` checks it against the
+canonical vectors and the block-boundary lengths before anything else trusts a
+word of it.
 
 ## Commands
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 258 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 259 unit — adds the snapshot-gated one
+cargo test                              # 260 unit + 7 flight + 3 golden, ~11s
+cargo test --locked --all-features      # 261 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo package --locked                  # CI runs this too; `exclude` is by hand
+cargo package --locked --list           # CI runs this too; `exclude` is by hand
+cargo package --locked
 ```
 
 Clippy warnings are **errors** in CI. So is misformatting. Run both before
@@ -47,13 +59,19 @@ committing; they are the two cheapest ways to turn a branch red.
 cargo run --release                     # fly it
 cargo run --release -- --demo           # autopilot, 45s, no keyboard needed
 cargo run --release --example bench     # where a frame's 16.7 ms goes
-cargo run --release --example bench 200 60 20000 side
+cargo run --release --example bench 200 60 20000 side truecolor
 ```
 
 `bench` prints sim / draw / write milliseconds per case against the 60 fps
-budget. The expensive frame in the program is the outside view at warp — every
-streak near the ship is chopped into arcs and drawn twice, once per lens image
-— and the sweep includes it deliberately.
+budget. Its arguments are `[cols] [rows] [stars] [view] [color]`, and the
+colour mode is a *column* rather than an assumption for the reason
+`tests/flight.rs` pins its own: `--color auto` reads `TERM`, so an unpinned
+sweep measures whatever the shell exports and two machines are not comparable.
+It is worth real time — the same case came out at 6.87, 7.31 and 6.66 ms of
+drawing in ascii, 256 and truecolor. The expensive frame in the program is the
+outside view at warp — every streak near the ship is chopped into arcs and
+drawn twice, once per lens image — and the default sweep includes it
+deliberately.
 
 Looking at a frame as an image rather than as a wall of escape codes:
 
@@ -76,8 +94,8 @@ golden` reproduces them in process through `app::render_headless`, and the
 renders one thing and a binary another would be a bug of its own.
 
 The in-process half is the reason `render_headless` is public and separate from
-`run_headless`. It costs about three seconds and is **Linux-gated**, for the
-reason below.
+`run_headless`. It costs about four seconds — most of `cargo test`'s wall clock
+after the unit tests — and is **Linux-gated**, for the reason below.
 
 **Five flights, and the case list lives in three places** — the comment block in
 `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job. Adding
@@ -186,6 +204,12 @@ src/render.rs     assembling a frame: sky, then what is lit, then the glass
 src/hud.rs        the instrument panel
 src/term.rs       Screen (double-buffered cells), ColorMode, RawGuard
 src/snapshot.rs   PNG writer, behind `--features snapshot`
+
+tests/flight.rs   a whole flight through the public surface, and nothing else
+tests/golden.rs   the reference frames, reproduced in process; its own SHA-256
+tests/golden/     frames.sha256 — the pinned bytes, and how to remake them
+examples/bench.rs where a frame's 16.7 ms goes
+docs/             the README's screenshots; excluded from the published crate
 ```
 
 Everything is `pub` so a flight can be driven from a test, a benchmark, or
@@ -218,18 +242,20 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    `draw_streak` path. That fast path is why lighting the drive is what makes
    an exterior frame expensive.
 3. The lit things — `add_glow`: cockpit gets the tunnel glare down the throat
-   (a tight core inside a wide halo, both ramping with the *cube* of the warp
-   ramp); side view gets the wash inside the lens shadow — `add_glow_oval`,
-   about the *bubble's* centre and to the shadow's own two axes, both of which
-   are astern of the vanishing point — so the swept-clear region reads as a
-   bubble rather than as a hole punched in the sky.
+   (a core inside a wider halo, both ramping with the *cube* of the warp ramp,
+   and both wide and weak rather than narrow and fierce so the streaks stay
+   legible through them); side view gets the wash inside the lens shadow —
+   `add_glow_oval`, about the *bubble's* centre, to the shadow's own two axes
+   and turned by `Lens::turn()`, all three of which move with the camera — so
+   the swept-clear region reads as a bubble rather than as a hole punched in
+   the sky.
 4. The hull, side view only: `models::draw` — every plate handed to
    `canvas.fill_hull` in *one* call, still in far-to-near order, then the drive
-   on top of them, which is each bell's glow and the exhaust it
-   throws. It takes the standoff as an argument, since the zoom moves it:
-   `view::ship_distance(zoom)`, worked out once in `render_exterior` alongside
-   the half-length the lens is sized from. It also takes `time`, and only the
-   flame's gutter reads it.
+   on top of them, which is each bell's glow and the exhaust it throws. It takes
+   a `view::Eye` — the camera's basis and its standoff together, built once in
+   `render_exterior` from the orbit and the zoom, alongside the half-length the
+   lens is sized from. It also takes `time`, and only the flame's gutter reads
+   it.
 5. `apply_vignette`, then `add_flash` on top of it so a drive catching whites
    out the frame edges included.
 6. `canvas.resolve_into(&tonemap, &mut pixels)` — HDR to 8-bit RGB.
@@ -266,7 +292,14 @@ Three more asymmetries worth knowing before you touch the loops: `P` gates only
 `advance`, so a paused `--demo` still runs its autopilot, still repaints, and
 still exits at its deadline. In screensaver mode `handle_key` is never reached
 at all — any non-release key breaks the loop, so there are no controls, not even
-pause. And `R` restores `args.throttle`, not `Ship::new()`'s 0.18.
+pause. And `R` restores what the *command line* asked for rather than any fixed
+number: `args.throttle` rather than `Ship::new()`'s 0.18, and `args.orbit`
+rather than `Orbit::LEVEL`. The zoom has no flag, so it goes back to
+`ZOOM_DEFAULT`. All three are snapped rather than eased — `R` is the key for
+when the view has got away from you, and watching it saunter back is not what
+is wanted — and the snap is load-bearing beyond taste: the orbit ease is
+asymptotic, so only an exact reset gets the camera back to the bitwise-level
+shot the fast paths below are written for.
 
 The interactive loop handles **input at the end of the frame**, in an
 event-drain loop that spends the rest of the frame budget blocking on
@@ -285,6 +318,34 @@ cockpit, wrong to look at side-on, because there is nothing behind the ship.
 even a draw from its generator — and gets its own RNG seeded with
 `seed ^ EXTERIOR_SEED` so building it never disturbs the cockpit field's
 stream, which is the one the reference frames were recorded from.
+
+The two are steered by different things, and the asymmetry is the design.
+`StarField::update` takes the *ship's* three rates, because the cockpit is
+bolted to the hull. `ExteriorField::update` takes no steering at all and takes
+the *camera's* `Orbit` instead: out there the camera rides with the ship, so a
+turn of the hull moves nothing an eye can see, while swinging the eye has to
+take the sky with it or the control is a barrel roll wearing new keys —
+`swinging_the_camera_sweeps_the_sky_past_it` is the test that says so, and it
+picks the case that makes it sharp, lifting the camera at zero azimuth, where
+the *flow direction* does not change at all.
+
+The band therefore has three fast paths that are switched **off** rather than
+reduced to identities, and all three are exact at `Orbit::LEVEL`. The pool is
+turned only when `orbit != self.orbit` — compared, not composed with an
+identity, because the angles are unchanged bit for bit when nothing moved them.
+Depth travel runs only when `travel[2] != 0.0`, and the vertical fold only when
+depth or height moved, because `fold` is *not* an exact identity for a value
+already inside its band and the level shot is exactly where `y` never moves.
+Off the beam two things the band was written never to face come alive. Stars
+cross the near and far walls and have to be respawned, and a respawn is handed
+the trail it *would* have had, one step back along the track — without that, at
+full warp two to four percent of the pool draws a bare point every frame, which
+is the sky flickering between streaks and dots that the sideways fold exists to
+avoid, arriving by the other door. And the Doppler is measured against the
+cached `nose` rather than against camera `+x`, which is only the direction of
+travel while the camera is abeam; measured against the frame, a chase view would
+redden the sky ahead and blue the wake. Abeam the nose is `(1, 0, 0)`, so that
+dot product is `pos[0]` to the bit.
 
 The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
 `Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with
@@ -314,6 +375,61 @@ so horizontal field of view widens with the terminal. That is why the spawn
 bound is a rectangle rather than a disc: a circular bound spends most of the
 star budget on corners a wide terminal never shows.
 
+### Where the camera outside is
+
+Two types in `src/view.rs` carry the whole of it. `Orbit` is three angles about
+the ship — `azimuth` round it, `elevation` over it, `roll` about the view axis
+— and `Eye` is `Orbit::basis()` plus the standoff `ship_distance(zoom)`. They
+live there rather than beside the hull because they are what the *sky* is
+streamed against as well as what the hull is posed by; putting them in
+`models.rs` would make `exterior.rs` reach through the ship models to find out
+which way it is being looked at.
+
+**All three angles are the camera's, and all three go all the way round.** None
+of them stops. The elevation used to clamp at the quarter turn on the argument
+that a turn of azimuth already reaches everything past it — true about the
+reachable *set*, and irrelevant to a hand holding a key, which is what a control
+is for. `Orbit::held` folds each onto a single turn and sends a non-finite one
+home to `LEVEL` outright rather than through `clamp`, which passes a NaN
+straight out the other side. Nothing else is clamped and nothing needs to be:
+`basis` is orthonormal and right-handed at every angle on every axis, because
+the screen-right axis does not depend on the elevation at all, so there is no
+pole to go singular at.
+
+The fold has a guard in front of it — `turn_of` leaves an angle already inside
+a single turn *exactly* alone — and that guard is not an optimisation to be
+tidied away. `wrap_signed` goes through `rem_euclid` and back, which does not
+return an in-range angle bit for bit, and this is applied on every press and
+every eased step, so without it a notch and its opposite would not cancel. What
+turns on that cancelling is `ExteriorField`, which lays the whole star band out
+afresh whenever the orbit differs from the one it was last laid against: an
+angle that came back a hair off would rebuild the rotation path every frame of
+a flight nobody is touching the camera on. The band guards its own vertical
+fold for exactly the same reason and it is the same trap.
+
+`Flight` keeps an eased value and a target for both the orbit and the zoom, and
+both are held on the **target**, not on the eased value — clamp the eased one
+and the target winds up past the end, and the first notch back does nothing at
+all. The orbit's ease chases through `wrap_signed`, so an axis that wraps takes
+the short way round rather than unwinding 350° to reach a target 10° away. The
+step is *additive* for the orbit and *geometric* for the zoom, and the reason is
+the same in both directions: an angle has no far end to be shoved about and
+every part of a turn is worth the same, while a zoom notch big enough to be
+worth pressing at the far end would shove the near view through its stop. The
+additive form is also exact:
+`a_camera_notch_and_its_opposite_land_back_where_they_started` asserts equality
+where the zoom's version of it has to settle for very nearly.
+
+**`Orbit::LEVEL` is exact everywhere, and that is what the reference frames
+rest on.** Every sine in the basis is an exact zero and every cosine an exact
+one, so `Eye::to_camera` at `LEVEL` is `(x, y, z) → (z, y, distance − x)` to
+the bit — the hand-written quarter turn it replaced.
+`the_level_orbit_is_the_quarter_turn_it_replaced` flies that over the real
+vertex data of every hull at every zoom, and
+`the_shot_still_opens_exactly_where_it_always_did` in `app.rs` is the acceptance
+test for the whole camera: swing it about with the stick, press `R`, and the
+frame is the one a flight that never touched it drew, subpixel for subpixel.
+
 ## Invariants a careless edit breaks
 
 **Allocation happens before the terminal is taken over.** A failed allocation
@@ -321,8 +437,14 @@ aborts the process outright — no unwind, no `Drop`, no panic hook — so anyth
 installed first would never be undone and the user is left in raw mode on the
 alternate screen with no cursor and no prompt. `Flight::new` is constructed
 before `RawGuard::new`; keep it that way. The same reasoning is why every
-number `cli.rs` accepts is bounded at parse time (`MAX_CELLS`, `MAX_DIM`,
-`MAX_STARS`), and why an ioctl answer is clamped rather than believed.
+number `cli.rs` accepts is bounded at parse time — `MAX_CELLS`, `MAX_DIM` and
+`MAX_STARS` for the ones that allocate, `MAX_COUNT` for `--frames` and
+`--warmup`, which are spent rather than allocated, `MAX_SCALE` for `--scale`
+and `canvas::MAX_HULL_SAMPLES` for `--aa`, both of which enter *squared* — and
+why an ioctl answer is clamped rather than believed. `--orbit` is the one
+exception and says why in its own parser: an angle has no end to run away past,
+so a preposterous one costs a picture rather than an allocation, and
+`Orbit::held` folds it with exactly the fold a keypress gets.
 
 **`RawGuard::new` builds the guard value immediately after `enable_raw_mode`,
 before any other fallible call**, so an early `?` still restores. It installs a
@@ -331,6 +453,12 @@ terminal. Never `process::exit` inside the interactive loop — `Drop` would not
 run. Returning an error is fine: `main` prints after the guard has restored.
 And `let _guard = ...` must keep a real binding name; `let _ =` drops it
 immediately.
+
+It also turns **autowrap off**, which is not cosmetic. The grid is painted with
+explicit cursor moves and never leans on wrapping, so with it left on a terminal
+that shrinks between the width last measured and the next flush shears the frame
+diagonally instead of harmlessly clipping — and the bottom-right cell, which
+every full repaint writes, scrolls the alternate screen.
 
 It takes the mouse *conditionally* and gives it back *unconditionally*, and the
 asymmetry is deliberate rather than an oversight. `new` asks for it only when
@@ -350,6 +478,14 @@ is left running for days and an `f32` accumulator stops advancing after about
 six — freezing the twinkle, the shake and the flame with it.
 `Flight::accumulator` stays `f32` deliberately: it is bounded by one sim step
 and never drifts. Do not "unify" these.
+
+The camera's own state is `f32` on the same test, not by omission. The zoom and
+its target are bounded at both ends and are not accumulators. The orbit *is* the
+accumulator the argument is about — two of its three angles go round for as long
+as a key is leaned on — and what settles it is `Orbit::held`, which folds both
+the eased value and the target back onto a single turn every step, so neither
+can grow. `holding_a_camera_key_never_stops` leans on the keys for four thousand
+frames to say so.
 
 **Light adds; hulls write.** Everything in `Canvas` accumulates, because
 everything in it is light and a hundred streaks crossing a subpixel ought to
@@ -509,11 +645,13 @@ and all three have to keep holding:
   that order now has to be settled *between the samples* of a subpixel rather
   than between whole ones.
 
-**`q` steers, it does not quit.** The only quits are `Esc`, `Ctrl-C` and
-`Ctrl-D` — and in screensaver mode, any key at all. While the picker is up it
-owns the keyboard including `Esc`; `Ctrl`-modified keys bypass it so `Ctrl-C`
-still works. In `handle_key`, the `Char('c' | 'd') if ctrl` arm sits **above**
-`Char('c' | 'C') => cycle_view`; reorder them and `Ctrl-C` cycles the camera.
+**`q` flies something, it does not quit.** It rolls the ship inside and the
+camera outside, and it has never been the way out since it went on the stick.
+The only quits are `Esc`, `Ctrl-C` and `Ctrl-D` — and in screensaver mode, any
+key at all. While the picker is up it owns the keyboard including `Esc`;
+`Ctrl`-modified keys bypass it so `Ctrl-C` still works. In `handle_key`, the
+`Char('c' | 'd') if ctrl` arm sits **above** `Char('c' | 'C') => cycle_view`;
+reorder them and `Ctrl-C` cycles the camera.
 
 **Key releases are discarded.** They arrive only from kitty-protocol terminals,
 and acting on them counts a single press twice.
@@ -525,26 +663,57 @@ first resize event. Relatedly, a resize only retunes the star pool when
 clamp to `AUTO_MAX_STARS` (20 000) whatever `--stars` said, so with
 `--stars 100000` a single `+` shrinks the pool.
 
-**Pitch and yaw are switched off outside the cockpit, and the zoom is switched
-off inside it.** Not because either could not be wired up, but because out
-there a turn moves nothing an eye can see and in here there is no ship to be
-made bigger, and a control that swallows input and gives nothing back is worse
-than one plainly not connected. `handle_key` says this twice, as `steers` and
-`zooms`, and they are deliberately the same shape. If you change either, the
-hint tiers in `hud.rs` have to follow — they are the only place the *running
-program* writes the controls down — and so does `README.md`, whose `Flying`
-table annotates pitch and yaw "Cockpit only" and the zoom "Outside only", and
-says both again in prose further down.
+**The same six keys fly the ship inside and the camera outside, and the zoom is
+switched off inside.** `WASD` and `QE` are the stick from the pilot's seat and
+the camera's orbit from the beam. That is not two features sharing a keyboard by
+accident: out there the camera rides with the ship, so a turn of the *hull*
+moves nothing an eye can see — the stars stream on as they were and the ship
+leans a few degrees — while what can usefully move in a view whose whole subject
+is the ship is the eye looking at it. The zoom runs the other way for the mirror
+reason: from inside there is no ship to be made bigger. A control that swallows
+input and gives nothing back is worse than one plainly not connected, so each
+key is wired exactly where it has something to show.
+
+`handle_key` says this three times, as `steers`, `flies_the_camera` and `zooms`,
+and they are deliberately the same shape. The two stick blocks sit one *below*
+the other rather than nested: a match arm whose guard fails falls through to the
+next arm that matches, so each key is written once per view and neither spelling
+has to know about the other. Roll went with the pair, which cost the one thing
+this view could do that the cockpit cannot — a barrel roll flown and watched
+from the beam — and bought a stick that means one thing in each view instead of
+two things in one of them.
+
+Four places have to move together if you change any of it: `handle_key`, the
+four hint arrays in `hud.rs` (a face per colour mode times a face per view —
+they are the only place the *running program* writes the controls down),
+`README.md`'s two `Flying` tables, and the tests that pin the split.
+`the_stick_flies_the_camera_outside_and_the_ship_inside` says the ship's rates
+never move when a camera key is pressed and that every one of those keys moves
+*something*; `the_camera_is_not_connected_in_the_cockpit` and
+`the_zoom_is_not_connected_in_the_cockpit` are the other halves, and they also
+say the camera and the zoom are *state* rather than a mode — a trip through the
+cockpit leaves both where they were.
 
 **The zoom is a dolly, not a lens.** `Renderer::exterior_camera` keeps
 `cam.focal` at `h * SIDE_FOCAL` whatever the zoom is doing; what moves is the
-standoff in `models::to_camera`, which is now an argument. That is not a
+standoff carried on `view::Eye` and applied by `Eye::to_camera`. That is not a
 stylistic choice: `ExteriorField` caches `cam.focal` and lays its whole band out
 against it, so a zoom that touched the focal length would need `retarget` on
 every notch — and `retarget` drops every trail, which is a scratch across the
 frame. The dolly leaves the sky untouched, and
 `the_zoom_moves_the_ship_and_leaves_the_sky_alone` in `app.rs` fails the moment
-anything makes `exterior_camera` read the zoom.
+anything makes `exterior_camera` read the zoom. An *orbit* is the opposite case
+and deliberately so: it is meant to take the sky with it, so it is handed to
+`ExteriorField::update` separately rather than reaching the camera.
+
+**The wheel is the zoom and nothing else.** `handle_mouse` returns no `Action`,
+because a pointer wandering across the window must never be the thing that ends
+a flight, and it ignores buttons and motion outright — nothing in this program
+is aimed at. While the picker is up it moves the highlight instead, matching the
+arrows the dialogue already owns; the picker forces the outside view, so the
+alternative would be scrolling the list and zooming the ship behind it at once.
+`the_brackets_and_the_wheel_ask_for_the_same_zoom` is what holds the two wirings
+together, and it checks the direction as well as the value.
 
 **The warp bubble is measured in ships.** `Lens::for_warp` takes the hull's
 on-screen half-length, not the canvas height, so the bubble scales with the
@@ -589,8 +758,30 @@ waist into a peanut — `1 + A·cos²φ` has a local *minimum* of width at the w
 for any `A` past 0.5. Both ends of the shift are guarded: a `const _: ()` in
 `lens.rs` fails the build if the nose leaves the shadow, and
 `every_hull_stays_inside_its_own_bubble` in `models.rs` flies every hull in the
-hangar through every zoom and a full turn of roll to say the same thing about
-real geometry rather than about a ship one unit long.
+hangar through every zoom, a full turn of roll and every camera angle in
+`orbits()` to say the same thing about real geometry rather than about a ship
+one unit long. That test carries **two** bounds and the difference is not slack:
+square to the track the hull is inside the *shadow*, and swung round toward the
+nose or the tail the honest bound is the *ring*. The reason is perspective
+rather than the bubble — end-on the hull's length lies along the line of sight
+and its near end magnifies while the bubble it sits in does not, and the drawn
+outline is the silhouette of the spheroid rather than the perspective
+silhouette, which would be a general conic with its own centre.
+
+**The bubble is a solid, so the camera foreshortens it.** `for_warp` takes the
+nose direction in camera space — `Orbit::nose_in_camera` — and works the outline
+out with support functions: the long axis runs from `L` broadside down to `W`
+end-on while the short one never moves, which is why a ship seen head-on sits in
+a circle rather than in a line and why nothing has to bound how far the camera
+may be swung. The `turn` it stores is which way that long axis lies, as
+`(cos, sin)`, and it is exactly `(1.0, 0.0)` whenever the camera is abeam of the
+track — at any elevation and any roll of its own. Broadside is *branched* rather
+than computed for the same reason `offsets` branches on a zero sine:
+`√(RING_MAJOR²)` would very probably survive IEEE arithmetic, and "very
+probably" is not what the reference frames are pinned with. The branch in
+`offsets` is also a measured five percent of drawing time in a warp frame at
+twenty thousand stars — 21.3 ms against 22.3 — because it sits under the two
+hottest gates in the program.
 
 **The hull points along the track, and `models::attitude` is where that is
 kept.** Out there the direction of travel is the one thing that cannot move:
@@ -632,15 +823,25 @@ to carry two pixels, `pixel_pair` averages both subpixels into one ramp glyph.
 `MIN_ROWS` (12), `draw_compact` runs instead and drops the reticle, the nav
 panel and the hints rather than squeezing them.
 
-### Which beam the camera is on
+### Which beam the shot opens on
 
 **Starboard**, and the arithmetic is the thing to check rather than the prose:
-`to_camera` is `(x, y, z) → (z, y, −x)`, a quarter turn about the ship's own
-down axis that puts the nose to screen right and the starboard side toward the
-camera. Determinant one, so face winding survives it — the mirror image
-`(z, y, x)` looks almost the same and inverts every facing test. Two doc
-comments said "port" for a while and neither changed what was drawn, so if you
-find prose and geometry disagreeing again, `to_camera` is the answer.
+`Eye::to_camera` at `Orbit::LEVEL` is `(x, y, z) → (z, y, distance − x)`, a
+quarter turn about the ship's own down axis that puts the nose to screen right
+and the starboard side toward the camera. The three dot products come from
+`Orbit::basis`, which is orthonormal of determinant one at every angle — so face
+winding survives it, where the mirror image looks almost the same and inverts
+every facing test in `models::plates`. Two doc comments said "port" for a while
+and neither changed what was drawn, so if you find prose and geometry
+disagreeing again, `basis` and `to_camera` are the answer.
+
+The camera can now be anywhere, so "which beam" is only where it *starts* — but
+that spot is load-bearing far past taste, because it is the one place the whole
+outside view reduces to arithmetic older than the orbit: an exact swizzle, an
+exactly abeam sky travel of `(-1, 0, 0)`, an unforeshortened bubble outline, and
+a hull axis flat in the image plane with no vanishing point at all. `side.txt`
+is recorded there and `orbit.txt` is recorded away from it, which is what makes
+the pair able to tell those two halves apart.
 
 ## Conventions
 
@@ -715,6 +916,19 @@ that a frame never re-sends a colour it is already using. Several iterate over
 `models::models()` or `ViewMode::ALL` so a new entry is covered automatically —
 keep that property when you add to either.
 
+`models.rs` has a third list of that kind, and it is two lists on purpose.
+`orbits()` is a spread of camera angles chosen to cover the *basis* — both
+poles and past them, head-on, dead astern, and corners with all three angles off
+zero at once — and `forward_quarter()` is a second spread chosen so the ship's
+own vanishing point lands on the canvas with the hull clear of it. Not one of
+`orbits()`'s angles meets both halves of that, which is exactly how a lance
+several frame widths too long went unnoticed: every sweep flew straight past
+the one question. A sweep that can stop asking its question should say so —
+`a_plume_stops_at_the_point_it_vanishes_at` counts the frames that qualified and
+fails on a floor well under today's number, so a later nudge to the framing
+cannot quietly take the coverage down to a corner of the range while the test
+goes on passing.
+
 ### Commits
 
 Imperative subject, sentence case, no scope prefix, no conventional-commits, no
@@ -722,11 +936,12 @@ trailing period. Real ones:
 
 ```
 Make the hulls solid
-Switch off pitch and yaw in the view from outside
+Put the stick on the camera in the view from outside
 Take the division out of the streak sampling loop
 Reject nonsense flags, and stop shouting colours at a pipe
 Wait for input instead of sleeping through it
-Put the camera and the hangar on the hint line
+Measure a hull's outline finer than a subpixel
+Let the lance run to its vanishing point and fade out there
 ```
 
 Bodies are the same essayistic prose as the comments, wrapped at ~72: what was
@@ -768,22 +983,36 @@ blurb can go quietly, hiding whole ships cannot.
 
 **Adding a camera.** Add the variant to `ViewMode::ALL` in `src/view.rs` — the
 cycle and `label()` are written so a third costs one line — then the arm in
-`Flight::advance`/`draw`, the `ViewArg` in `src/cli.rs`, and a hint tier in
-`src/hud.rs` if the controls differ. `hud::Readout` carries `view` for exactly
-this.
+`Flight::advance`/`draw`, the `ViewArg` in `src/cli.rs`, and, if the controls
+differ, a *pair* of hint arrays in `src/hud.rs`, since every face is spelled
+twice over for the ASCII terminal. `hud::Readout` carries `view` for exactly
+this, and `Glyphs::hints_for` is where a third answer goes. Then decide what the
+stick does in it: `handle_key`'s `steers`, `flies_the_camera` and `zooms` are
+all `== ViewMode::X` today, so a third view wants a third answer to each of the
+three — and a key matching none of them falls through to nothing at all, which
+is a control that has quietly gone missing rather than a compile error.
 
 **Changing the controls.** Four hint arrays in `src/hud.rs` — a face per colour
 mode times a face per view — and one test holds all four to the same shape:
 exactly three tiers, strictly decreasing in width so the first that fits is the
-most detailed, and the shortest no wider than `MIN_COLS - 2`. That last budget
-is tighter than it reads; the narrowest cockpit tier already uses 41 of its 44
-columns, so a new control does not simply get appended to all three. The zoom
-is the worked example: `[] zoom` costs nine columns with its separator, the
-narrowest side tier has seven spare, and putting it on the middle tier would
-carry that one past sixty columns — which is the width `tests/flight.rs` flies
-at, so those runs would shed the tier and lose the *throttle* to gain the zoom.
-It went on the widest tier only, where `C view` and `M ships` already stop.
-`README.md`'s `Flying` table is the other place the keys are written down.
+most detailed, and the shortest no wider than `MIN_COLS - 2`. It also pins what
+each face has to *name*: `WASD steer` on every cockpit tier, `WASDQE cam` on
+every outside one and `steer` on none of them, and the zoom out there and
+nowhere else. The shortest tier is a tighter budget than it reads; the narrowest
+cockpit tier uses 41 of its 44 columns and the narrowest side tier 40, so a new
+control does not simply get appended to all three.
+
+Two worked examples, and they are the two walls. `[] zoom` costs nine columns
+with its separator, which is more than the narrowest side tier has spare, so it
+went on the widest tier only — where `M ships`, `P pause` and `R reset` already
+stop, on both faces of both views. And
+naming the camera cost three columns over `QE roll`: `WASDQE cam` rather than
+`WASDQE camera`, because the ASCII middle side tier is 56 characters and
+`draw_hints` needs `chars + 2 <= cols`, so it fits a sixty-column window with
+two columns to spare — and sixty is the width `tests/flight.rs` flies at, so a
+longer word there would shed the tier and lose the *throttle* to gain the
+camera. `README.md`'s two `Flying` tables are the other place the keys are
+written down.
 
 **Adding a NAV readout.** The panel has one spare row and no test guarding it.
 The bottom three rows are counted *up* from the bottom — status at `rows - 3`,
@@ -793,17 +1022,28 @@ side view where the `SHIP` row already makes six, the closing rule lands on row
 8 and the banner on row 9. A seventh row collides.
 
 **Changing what a stick key does.** It is written twice, once per view, in
-`handle_key`'s guard-gated arms — and in four places besides: the hint tiers in
-`hud.rs` (both faces), `README.md`'s two `Flying` tables, and
-`the_stick_flies_the_camera_outside_and_the_ship_inside` in `app.rs`, which is
-the test that says the ship's rates do not move when the camera key is pressed
-and the camera does not move when the ship's is.
+`handle_key`'s guard-gated arms — the cockpit block first, the camera block
+below it, each key spelled once per view and falling through from one to the
+other — and in four places besides: the hint tiers in `hud.rs` (both faces),
+`README.md`'s two `Flying` tables, and the pair of tests in `app.rs` that pin
+the split, `the_stick_flies_the_camera_outside_and_the_ship_inside` and
+`the_camera_is_not_connected_in_the_cockpit`. Between them they say the ship's
+rates do not move when a camera key is pressed, the camera does not move when a
+ship key is, and every one of the six keys moves *something* in both views — a
+key that swallows the press and gives nothing back is the thing this view used
+to have.
 
 **Adding a flag.** `src/cli.rs`, with a bound and a `value_parser`, and
 `conflicts_with`/`requires` if it only means something in combination. Every
 number there is bounded; unbounded ones have caused real bugs, and the
 regression tests at the bottom of the file name them. Snapshot-only flags are
-`#[cfg(feature = "snapshot")]`.
+`#[cfg(feature = "snapshot")]`. Two things `--orbit` is the worked example of:
+a flag whose value is not a number takes a parser that produces the domain type
+rather than a string, so an unknown ship or a malformed angle is a message at
+the command line rather than a silent fallback — and a flag whose range starts
+with a minus sign needs `allow_hyphen_values`, or clap reads `--orbit -75,10`
+as a flag it does not know. Degrees rather than radians, because this is the one
+place a person types the number.
 
 **Changing the renderer.** Expect the golden hashes to move, and regenerate
 them in the same commit with the reason written down. Run
@@ -814,14 +1054,18 @@ hot loop — `draw_streak`, `resolve_into`, `Screen::flush`, `ExteriorField::dra
 
 `.github/workflows/ci.yml`, four jobs:
 
-- **test** — build and test on Linux, macOS and Windows, default features then
-  `--all-features`. The matrix is the point: the renderer's whole job is to
-  behave the same everywhere.
+- **test** — `cargo test --locked` then `cargo test --locked --all-features`, on
+  Linux, macOS and Windows. The matrix is the point: the renderer's whole job is
+  to behave the same everywhere. There is deliberately no `cargo build` step in
+  front of them; `cargo test` compiles the bin targets too, so one bought
+  nothing but a second full compile on each of three operating systems.
 - **lint** — `cargo fmt --all --check` first (it needs no build), then clippy
-  with `-D warnings`, then `cargo package`. That last one is there because
-  `exclude` in `Cargo.toml` is hand-maintained and its failure mode is quiet: a
-  crate that builds from the repository and not from the tarball people
-  install. Touching `exclude` means watching that step.
+  with `-D warnings`, then `cargo package --list` and `cargo package`. That last
+  pair is there because `exclude` in `Cargo.toml` is hand-maintained and its
+  failure mode is quiet: a crate that builds from the repository and not from
+  the tarball people install. The `--list` runs first so a diff that drops a
+  file says which one in the log rather than in a build error. Touching
+  `exclude` means watching those steps.
 - **msrv** — reads `rust-version` from `Cargo.toml` (currently **1.85**) and
   `cargo check`s against it. Bumping the floor means editing that field.
 - **headless** — same seed twice gives the same bytes, different seeds give
