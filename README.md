@@ -12,42 +12,14 @@ of the page included. The repository is public, so these load for everyone.
 
 ![The view at warp factor 9.8](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/warp.png)
 
+![Chasing the ship at warp, from astern and above](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/astern.png)
+
 ## Running it
 
 ```sh
 cargo run --release            # fly it
 cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 ```
-
-## Flying
-
-The stick flies the ship from the pilot's seat and the camera from outside it —
-six keys, two jobs, and which one you get is which view you are in:
-
-| Key | Cockpit | Outside |
-| --- | --- | --- |
-| `W` `S` / `I` `K` | Pitch — nose up and nose down | Swing the camera over the ship and under it |
-| `A` `D` / `←` `→` | Yaw — nose left and nose right | Swing the camera round toward the tail and the nose |
-| `Q` `E` | Roll — port and starboard | Roll the camera |
-
-Everything else means the same thing in both:
-
-| Key | |
-| --- | --- |
-| `↑` `↓` | Throttle |
-| `Space` | Engage or disengage the warp drive |
-| `C` | Cycle the camera — cockpit, then outside |
-| `[` `]` / wheel | Zoom the camera out and in. Outside only |
-| `M` | Pick a ship |
-| `+` `-` | More or fewer stars |
-| `P` | Pause |
-| `R` | Reset — the throttle, the ship's attitude, the camera, and the pause |
-| `Esc` / `Ctrl-C` / `Ctrl-D` | Quit |
-
-Throttle and steering are impulse-driven — a press nudges the ship and it eases
-back on its own — because terminals report key presses but not releases. Hold a
-key and auto-repeat does the rest. `Q` steers rather than quits, so a hand on
-the stick cannot end the flight by accident; `Esc` or `Ctrl-C` gets you out.
 
 ## Options
 
@@ -77,14 +49,6 @@ degrades — to the xterm 256-colour palette, and past that to a plain ASCII
 brightness ramp; `--color` forces the choice if detection guesses wrong.
 `--color ascii` sends no escape codes beyond the cursor moves the grid is
 painted with, so piped rather than displayed it is plain text and nothing else.
-
-## Screenshots
-
-![Cruising at sublight](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/impulse.png)
-
-![Accelerating through the light barrier](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/spool.png)
-
-![The warp bubble lensing the sky around the ship](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/side.png)
 
 ## License
 
