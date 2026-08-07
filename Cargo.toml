@@ -61,6 +61,29 @@ rand = { version = "0.10", default-features = false, features = [
 ] }
 png = { version = "0.18", optional = true }
 
+# The one place the rule above bends, and it bends without costing anything.
+# A process killed by a signal runs no `Drop`, so `RawGuard` never fires and
+# whoever sent it gets their terminal back in raw mode on the alternate screen
+# with no cursor and no prompt — which is exactly what happens to a screensaver
+# when the pane it was dropped into goes away. Answering that needs a signal
+# handler and `std` has none, so it is this or nothing.
+#
+# It widens the manifest and not the tree: `crossterm`'s `events` feature
+# already carries `signal-hook` for SIGWINCH, so this names a crate that was
+# being compiled anyway. `cargo tree --locked -e normal` counts 41 crates
+# before this line and 41 after. Unix only, because that is where the signals
+# are; on Windows `interrupted` is a function that returns false.
+#
+# `default-features = false` for the same reason the two above take it: the
+# `channel` and `iterator` modules are a whole way of consuming signals that
+# nothing here calls, where `flag` and `consts` are outside the feature gates.
+# `flag::register` is also why this is the crate rather than the
+# `signal-hook-registry` beneath it — it installs the handler that stores
+# `true` into an `AtomicBool`, which is the entire handler this wants, and it
+# is safe where registering by hand is not.
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.3", default-features = false }
+
 [features]
 default = []
 snapshot = ["dep:png"]

@@ -739,6 +739,16 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     'flying: loop {
         let frame_start = Instant::now();
 
+        // A signal asked for the process. Leave the way a key would, so the
+        // guard above puts the terminal back rather than the flight being cut
+        // down where it stands with the alternate screen still up. Checked
+        // here rather than acted on in the handler, which can do nothing but
+        // set the flag safely — so the delay is one frame's budget, and at the
+        // frame rates a screensaver runs at that is the wait.
+        if crate::term::interrupted() {
+            break 'flying;
+        }
+
         let elapsed = start.elapsed().as_secs_f64();
         // `--demo` flies itself and then stops; a screensaver flies itself
         // until something interrupts it.
@@ -773,8 +783,16 @@ fn run_interactive(args: &Args) -> io::Result<()> {
             // budget has nothing left to wait, but a terminal too slow to keep
             // up still has to be quittable, so the queue is drained either way.
             let remaining = frame_budget.saturating_sub(frame_start.elapsed());
-            if !event::poll(remaining)? {
-                break;
+            match event::poll(remaining) {
+                Ok(true) => {}
+                Ok(false) => break,
+                // A signal landing in the middle of the wait cuts it short.
+                // That is not a failure to report — it is the thing the flag
+                // at the top of the loop exists for — so go back and read it
+                // rather than handing the user an "Interrupted" and an exit
+                // code for having pressed nothing.
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => break,
+                Err(err) => return Err(err),
             }
             match event::read()? {
                 // A screensaver dies on contact: any key at all gets you back

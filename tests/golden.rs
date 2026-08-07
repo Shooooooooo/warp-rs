@@ -132,12 +132,22 @@ const COMMON: [&str; 7] = [
 /// ramp, the glare, the flash, the Doppler shift and the whole view from
 /// outside unpinned. A change to any of those could repaint the sky unremarked.
 ///
+/// `ansi256.txt` is the same flight as `truecolor.txt` in the other colour
+/// mode, which is the sharpest form that comparison takes: the two differ in
+/// how a cell's colour is spelled and in nothing else, so a change that moves
+/// one and not the other has landed in the writer rather than in the sky. It
+/// is here because the mode had no reference at all while being the one
+/// `ColorMode::detect` hands to any terminal with a `TERM` entry and no
+/// `COLORTERM` — so the whole of `quantize_256` and the palette-index path
+/// under it could be repainted and these hashes would not have noticed.
+///
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
 /// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
 /// it to all three.
-const CASES: [(&str, &[&str]); 5] = [
+const CASES: [(&str, &[&str]); 6] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
+    ("ansi256.txt", &["--demo", "--color", "256"]),
     (
         "warp.txt",
         &["--engage", "--throttle", "1.0", "--color", "truecolor"],

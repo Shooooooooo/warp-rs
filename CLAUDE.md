@@ -34,18 +34,32 @@ and why beside each. Dropping `derive-more` alone takes a whole proc-macro
 stack — `convert_case`, `unicode-segmentation`, `rustc_version`, `semver` and a
 second `syn` — out of the tree.
 
+There is a fifth, `signal-hook`, and the shape of the argument that let it in
+is the one to copy rather than the conclusion. It is Unix-only, and it names a
+crate `crossterm`'s `events` feature was already compiling for SIGWINCH — so
+`cargo tree --locked -e normal` counts **41 crates before it and 41 after**,
+and the lock file's whole diff was one line. What it buys is the only exit that
+runs no code: a signal ends the process without `Drop`, so `RawGuard` never
+restores. Weigh a dependency by what it adds to the *tree* and what nothing
+else can do, not by the length of the list in `Cargo.toml`.
+
+That the rule is real rather than aspirational is worth knowing when you next
+touch the manifest: it is enforced, by the committed `Cargo.lock` and the
+`--locked` every cargo invocation in CI passes. A features slip or a stray
+`cargo add` fails with *cannot update the lock file* rather than landing green.
+
 `tests/golden.rs` is the rule taken to its conclusion: it spells SHA-256 out in
-a page of shifts and adds rather than adding a fifth dependency for one test,
-and `the_digest_agrees_with_the_published_answers` checks it against the
-canonical vectors and the block-boundary lengths before anything else trusts a
-word of it.
+a page of shifts and adds rather than adding a dependency for one test, and
+`the_digest_agrees_with_the_published_answers` checks it against the canonical
+vectors and the block-boundary lengths before anything else trusts a word of
+it.
 
 ## Commands
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 262 unit + 7 flight + 3 golden, ~11s
-cargo test --locked --all-features      # 263 unit — adds the snapshot-gated one
+cargo test                              # 268 unit + 7 flight + 3 golden, ~11s
+cargo test --locked --all-features      # 269 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -89,7 +103,7 @@ live in the character grid, not in the pixel buffer, so they are not in it.
 seed produces byte-identical output. `tests/golden/frames.sha256` pins those
 bytes, and they are checked two ways from that one file: `cargo test --test
 golden` reproduces them in process through `app::render_headless`, and the
-`headless` CI job produces the same five files from a release binary and runs
+`headless` CI job produces the same six files from a release binary and runs
 `sha256sum -c`. Between them the two also prove they agree — a library that
 renders one thing and a binary another would be a bug of its own.
 
@@ -97,13 +111,24 @@ The in-process half is the reason `render_headless` is public and separate from
 `run_headless`. It costs about four seconds — most of `cargo test`'s wall clock
 after the unit tests — and is **Linux-gated**, for the reason below.
 
-**Five flights, and the case list lives in three places** — the comment block in
+**Six flights, and the case list lives in three places** — the comment block in
 `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job. Adding
-one means adding it to all three. They share `--headless --frames 120 --seed 1
---size 120x36` and differ in what they make the renderer do: two `--demo` runs
-in truecolor and ascii, one `--engage --throttle 1.0`, one of those from
-`--view side`, and the same again with the camera swung off the beam by
-`--orbit 55,35,20`.
+one means adding it to all three, and `.gitignore` needs the file's name too,
+which is a list that has fallen behind that recipe twice. They share
+`--headless --frames 120 --seed 1 --size 120x36` and differ in what they make
+the renderer do: three `--demo` runs in truecolor, ascii and 256, one
+`--engage --throttle 1.0`, one of those from `--view side`, and the same again
+with the camera swung off the beam by `--orbit 55,35,20`.
+
+`ansi256.txt` is the odd one and the only case here recorded to be read against
+another rather than against itself. It is `truecolor.txt`'s flight in the other
+colour mode, so the two ask for the same sky and differ only in how a cell's
+colour is spelled — meaning a change that moves one and not the other has landed
+in the writer rather than in the renderer. It went in with the fix that made
+that mode send `38;5;N` instead of palette values wrapped in a 24-bit sequence
+the terminals it exists for cannot read, and the mode had no reference at all
+until then while being the one `ColorMode::detect` hands to any terminal with a
+`TERM` entry and no `COLORTERM`.
 
 The last three are not decoration. With only the `--demo` pair, the reference
 covered two seconds of flight that never leaves sublight — `--demo` spends its
@@ -133,10 +158,12 @@ cargo build --release
 common="--headless --frames 120 --seed 1 --size 120x36"
 ./target/release/warp $common --demo --color truecolor > truecolor.txt
 ./target/release/warp $common --demo --color ascii     > ascii.txt
+./target/release/warp $common --demo --color 256       > ansi256.txt
 ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
-sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
+sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt \
+    > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
 
@@ -151,6 +178,17 @@ lot: a change to something the outside view only does *off* the beam moves
 arithmetic where `side.txt` has the camera. Stopping the engine lance at its
 vanishing point moved that one hash and no other. A hash moving outside the
 shape its change predicts has leaked.
+
+**A hash that fails to move where its change predicted has not been vindicated
+either** — it has found a hole, and the hole is worth more than the green tick.
+The reference is one ship deep: neither flight with a hull in it passes
+`--ship`, so both fly the enterprise. Clearing the hull band over the span it is
+read over rather than written to changed real frames for the dart, the needle,
+the hauler and the trident — three of five camera angles for two of them — and
+moved not one hash here, because the enterprise's outline does not happen to
+expose it. When that happens, say so, and put the guard at the level the change
+actually lives at: that one is a property test in `canvas.rs`, not a sixth
+flight.
 
 Say in the commit message what moved and why. Regenerating without explanation
 throws away the only thing that file is for.
@@ -461,6 +499,21 @@ run. Returning an error is fine: `main` prints after the guard has restored.
 And `let _guard = ...` must keep a real binding name; `let _ =` drops it
 immediately.
 
+It also catches **`SIGTERM` and `SIGHUP`**, which are the ways out that run no
+code at all — a signal's default disposition ends the process where it stands,
+so `Drop` never fires and a `lock-command` whose pane went away leaves the user
+in raw mode on the alternate screen. The handler **sets an `AtomicBool` and
+does nothing else**, and `run_interactive` reads it at the top of each frame:
+`restore` writes to `io::stdout`, which takes a lock, and a signal landing while
+the frame being flushed holds it would deadlock the process in the one place
+that must not happen. Nothing else may be added to that handler on those terms.
+`SIGINT` is deliberately *not* caught — raw mode turns off the terminal's own
+signal generation, so `Ctrl-C` arrives as a key and `handle_key` answers it, and
+a second door on one control would disagree with the picker about who owns the
+keyboard. `event::poll` returning `Interrupted` breaks the drain rather than
+propagating, for the same reason: a signal cutting the wait short is that flag's
+business, not an error to report.
+
 It also turns **autowrap off**, which is not cosmetic. The grid is painted with
 explicit cursor moves and never leans on wrapping, so with it left on a terminal
 that shrinks between the width last measured and the next flush shears the frame
@@ -515,6 +568,20 @@ is what is wrong. `two_plates_that_share_an_edge_paint_the_rectangle_they_make`
 in `canvas.rs` holds it bit for bit on two synthetic quads, and
 `the_sky_never_shows_through_the_seams_of_a_hull` in `models.rs` holds it on the
 real fleet by drawing both ways round and counting the difference.
+
+**The band is cleared over the span the resolve loop *reads*, which is wider
+than the span the outline is written to, and the two are not interchangeable.**
+Writes land in `[u_lo, u_hi]`, the hull's box in sample columns; the loop that
+turns samples into subpixels reads whole subpixels, so it reaches every sample
+of the columns those two fall in — `u_lo % n` below and `n - 1 - u_hi % n`
+above. `Canvas::clear` does not touch the band, and `u_lo` and `u_hi` come from
+the whole hull rather than from a row, so anything left uncleared there is the
+*previous frame's*, not the previous row's. Clearing only the written span put
+a fringe of the last frame's hull down both sides of this one's, and made a
+frame depend on the one before it. The guard is
+`a_hull_is_drawn_the_same_whatever_the_band_last_held`, and it is a property
+test rather than a reference frame for the reason in the golden-frames section
+above.
 
 `--aa` sets the grid, `HULL_SAMPLES` is its default, and **at one sample the
 whole thing reduces to the rasteriser it replaced, byte for byte** — that is why
@@ -813,6 +880,23 @@ Pitch and yaw are leans off the *rates* for that reason, so they say the pilot
 is on the stick now and hand the ship back to its track when it is let go. Roll
 is the exception and is taken as flown, because it turns the ship about the
 very axis it is flying along and so moves the profile without moving the nose.
+
+**Each colour mode is a different *spelling*, and the mode has to reach the
+writer for that to be true.** `--color 256` sends `38;5;N` and truecolor sends
+`38;2;r;g;b`; `quantize_256` splits into `palette_256`, which answers the entry
+number the wire wants, and `palette_rgb`, which turns it back into a colour for
+the callers that go on blending with it. It used to snap to the palette and
+then send the *values* in a 24-bit sequence, which the terminals that mode
+exists for cannot read. Two things follow. The index is worked out in
+`Sink::set_color` rather than carried on the `Cell`, because a mark takes the
+brighter of itself and the pixel beneath and a dialogue dims what is behind it,
+so the colour has to survive `compose` — and because the writer runs once per
+colour *change* where `compose` runs twice per cell. And it cannot assume what
+reaches it is already snapped, because that dimming lands between entries.
+`the_escapes_written_by_hand_are_the_ones_crossterm_writes` runs over both
+modes: the hand-spelled bytes and crossterm's `AnsiValue` have to agree, or a
+Windows console without virtual terminal processing draws a different picture
+from the one every test here checks.
 
 **`--color ascii` emits no escape codes beyond cursor moves, and no byte
 outside printable ASCII.** Not even a reset — on a `TERM=dumb` terminal even

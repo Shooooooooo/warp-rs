@@ -244,10 +244,21 @@ impl StarField {
 
     /// Adapt to a new canvas size. Existing stars keep their world positions;
     /// only the spawn cone changes.
+    ///
+    /// Every trail is dropped, for the reason [`crate::exterior::ExteriorField`]
+    /// drops its own: a streak drawn from where a star used to be under the old
+    /// projection to where it is under the new one is a scratch across the
+    /// frame. `cx`, `cy` and `focal` all move with the canvas, so that is the
+    /// whole field at once rather than a few stars near an edge. Flying, the
+    /// next step overwrites `prev` and it costs one frame; paused, `advance`
+    /// never runs, so the scratches stayed until the flight was let go again.
     pub fn retarget(&mut self, cam: &Camera) {
         let (hw, hh) = cam.half_extent();
         self.bound = (hw * SPAWN_MARGIN, hh * SPAWN_MARGIN);
         self.focal = cam.focal;
+        for star in &mut self.stars {
+            star.prev = None;
+        }
     }
 
     /// Grow or shrink the pool, keeping the stars already in flight.
@@ -864,6 +875,37 @@ mod tests {
             .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
             .sum();
         assert!(moving > 100.0, "warp should streak: {moving}");
+    }
+
+    #[test]
+    fn a_retargeted_field_draws_no_trail_from_the_old_projection() {
+        // Regression: `retarget` took the new canvas and left every star's
+        // `prev` where the old projection had put it, so the next frame drew
+        // the whole field as streaks running from one to the other. `cx`, `cy`
+        // and `focal` all move with the canvas, so this was the sky, not a few
+        // stars near an edge. `update` refreshes `prev` before it draws, which
+        // held it to a single frame and is why it went unseen — but pause gates
+        // `advance`, and a resize taken while paused left the scratches up
+        // until the flight was let go again. `resizing_mid_flight_is_survivable`
+        // in `render.rs` steps the field between the retarget and the draw,
+        // which is exactly what masked it; this one draws straight after.
+        let cam = cam();
+        let mut field = StarField::new(400, 3, &cam);
+        for _ in 0..30 {
+            field.update(1.0 / 60.0, crate::ship::WARP_MAX, 0.0, 0.0, 0.0, &cam);
+        }
+
+        let resized = Camera::new(320, 60);
+        field.retarget(&resized);
+        let drawn: f32 = field
+            .streaks(&resized, 1.0, 0.0)
+            .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
+            .sum();
+        assert_eq!(
+            drawn, 0.0,
+            "a field drawn straight after a retarget trailed from the \
+             projection it was retargeted away from"
+        );
     }
 
     #[test]
