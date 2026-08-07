@@ -128,10 +128,30 @@ impl<W: Write> Sink<'_, W> {
         }
     }
 
-    fn set_color(&mut self, color: Option<(u8, u8, u8)>, ground: Ground) -> io::Result<()> {
+    /// `mode` decides the *spelling*, not the colour: the cell arrives already
+    /// snapped to the palette in the 256 mode, and the index is worked out here
+    /// rather than carried on the cell because the cell's colour is still being
+    /// blended with after `compose` — and because this runs once per colour
+    /// change, where `compose` runs twice per cell.
+    ///
+    /// A dialogue is the reason the snapping cannot simply be assumed: it dims
+    /// what is behind it by a fraction, which lands between palette entries, so
+    /// what reaches here is an ordinary colour and wants the nearest entry to
+    /// it rather than a lookup that trusts it is already one.
+    fn set_color(
+        &mut self,
+        color: Option<(u8, u8, u8)>,
+        ground: Ground,
+        mode: ColorMode,
+    ) -> io::Result<()> {
         match self {
             Sink::Ansi(buf) => {
                 match color {
+                    Some((r, g, b)) if mode == ColorMode::Ansi256 => {
+                        buf.extend_from_slice(ground.indexed_prefix());
+                        push_decimal(buf, palette_256([r, g, b]) as usize);
+                        buf.push(b'm');
+                    }
                     Some((r, g, b)) => {
                         buf.extend_from_slice(ground.rgb_prefix());
                         push_decimal(buf, r as usize);
@@ -146,7 +166,7 @@ impl<W: Write> Sink<'_, W> {
                 Ok(())
             }
             Sink::Commands(out) => {
-                let color = to_color(color);
+                let color = to_color(color, mode);
                 match ground {
                     Ground::Foreground => out.queue(SetForegroundColor(color))?,
                     Ground::Background => out.queue(SetBackgroundColor(color))?,
@@ -182,6 +202,17 @@ impl Ground {
         match self {
             Ground::Foreground => b"\x1b[38;2;",
             Ground::Background => b"\x1b[48;2;",
+        }
+    }
+
+    /// The other spelling, for a palette entry rather than a colour. Shorter on
+    /// the wire as well as readable by more terminals: eleven bytes for white
+    /// against the nineteen `38;2;255;255;255m` costs, and a frame sends one of
+    /// these every time the colour changes.
+    fn indexed_prefix(self) -> &'static [u8] {
+        match self {
+            Ground::Foreground => b"\x1b[38;5;",
+            Ground::Background => b"\x1b[48;5;",
         }
     }
 
@@ -461,6 +492,7 @@ impl Screen {
     /// remember that it is showing them now.
     fn diff<W: Write>(&mut self, mut sink: Sink<W>) -> io::Result<()> {
         let colored = self.colored();
+        let mode = self.mode;
         let mut last_fg: Option<Option<(u8, u8, u8)>> = None;
         let mut last_bg: Option<Option<(u8, u8, u8)>> = None;
         // Where the terminal's cursor sits, when that is known.
@@ -478,11 +510,11 @@ impl Screen {
                     sink.move_to(col, row)?;
                 }
                 if colored && last_fg != Some(cell.fg) {
-                    sink.set_color(cell.fg, Ground::Foreground)?;
+                    sink.set_color(cell.fg, Ground::Foreground, mode)?;
                     last_fg = Some(cell.fg);
                 }
                 if colored && last_bg != Some(cell.bg) {
-                    sink.set_color(cell.bg, Ground::Background)?;
+                    sink.set_color(cell.bg, Ground::Background, mode)?;
                     last_bg = Some(cell.bg);
                 }
                 sink.glyph(cell.ch)?;
@@ -530,24 +562,25 @@ impl Screen {
 
     fn plain_into<W: Write>(&self, mut sink: Sink<W>) -> io::Result<()> {
         let colored = self.colored();
+        let mode = self.mode;
         for row in 0..self.rows {
             let (mut last_fg, mut last_bg) = (None, None);
             for col in 0..self.cols {
                 let cell = self.back[row * self.cols + col];
                 if colored && last_fg != Some(cell.fg) {
-                    sink.set_color(cell.fg, Ground::Foreground)?;
+                    sink.set_color(cell.fg, Ground::Foreground, mode)?;
                     last_fg = Some(cell.fg);
                 }
                 if colored && last_bg != Some(cell.bg) {
-                    sink.set_color(cell.bg, Ground::Background)?;
+                    sink.set_color(cell.bg, Ground::Background, mode)?;
                     last_bg = Some(cell.bg);
                 }
                 sink.glyph(cell.ch)?;
             }
             // Nothing was coloured, so there is nothing to hand back.
             if colored {
-                sink.set_color(None, Ground::Foreground)?;
-                sink.set_color(None, Ground::Background)?;
+                sink.set_color(None, Ground::Foreground, mode)?;
+                sink.set_color(None, Ground::Background, mode)?;
             }
             sink.glyph('\n')?;
         }
@@ -555,10 +588,16 @@ impl Screen {
     }
 }
 
-fn to_color(rgb: Option<(u8, u8, u8)>) -> Color {
+/// The same choice [`Sink::set_color`]'s fast path makes, in the vocabulary the
+/// slow one speaks. `AnsiValue` is crossterm's `38;5;N`, `Rgb` its `38;2;r;g;b`,
+/// so the two backends put the same bytes on the wire for the same cell — which
+/// is the only reason a terminal that takes the command path is looking at the
+/// picture this program was tested drawing.
+fn to_color(rgb: Option<(u8, u8, u8)>, mode: ColorMode) -> Color {
     match rgb {
-        Some((r, g, b)) => Color::Rgb { r, g, b },
         None => Color::Reset,
+        Some((r, g, b)) if mode == ColorMode::Ansi256 => Color::AnsiValue(palette_256([r, g, b])),
+        Some((r, g, b)) => Color::Rgb { r, g, b },
     }
 }
 
@@ -608,7 +647,12 @@ const fn gap(level: u8, value: usize) -> u8 {
     }
 }
 
-/// For every 8-bit value, the cube level nearest it.
+/// For every 8-bit value, which of the cube's six levels is nearest it.
+///
+/// The level's *step* rather than the level itself, because the palette entry
+/// number is built out of the three steps — `16 + 36r + 6g + b` — and that
+/// number is what goes on the wire. The level is one lookup further on through
+/// [`CUBE`], for the callers that want the colour back.
 ///
 /// This replaces a linear scan over six entries that depended on a single byte,
 /// run twice per cell per frame. Composing a frame at 300x90 cost 2.35 ms in
@@ -620,11 +664,11 @@ const fn gap(level: u8, value: usize) -> u8 {
 /// Ties break downward, the way `min_by_key` broke them by keeping the first
 /// minimum. 115, 155, 195 and 235 all sit exactly between two levels, and a
 /// test pins every value against the scan this stands in for.
-const NEAREST_CUBE: [u8; 256] = {
+const NEAREST_CUBE_STEP: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut value = 0usize;
     while value < 256 {
-        let mut best = CUBE[0];
+        let mut best = 0u8;
         let mut nearest = gap(CUBE[0], value);
         let mut i = 1;
         while i < CUBE.len() {
@@ -632,7 +676,7 @@ const NEAREST_CUBE: [u8; 256] = {
             // Strictly nearer, so an equidistant value keeps the lower level.
             if distance < nearest {
                 nearest = distance;
-                best = CUBE[i];
+                best = i as u8;
             }
             i += 1;
         }
@@ -642,15 +686,35 @@ const NEAREST_CUBE: [u8; 256] = {
     table
 };
 
-/// Snap a colour to the nearest xterm-256 palette entry, then hand back that
-/// entry's RGB. Emitting the RGB rather than the index means one code path in
-/// the writer; the point is that the *values* are restricted to the palette,
-/// so a 256-colour terminal renders them exactly.
-fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
+/// Where the 6×6×6 colour cube starts in the palette, and where the 24-step
+/// grey ramp starts after it. Below the first are the sixteen system colours,
+/// which nothing here ever asks for: they are whatever the user's theme says
+/// they are, and a renderer cannot use a colour it does not know the value of.
+const CUBE_BASE: u8 = 16;
+const GREY_BASE: u8 = 232;
+
+/// Which xterm-256 palette entry is nearest a colour.
+///
+/// The entry's number, because that is what goes on the wire: `38;5;N` is the
+/// sequence a terminal that cannot read 24-bit colour understands, and that
+/// terminal is the whole reason this mode exists. It used to hand back the
+/// RGB instead and the writer sent it as `38;2;r;g;b` — palette *values* in a
+/// 24-bit sequence, on the argument that a 256-colour terminal would then
+/// render them exactly. It only would if it could read the sequence at all,
+/// and one that can had no need of the snapping.
+///
+/// [`quantize_256`] is this composed with [`palette_rgb`], for the places that
+/// need the colour back because they go on blending with it.
+fn palette_256(rgb: [u8; 3]) -> u8 {
+    let step = [
+        NEAREST_CUBE_STEP[rgb[0] as usize],
+        NEAREST_CUBE_STEP[rgb[1] as usize],
+        NEAREST_CUBE_STEP[rgb[2] as usize],
+    ];
     let cube = [
-        NEAREST_CUBE[rgb[0] as usize],
-        NEAREST_CUBE[rgb[1] as usize],
-        NEAREST_CUBE[rgb[2] as usize],
+        CUBE[step[0] as usize],
+        CUBE[step[1] as usize],
+        CUBE[step[2] as usize],
     ];
 
     // The 24-step grey ramp is finer than the cube's grey diagonal, so
@@ -664,8 +728,8 @@ fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
     // 300x90, and a test walks all 256 inputs against the form it replaced —
     // this decides an output colour, so "equivalent" has to mean equal.
     let avg = (rgb[0] as u32 + rgb[1] as u32 + rgb[2] as u32) / 3;
-    let step = ((avg.saturating_sub(8) + 5) / 10).min(23);
-    let grey = (8 + step * 10) as u8;
+    let grey_step = ((avg.saturating_sub(8) + 5) / 10).min(23);
+    let grey = (8 + grey_step * 10) as u8;
     let grey = [grey, grey, grey];
 
     let dist = |a: [u8; 3]| -> i32 {
@@ -677,8 +741,36 @@ fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
             .sum()
     };
 
-    let best = if dist(grey) < dist(cube) { grey } else { cube };
-    (best[0], best[1], best[2])
+    // Strictly nearer, so a colour equidistant from both keeps the cube — which
+    // is the comparison this made when it chose between two RGB triples, and
+    // has to stay it: the choice decides an output colour and a test walks it.
+    if dist(grey) < dist(cube) {
+        GREY_BASE + grey_step as u8
+    } else {
+        CUBE_BASE + 36 * step[0] + 6 * step[1] + step[2]
+    }
+}
+
+/// The RGB an xterm-256 palette entry stands for, over the two ranges
+/// [`palette_256`] can produce. It is a total inverse of that function rather
+/// than of the palette: entries below [`CUBE_BASE`] have no fixed colour to
+/// return, and nothing here asks for one.
+fn palette_rgb(index: u8) -> (u8, u8, u8) {
+    if index >= GREY_BASE {
+        let level = 8 + (index - GREY_BASE) * 10;
+        return (level, level, level);
+    }
+    let n = index.saturating_sub(CUBE_BASE) as usize;
+    (CUBE[(n / 36) % 6], CUBE[(n / 6) % 6], CUBE[n % 6])
+}
+
+/// Snap a colour to the nearest xterm-256 palette entry and hand back that
+/// entry's RGB — for the callers that have to go on doing arithmetic with it.
+/// `compose` blends nothing, but a mark laid over the frame is the brighter of
+/// itself and the pixel beneath, and a dialogue takes the sky down behind it,
+/// so both need a colour rather than a number.
+fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
+    palette_rgb(palette_256(rgb))
 }
 
 /// Ask the terminal to report mouse *buttons* — which is where the wheel
@@ -811,26 +903,31 @@ mod tests {
                 "MoveTo({col}, {row})"
             );
         }
-        for rgb in [(0, 0, 0), (255, 255, 255), (1, 10, 100), (58, 92, 118)] {
+        // Both spellings, because there are two: the 256 mode writes the
+        // palette entry's number where truecolor writes three components, and
+        // it is the newer of the pair and so the likelier to have drifted.
+        for mode in [ColorMode::Truecolor, ColorMode::Ansi256] {
+            for rgb in [(0, 0, 0), (255, 255, 255), (1, 10, 100), (58, 92, 118)] {
+                assert_eq!(
+                    sink_ansi(|s| s.set_color(Some(rgb), Ground::Foreground, mode).unwrap()),
+                    crossterm_ansi(SetForegroundColor(to_color(Some(rgb), mode))),
+                    "foreground {rgb:?} in {mode:?}"
+                );
+                assert_eq!(
+                    sink_ansi(|s| s.set_color(Some(rgb), Ground::Background, mode).unwrap()),
+                    crossterm_ansi(SetBackgroundColor(to_color(Some(rgb), mode))),
+                    "background {rgb:?} in {mode:?}"
+                );
+            }
             assert_eq!(
-                sink_ansi(|s| s.set_color(Some(rgb), Ground::Foreground).unwrap()),
-                crossterm_ansi(SetForegroundColor(to_color(Some(rgb)))),
-                "foreground {rgb:?}"
+                sink_ansi(|s| s.set_color(None, Ground::Foreground, mode).unwrap()),
+                crossterm_ansi(SetForegroundColor(Color::Reset))
             );
             assert_eq!(
-                sink_ansi(|s| s.set_color(Some(rgb), Ground::Background).unwrap()),
-                crossterm_ansi(SetBackgroundColor(to_color(Some(rgb)))),
-                "background {rgb:?}"
+                sink_ansi(|s| s.set_color(None, Ground::Background, mode).unwrap()),
+                crossterm_ansi(SetBackgroundColor(Color::Reset))
             );
         }
-        assert_eq!(
-            sink_ansi(|s| s.set_color(None, Ground::Foreground).unwrap()),
-            crossterm_ansi(SetForegroundColor(Color::Reset))
-        );
-        assert_eq!(
-            sink_ansi(|s| s.set_color(None, Ground::Background).unwrap()),
-            crossterm_ansi(SetBackgroundColor(Color::Reset))
-        );
         for ch in [' ', HALF_BLOCK, '@', '\n', '\u{250C}'] {
             assert_eq!(
                 sink_ansi(|s| s.glyph(ch).unwrap()),
@@ -1096,14 +1193,14 @@ mod tests {
                 .min_by_key(|level| (*level as i32 - value as i32).abs())
                 .expect("the cube is not empty");
             assert_eq!(
-                NEAREST_CUBE[value as usize], scanned,
+                CUBE[NEAREST_CUBE_STEP[value as usize] as usize], scanned,
                 "the table disagrees with the scan at {value}"
             );
         }
         // The four midpoints, named, because they are the ones that would move.
         for (value, want) in [(115u8, 95u8), (155, 135), (195, 175), (235, 215)] {
             assert_eq!(
-                NEAREST_CUBE[value as usize], want,
+                CUBE[NEAREST_CUBE_STEP[value as usize] as usize], want,
                 "the tie at {value} broke upward"
             );
         }
@@ -1155,6 +1252,114 @@ mod tests {
         // Pure black and white must survive exactly.
         assert_eq!(quantize_256([0, 0, 0]), (0, 0, 0));
         assert_eq!(quantize_256([255, 255, 255]), (255, 255, 255));
+    }
+
+    #[test]
+    fn splitting_the_quantizer_in_two_moved_no_colour() {
+        // `quantize_256` used to choose between two RGB triples and hand back
+        // the winner. It now chooses between two palette *entries* and looks
+        // the winner's colour up, because the entry number is what the writer
+        // needs. This decides what a cell is painted, so equivalent has to mean
+        // equal — the body it replaced is kept here as its oracle, the way the
+        // hull rasteriser's is in `canvas.rs`.
+        fn was(rgb: [u8; 3]) -> (u8, u8, u8) {
+            let nearest = |v: u8| {
+                CUBE.iter()
+                    .copied()
+                    .min_by_key(|level| (*level as i32 - v as i32).abs())
+                    .expect("the cube is not empty")
+            };
+            let cube = [nearest(rgb[0]), nearest(rgb[1]), nearest(rgb[2])];
+            let avg = (rgb[0] as u32 + rgb[1] as u32 + rgb[2] as u32) / 3;
+            let step = ((avg.saturating_sub(8) + 5) / 10).min(23);
+            let grey = (8 + step * 10) as u8;
+            let grey = [grey, grey, grey];
+            let dist = |a: [u8; 3]| -> i32 {
+                (0..3)
+                    .map(|i| {
+                        let d = a[i] as i32 - rgb[i] as i32;
+                        d * d
+                    })
+                    .sum()
+            };
+            let best = if dist(grey) < dist(cube) { grey } else { cube };
+            (best[0], best[1], best[2])
+        }
+
+        for r in (0..=255u8).step_by(5) {
+            for g in (0..=255u8).step_by(5) {
+                for b in (0..=255u8).step_by(5) {
+                    assert_eq!(quantize_256([r, g, b]), was([r, g, b]), "at {r},{g},{b}");
+                }
+            }
+        }
+        // And every grey exhaustively: the diagonal is where the cube and the
+        // 24-step ramp compete, so it is where a changed tie-break would show.
+        for v in 0..=255u8 {
+            assert_eq!(quantize_256([v, v, v]), was([v, v, v]), "at grey {v}");
+        }
+    }
+
+    #[test]
+    fn every_palette_entry_is_the_one_its_own_colour_snaps_back_to() {
+        // The two halves are used apart — `compose` keeps the colour to go on
+        // blending with, the writer sends the number — so they have to describe
+        // the same entry, or a frame is composed in one colour and drawn in
+        // another.
+        for index in CUBE_BASE..=255 {
+            let (r, g, b) = palette_rgb(index);
+            assert_eq!(
+                palette_256([r, g, b]),
+                index,
+                "entry {index} is {r},{g},{b}, which snaps somewhere else"
+            );
+        }
+        // Nothing may choose one of the sixteen system colours. They are
+        // whatever the user's theme says they are, so a renderer that reached
+        // for one would be drawing a colour it cannot know the value of — and
+        // `palette_rgb` has no answer for them either.
+        for r in (0..=255u8).step_by(7) {
+            for g in (0..=255u8).step_by(11) {
+                for b in (0..=255u8).step_by(13) {
+                    let index = palette_256([r, g, b]);
+                    assert!(index >= CUBE_BASE, "{r},{g},{b} chose entry {index}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_256_colour_mode_sends_palette_indices_rather_than_24_bit_colour() {
+        // Regression: the mode snapped every colour to the palette and then
+        // wrote the result as `38;2;r;g;b`, so the one terminal it exists for —
+        // the one that cannot read a 24-bit sequence — was sent nothing but. It
+        // is not a corner either: `ColorMode::detect` hands this mode to every
+        // terminal with a `TERM` entry and no `COLORTERM`.
+        let mut screen = Screen::new(8, 2, ColorMode::Ansi256);
+        screen.compose(&pixels(8, 2, [90, 140, 200]));
+        let mut out = Vec::new();
+        screen.write_plain(&mut out).unwrap();
+        let text = String::from_utf8(out).expect("a frame is text");
+        assert!(
+            text.contains("\u{1b}[38;5;") && text.contains("\u{1b}[48;5;"),
+            "the 256 mode sent no palette index at all: {text:?}"
+        );
+        assert!(
+            !text.contains("38;2;") && !text.contains("48;2;"),
+            "the 256 mode sent a 24-bit sequence: {text:?}"
+        );
+
+        // Truecolor is untouched by the split, and says so in the same breath:
+        // the two modes differ in their spelling and nowhere else.
+        let mut screen = Screen::new(8, 2, ColorMode::Truecolor);
+        screen.compose(&pixels(8, 2, [90, 140, 200]));
+        let mut out = Vec::new();
+        screen.write_plain(&mut out).unwrap();
+        let text = String::from_utf8(out).expect("a frame is text");
+        assert!(
+            text.contains("\u{1b}[38;2;90;140;200m"),
+            "truecolor stopped sending its own colour: {text:?}"
+        );
     }
 
     #[test]

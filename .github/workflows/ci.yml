@@ -161,6 +161,7 @@ jobs:
           common="--headless --frames 120 --seed 1 --size 120x36"
           ./target/release/warp $common --demo --color truecolor > truecolor.txt
           ./target/release/warp $common --demo --color ascii     > ascii.txt
+          ./target/release/warp $common --demo --color 256       > ansi256.txt
           ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
           ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
           ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt

@@ -11,7 +11,7 @@
 # drifted it; the `headless` CI job produces the same files from a release
 # binary and runs `sha256sum -c` over this, which also proves the two agree.
 #
-# Five flights, sharing
+# Six flights, sharing
 #
 #     --headless --frames 120 --seed 1 --size 120x36
 #
@@ -19,6 +19,7 @@
 #
 #     truecolor.txt   --demo --color truecolor
 #     ascii.txt       --demo --color ascii
+#     ansi256.txt     --demo --color 256
 #     warp.txt        --engage --throttle 1.0 --color truecolor
 #     side.txt        --engage --throttle 1.0 --view side --color truecolor
 #     orbit.txt       the same, --orbit 55,35,20
@@ -53,16 +54,28 @@
 # not thereby a change that draws every hull the way it drew it before, and the
 # guard for that one is the property test in `canvas.rs`, not this.
 #
+# `ansi256.txt` is `truecolor.txt`'s flight in the other colour mode, and it is
+# the one case here recorded to be compared against another rather than against
+# itself: the two ask for the same sky and differ only in how a cell's colour is
+# spelled, so a change that moves one and not the other has landed in the writer
+# and not in the renderer. It arrived with the fix that made the mode send
+# `38;5;N` — before that it sent palette values inside a 24-bit sequence, which
+# the terminals the mode exists for cannot read — and it is recorded because the
+# mode had no reference at all while being the one `ColorMode::detect` hands to
+# any terminal with a `TERM` entry and no `COLORTERM`, which is most of them.
+#
 # Regenerate deliberately, with the diff in hand to say what moved:
 #
 #     cargo build --release
 #     common="--headless --frames 120 --seed 1 --size 120x36"
 #     ./target/release/warp $common --demo --color truecolor > truecolor.txt
 #     ./target/release/warp $common --demo --color ascii     > ascii.txt
+#     ./target/release/warp $common --demo --color 256       > ansi256.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
-#     sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
+#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt \
+#         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
 # All five moved together when the automatic star count was halved and its floor
@@ -155,6 +168,7 @@
 # regenerated once.
 3f464c72e7091c0964f8800399af693e7e091b508b21e35b51ecfee0e05149e0  truecolor.txt
 3c33f4c8f3d25fff908687f3a51c88058ce1095a4c5bffa1139086535080ad89  ascii.txt
+9455b1bb7cc7003a701015cbc202e2cf5b5323f155e26fe38d4de2bddb925294  ansi256.txt
 917e650b079f5b7753695005c7a16c6f56c8c42a6659d82a004d7eb556fc748a  warp.txt
 e9ad79e933ff7862086e57250fcc8edf5f2994f919cfd5d92ac0f725eb3b3bd0  side.txt
 d892d11a7fda9c32287b69ed82d397876aab5730197819b805da3ecd8d74ef02  orbit.txt
