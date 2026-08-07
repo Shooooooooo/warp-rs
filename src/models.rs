@@ -188,35 +188,6 @@ const PLUME_TAPER_AT_WARP: f32 = 0.15;
 /// The skirt of a plume is not its core, and an edge that ends at full value
 /// draws a line down each side of it.
 const PLUME_EDGE_FADE: f32 = 0.8;
-/// How much of the way to its own vanishing point a lit lance is allowed to
-/// run.
-///
-/// Not all of it, and the missing part is doing two jobs rather than being a
-/// margin. `draw_streak` ramps down to `TAIL_BRIGHTNESS` rather than to
-/// nothing, so a lance ending exactly on the point stops dead at a third of
-/// full brightness — and every bell on a ship shares one vanishing point, its
-/// plumes running down the same hull axis and differing only by the bell's own
-/// reach, which a point at infinity cannot see. So every lane of every bell
-/// ends on the *same* subpixel, and what is left is a bright bead hanging in
-/// the sky precisely where the exhaust was meant to have gone.
-///
-/// The fan's flare falls out of the same number: the outermost lane keeps
-/// `1 - this * (1 - PLUME_TAPER_AT_WARP)` of it. Run the whole way and what
-/// survives is the throat alone, since `nozzle` is measured at the bell's own
-/// depth and carried into the tip rather than scaled — a fan gone parallel,
-/// every lane within a subpixel of the next, and the silhouette `PLUME_TAPER`
-/// exists to carve gone with it.
-///
-/// Pulled the other way by the whole reason for the clamp. Stopping short is
-/// visible as stopping short — the eye has already put the horizon where the
-/// lances converge, and a lance that quits well before it reads as one that was
-/// cut off rather than one that ran away.
-///
-/// Measured on the hauler's four bells at `--orbit 75,12,0`, taking the
-/// brightest pixel within a dozen of the vanishing point: 485 at 1.0, which is
-/// most of the 587 the unclamped lance used to pile there and is the bead; 242
-/// here; 194 at 0.80, which is past the knee and buys length back for nothing.
-const LANCE_HORIZON: f32 = 0.92;
 /// Where a plume is cut in the camera's space.
 ///
 /// A hair beyond the plane [`Camera::project`] gives up at, because it *drops*
@@ -1178,8 +1149,17 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         // clean through and out the far side, where a symmetric pair swap over
         // and cross, which reads as two drives firing at each other rather than
         // as one ship under way.
+        //
+        // To the point itself, and not a fraction short of it. That fraction
+        // used to be here, and it was covering for `draw_streak`'s tail floor
+        // rather than for anything about the geometry: every bell shares this
+        // one point, so a lance ending *on* it left a third of full brightness
+        // from every lane of every bell on a single subpixel — the artefact
+        // relocated rather than removed. `draw_fading_streak` takes the floor
+        // away, so the sample that lands on the point carries a ramp of exactly
+        // zero and the margin has nothing left to buy.
         if let Some(horizon) = horizon {
-            lance = lance.min(horizon * LANCE_HORIZON);
+            lance = lance.min(horizon);
             gone = lance / horizon;
         }
         dx *= lance;
@@ -1244,7 +1224,7 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         // drive's — would burn dimmer the wider the terminal, and the same
         // flight would not look the same on two machines.
         let held = canvas.streak_spread(tip, nozzle);
-        canvas.draw_streak(&Streak {
+        canvas.draw_fading_streak(&Streak {
             from: tip,
             to: nozzle,
             color: flame.color,

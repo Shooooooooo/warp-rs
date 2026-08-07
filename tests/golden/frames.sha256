@@ -54,24 +54,40 @@
 #     sha256sum truecolor.txt ascii.txt warp.txt side.txt orbit.txt > tests/golden/frames.sha256
 #     # and put this comment block back
 #
-# `orbit.txt` last moved when the engine lance stopped running through the point
-# its own plume vanishes at. A lit drive's lance is stretched in screen space to
-# the frame diagonal, and a plume running away from the eye projects onto a point
-# that only ever *approaches* the vanishing point of its own direction — so the
-# stretch drew exhaust past the place it had already gone, and a symmetric pair
-# of bells swapped sides on the way through and crossed. It is clamped now, and
-# the fan narrows by how far its tip has receded.
+# `side.txt` and `orbit.txt` last moved when the engine lance was given a tail
+# that fades to nothing, and was aimed at its vanishing point instead of being
+# stopped short of it. The lance used to give up 8% of the way out, and that
+# margin was never about the geometry: `draw_streak` ramps down to
+# `TAIL_BRIGHTNESS` rather than to nothing, and every bell on a ship shares one
+# vanishing point, so a lance ending *on* it left a third of full brightness
+# from every lane of every bell on a single subpixel — a bead hanging in the sky
+# exactly where the exhaust was meant to have gone. `draw_fading_streak` takes
+# the floor away, the sample that lands on the point carries a ramp of exactly
+# zero, and the margin had nothing left to buy.
 #
-# The one hash, and that is the whole shape of the change said back. `side.txt`
-# is the abeam shot, where `Eye::to_camera` is exactly `(x, y, z) -> (z, y,
-# distance - x)`: the hull's axis lies flat in the image plane, its depth term is
-# exactly zero, there is no vanishing point to clamp against, and the arithmetic
-# is the old arithmetic to the bit. The three cockpit flights draw no hull at
-# all. Anything that moves one of those four for a change to the drive has
-# leaked out of the plume it was meant to be in.
+# Two hashes and not one, which is a different shape from the clamp that went in
+# before it and the right one. That change only altered what happens off the
+# beam, so it could not reach `side.txt`; this one changes the ramp everywhere a
+# drive burns, and both of these flights have the drive lit. The three cockpit
+# flights draw no hull and so no plume, and they came back bit-for-bit — which
+# is also what says the star path is untouched, since the ramp there is the same
+# multiply and the same add on the same constants it always was.
 #
-# `side.txt` and `orbit.txt` last moved when the hull's outline started being
-# measured on a grid inside each subpixel rather than at its centre. Those two
+# Before that, `orbit.txt` moved on its own when the lance stopped running
+# *through* the point its plume vanishes at. A lit drive's lance is stretched in
+# screen space to the frame diagonal, and a plume running away from the eye
+# projects onto a point that only ever *approaches* the vanishing point of its
+# own direction — so the stretch drew exhaust past the place it had already
+# gone, and a symmetric pair of bells swapped sides on the way through and
+# crossed. `side.txt` could not move for it: it is the abeam shot, where
+# `Eye::to_camera` is exactly `(x, y, z) -> (z, y, distance - x)`, the hull's
+# axis lies flat in the image plane, its depth term is exactly zero, there is no
+# vanishing point to clamp against, and the arithmetic was the old arithmetic to
+# the bit.
+#
+# Before that again, `side.txt` and `orbit.txt` moved together when the hull's
+# outline started being measured on a grid inside each subpixel rather than at
+# its centre. Those two
 # are the flights with a ship in them and the only two that moved for it: the
 # three cockpit flights came back bit-for-bit identical, which is what says the
 # change reached the hull and nothing else. Anything that moves a cockpit hash
@@ -119,5 +135,5 @@
 dbd77f751ca09625f68f43d092adb3ade0bb2a4751aeb8891e4f7afcf7e98046  truecolor.txt
 38ab01bf301f47a2200644ff65a54819981f866fd63efb6da8a818b5c538d118  ascii.txt
 5699fcf1cdb10bc830649d55cf13e7e030c5fe9817ee6db09c281d5b8e586d19  warp.txt
-6b0968d0f6e00909615078532f2b15e1b5d33508a3e2b7f02666c9c492be959c  side.txt
-bbaf679575b4eb06901a5a2d9e38bc79d4de87dd631cbef01a31bc8ee8cfa2bd  orbit.txt
+7b4b27bca74e46b004f0649bca67ababda994c733ef0d7a8a4985ff569ca398e  side.txt
+47afe36b084cdc90431a61912adc88a199358a8b943a5afee473d3e3f99eebf2  orbit.txt
