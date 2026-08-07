@@ -44,8 +44,8 @@ word of it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 260 unit + 7 flight + 3 golden, ~11s
-cargo test --locked --all-features      # 261 unit — adds the snapshot-gated one
+cargo test                              # 262 unit + 7 flight + 3 golden, ~11s
+cargo test --locked --all-features      # 263 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -446,6 +446,13 @@ exception and says why in its own parser: an angle has no end to run away past,
 so a preposterous one costs a picture rather than an allocation, and
 `Orbit::held` folds it with exactly the fold a keypress gets.
 
+`cli::MAX_STARS` is the one on that list that is *not* only a parse-time bound,
+and it is public for that reason. A pool is the one thing there that can still
+be resized after the command line has been read, so the automatic count in
+`app.rs` and the `+` key both clamp to the same constant rather than to numbers
+of their own. The `+` key used to have one of its own, and it sat *under* what
+`--stars` already allowed.
+
 **`RawGuard::new` builds the guard value immediately after `enable_raw_mode`,
 before any other fallible call**, so an early `?` still restores. It installs a
 panic hook that restores first, so a panic mid-render leaves a readable
@@ -659,9 +666,19 @@ and acting on them counts a single press twice.
 **`--size` is a fixed size, not a starting point.** `Flight::resize` returns
 `false` immediately when it is set. Without that the flag held only until the
 first resize event. Relatedly, a resize only retunes the star pool when
-`--stars` is 0 — an explicit count is not a suggestion — and the `+`/`-` keys
-clamp to `AUTO_MAX_STARS` (20 000) whatever `--stars` said, so with
-`--stars 100000` a single `+` shrinks the pool.
+`--stars` is 0 — an explicit count is not a suggestion.
+
+**The `+`/`-` keys are held to the same ceiling `--stars` is**, `cli::MAX_STARS`,
+so they cannot walk the pool past what the command line would have accepted.
+They used to clamp to a separate 20 000 that sat *under* what `--stars` allowed,
+which meant `--stars 100000` and a single `+` shrank the pool by four fifths.
+Their *floor* moved with the density and is now `POOL_FLOOR`: 64 was chosen
+against an automatic minimum of 300, and at 0.005 an ordinary terminal opens at
+nineteen stars, so a floor up there made `-` *add* forty-five of them and landed
+both keys on the same number. It is 8 rather than 1 because `+` multiplies by
+1.25 and truncates, so below four stars the key gives the same number back and
+swallows the press — `the_star_keys_move_the_pool_the_way_they_point` holds both
+halves of that.
 
 **The same six keys fly the ship inside and the camera outside, and the zoom is
 switched off inside.** `WASD` and `QE` are the stick from the pilot's seat and
