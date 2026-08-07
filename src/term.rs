@@ -15,6 +15,7 @@ use crossterm::{
     terminal, QueueableCommand,
 };
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Upper half block: foreground paints the top pixel, background the bottom.
 const HALF_BLOCK: char = '\u{2580}';
@@ -790,6 +791,69 @@ const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 /// see [`restore`].
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
+/// Set when a signal has asked this process to stop, so the flight can leave
+/// by the ordinary door and let [`RawGuard`] put the terminal back on the way.
+///
+/// An `Arc` rather than a plain static because that is what `signal_hook::flag`
+/// takes, and taking its safe API is the whole point: the handler it installs
+/// stores `true` and does nothing else. Restoring the terminal from inside the
+/// handler is the obvious move and the wrong one — [`restore`] writes to
+/// `io::stdout`, which takes a lock, and a signal landing while the frame being
+/// flushed holds that lock would deadlock the process in the one place it must
+/// not. A store is a single instruction and safe to make in a handler, and the
+/// loop is never more than a frame's budget away from reading it.
+#[cfg(unix)]
+static INTERRUPTED: std::sync::OnceLock<std::sync::Arc<AtomicBool>> = std::sync::OnceLock::new();
+
+/// Whether a signal has asked this process to stop since the last [`RawGuard`]
+/// was taken out.
+///
+/// Always false where there are no signals to catch. A Windows console sends
+/// its own kind of close event and nothing here listens for one, so the
+/// terminal is still lost there if the window goes rather than the program.
+pub fn interrupted() -> bool {
+    #[cfg(unix)]
+    {
+        INTERRUPTED
+            .get()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Ask to be told about the signals that would otherwise take the process down
+/// without running anything, and start the flight with the flag clear.
+///
+/// `SIGTERM` and `SIGHUP`, and no others. `SIGINT` is deliberately not among
+/// them: raw mode turns off the terminal's own signal generation, so `Ctrl-C`
+/// arrives as a key event and `handle_key` already answers it — catching the
+/// signal as well would put two doors on one control and the two would not
+/// agree about the picker, which owns the keyboard while it is up. The pair
+/// here have no key to arrive as. They are a plain `kill`, a `tmux
+/// kill-session`, and the window a flight is running in going away, which is
+/// the screensaver case the README recommends.
+///
+/// Registration failing is not worth refusing to fly over: what is lost is a
+/// tidy exit on a signal, which is what the program had before this existed.
+/// Installed once per process rather than once per guard, because a second
+/// registration would stack a second handler on the same two signals.
+fn catch_signals() {
+    #[cfg(unix)]
+    {
+        let flag = INTERRUPTED.get_or_init(|| std::sync::Arc::new(AtomicBool::new(false)));
+        flag.store(false, Ordering::Relaxed);
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+                let _ = signal_hook::flag::register(signal, std::sync::Arc::clone(flag));
+            }
+        });
+    }
+}
+
 /// Puts the terminal into raw, full-screen mode and — crucially — puts it back
 /// on the way out, including when the way out is a panic.
 pub struct RawGuard;
@@ -828,6 +892,14 @@ impl RawGuard {
             previous(info);
         }));
 
+        // The other way out that runs nothing on the way. Beside the panic
+        // hook because it answers the same question — what undoes the two lines
+        // above when the flight does not get to its own end — and after it
+        // because the hook is the one that has to be in place first: a panic
+        // here would otherwise leave the terminal exactly as this exists to
+        // stop.
+        catch_signals();
+
         Ok(guard)
     }
 }
@@ -865,6 +937,39 @@ mod tests {
 
     fn pixels(cols: usize, rows: usize, fill: [u8; 3]) -> Vec<[u8; 3]> {
         vec![fill; cols * rows * 2]
+    }
+
+    /// The only test that touches the interrupt flag, deliberately: it sets a
+    /// process-wide one and installs a handler that outlives it, so a second
+    /// test asserting the flag is clear would race this one.
+    #[cfg(unix)]
+    #[test]
+    fn a_signal_asks_the_flight_to_stop_instead_of_killing_it() {
+        // Regression, and the sharpest form the test can take: without the
+        // registration `SIGTERM` has its default disposition, so the line
+        // below does not fail this assertion — it takes the whole test binary
+        // down with it, which is the thing being fixed said back. A flight is
+        // no different, except that it takes the terminal with it.
+        catch_signals();
+        assert!(!interrupted(), "nothing has been signalled yet");
+
+        let status = std::process::Command::new("kill")
+            .args(["-TERM", &std::process::id().to_string()])
+            .status()
+            .expect("kill is on every unix this runs on");
+        assert!(status.success(), "kill refused to signal this process");
+
+        // Delivery is asynchronous, so the flag is not up the instant `kill`
+        // returns. A second is several orders of magnitude more than a signal
+        // takes and still not long enough to hang a suite on.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !interrupted() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            interrupted(),
+            "SIGTERM was caught but never reached the flag the loop reads"
+        );
     }
 
     /// What crossterm would put on the wire for a command.
