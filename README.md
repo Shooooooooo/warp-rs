@@ -151,7 +151,9 @@ Swing the camera round toward the nose and the lances stop somewhere short of
 the edge instead, at the one point on the screen the whole wake is heading for —
 the same point the stars stream out of. Exhaust running away from you converges
 on it and never arrives, so that is where a plume ends however wide the terminal
-is, and every bell on the ship ends at the same one.
+is, and every bell on the ship ends at the same one. They do not stop dead there
+either: a lance thins out as it goes and is gone by the time it arrives, which
+is what keeps the place they all meet from lighting up as a bead.
 
 The camera rides with the ship rather than with the sky, and out here the stick
 flies the camera. `W` and `S` lift it up over the hull and drop it under, `A`

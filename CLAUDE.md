@@ -401,7 +401,11 @@ dimmer the wider the window — the same flight looking different on two
 machines, which is the one thing the whole test suite exists to stop.
 `draw_trail` multiplies the factor back out, so what `TRAIL_INTENSITY` names is
 the brightness at the nozzle. Anything else that picks its own streak length
-rather than being handed one has the same problem and the same answer.
+rather than being handed one has the same problem and the same answer. Note that
+this is measured on the *clipped* segment, by design and in both directions: a
+caller dividing it out wants the number that is going to be applied, so a test
+comparing a clipped lance against an unclipped one has to divide it out too or
+it is measuring the falloff rather than whatever it meant to.
 
 **That lance is stretched in screen space, and the frame edge is not the only
 end it has.** A straight ray running away from the eye projects onto a point
@@ -409,17 +413,44 @@ that *approaches* the vanishing point of its own direction and never arrives, so
 past that point there is no exhaust left to draw. The stretch used to go there
 anyway — from anywhere forward of the beam every lance ran clean through and out
 the far side, where a symmetric pair of bells swap over and cross — and
-`Camera::vanishing_point` with `LANCE_HORIZON` is what holds it back now. The
-useful identity is that the fraction of the way to that point a tip covers is
-*exactly* one minus the ratio of the two depths, so the clamp and the amount the
-fan narrows by come out of one division and neither needs a depth. Reach for a
-hull-unit lance length instead and two tests say why not: the length is the
-frame's on purpose.
+`Camera::vanishing_point` is what holds it back now. The useful identity is that
+the fraction of the way to that point a tip covers is *exactly* one minus the
+ratio of the two depths, so the clamp and the amount the fan narrows by come out
+of one division and neither needs a depth. Reach for a hull-unit lance length
+instead and two tests say why not: the length is the frame's on purpose.
 
-The abeam shot is the case with no such point at all — `Eye::to_camera` at
+**The lance is aimed at that point exactly, and what makes that drawable is
+`Canvas::draw_fading_streak`.** It used to stop 8% short, and that margin was
+never about the geometry. `draw_streak` ramps down to `TAIL_BRIGHTNESS` rather
+than to nothing, and every bell on a ship shares one vanishing point — the
+plumes run down the same hull axis and differ only by the bell's own reach,
+which a point at infinity cannot see — so a lance ending *on* it put a third of
+full brightness from every lane of every bell on one subpixel: a bead hanging in
+the sky precisely where the exhaust was meant to have gone. The fading variant
+takes the floor away, so the sample landing on the point carries a ramp of
+exactly zero and the margin has nothing left to buy. Measured star-free on the
+hauler at `--orbit 75,12,0`, peak light within a dozen subpixels of the point:
+0.83 stopping short with the floor, 1.02 running the whole way with it, 0.45 as
+it is now — further and dimmer at once, against a plume peaking at 2.65.
+
+**Its ramp is measured on the whole streak, and `draw_streak`'s on what survived
+clipping.** That is the one difference between them and it is the reason they
+are two entry points rather than a flag. Abeam the lance is stretched to the
+frame's diagonal and leaves by the edge, so its tail is off-screen; ramp it over
+the clipped remainder and it fades to nothing at the edge of the *picture*
+instead of at the end of the plume, and a drive whose reach is the frame's stops
+short of the frame on every terminal.
+`a_lit_warp_drive_trails_off_the_edge_of_the_frame` catches exactly that, and
+`a_fading_streak_is_ramped_by_its_own_length_and_not_by_the_window` in
+`canvas.rs` is the sharper statement of it. Where the window cuts a plume is not
+a fact about the plume.
+
+The abeam shot is the case with no vanishing point at all — `Eye::to_camera` at
 `Orbit::LEVEL` is exactly `(x, y, z) → (z, y, distance − x)`, so the hull's axis
 lies flat in the image plane and its depth term is exactly zero — which is why
-`side.txt` did not move for any of this and `orbit.txt` did.
+`side.txt` did not move when the lance was first clamped and `orbit.txt` did.
+The tail is the other shape: a ramp is not a question about the camera angle, so
+giving the lance one moved both of the flights that light a drive.
 
 **`Canvas::splat_inside` does no bounds checking and will panic.** It is the
 innermost loop in the program and it trusts its caller — `draw_streak` and
