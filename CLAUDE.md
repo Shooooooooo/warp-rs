@@ -781,9 +781,11 @@ so they cannot walk the pool past what the command line would have accepted.
 They used to clamp to a separate 20 000 that sat *under* what `--stars` allowed,
 which meant `--stars 100000` and a single `+` shrank the pool by four fifths.
 Their *floor* moved with the density and is now `POOL_FLOOR`: 64 was chosen
-against an automatic minimum of 300, and at 0.005 an ordinary terminal opens at
-nineteen stars, so a floor up there made `-` *add* forty-five of them and landed
-both keys on the same number. It is 8 rather than 1 because `+` multiplies by
+against an automatic minimum of 300, and a floor up there sits over the count on
+any window the density opens thin, so `-` *added* stars and landed both keys on
+the same number. Which windows those are moves with `AUTO_DENSITY` — at 0.005 it
+was an ordinary 80x24, at today's 0.02 it is 40x12 — so the test that holds it
+flies both. It is 8 rather than 1 because `+` multiplies by
 1.25 and truncates, so below four stars the key gives the same number back and
 swallows the press — `the_star_keys_move_the_pool_the_way_they_point` holds both
 halves of that.
