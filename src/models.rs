@@ -188,6 +188,35 @@ const PLUME_TAPER_AT_WARP: f32 = 0.15;
 /// The skirt of a plume is not its core, and an edge that ends at full value
 /// draws a line down each side of it.
 const PLUME_EDGE_FADE: f32 = 0.8;
+/// How much of the way to its own vanishing point a lit lance is allowed to
+/// run.
+///
+/// Not all of it, and the missing part is doing two jobs rather than being a
+/// margin. `draw_streak` ramps down to `TAIL_BRIGHTNESS` rather than to
+/// nothing, so a lance ending exactly on the point stops dead at a third of
+/// full brightness — and every bell on a ship shares one vanishing point, its
+/// plumes running down the same hull axis and differing only by the bell's own
+/// reach, which a point at infinity cannot see. So every lane of every bell
+/// ends on the *same* subpixel, and what is left is a bright bead hanging in
+/// the sky precisely where the exhaust was meant to have gone.
+///
+/// The fan's flare falls out of the same number: the outermost lane keeps
+/// `1 - this * (1 - PLUME_TAPER_AT_WARP)` of it. Run the whole way and what
+/// survives is the throat alone, since `nozzle` is measured at the bell's own
+/// depth and carried into the tip rather than scaled — a fan gone parallel,
+/// every lane within a subpixel of the next, and the silhouette `PLUME_TAPER`
+/// exists to carve gone with it.
+///
+/// Pulled the other way by the whole reason for the clamp. Stopping short is
+/// visible as stopping short — the eye has already put the horizon where the
+/// lances converge, and a lance that quits well before it reads as one that was
+/// cut off rather than one that ran away.
+///
+/// Measured on the hauler's four bells at `--orbit 75,12,0`, taking the
+/// brightest pixel within a dozen of the vanishing point: 485 at 1.0, which is
+/// most of the 587 the unclamped lance used to pile there and is the bead; 242
+/// here; 194 at 0.80, which is past the knee and buys length back for nothing.
+const LANCE_HORIZON: f32 = 0.92;
 /// Where a plume is cut in the camera's space.
 ///
 /// A hair beyond the plane [`Camera::project`] gives up at, because it *drops*
@@ -1000,8 +1029,9 @@ struct Flame<'a> {
     lit: f32,
     warp: f32,
     /// Whether the warp drive is lit, which is what throws the lance at the
-    /// frame edge. Not the same question as `warp > 0.0`: a drive spinning
-    /// down is superluminal and switched off at once.
+    /// frame edge — or at the point the plume vanishes at, whichever the camera
+    /// angle puts nearer. Not the same question as `warp > 0.0`: a drive
+    /// spinning down is superluminal and switched off at once.
     engaged: bool,
     surge: f32,
     surge_reach: f32,
@@ -1084,10 +1114,45 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
     }
     let (px, py) = (-dy / span, dx / span);
 
-    // A lit warp drive does not trail, it tears: the lance runs clean off the
-    // side of the frame, and it gets there the moment the drive catches rather
-    // than growing into it over the warp range. The white-out on `Ship::flash`
-    // covers that instant, so the jump arrives under cover.
+    // Where this plume's own direction vanishes, if it has such a point, and
+    // how far off that is in multiples of the plume's own projected length.
+    // The near-plane cut above only shortens `end` toward `root` along the same
+    // ray, so this is the plume's direction whatever the cut did to it.
+    //
+    // Taken as a dot product against the plume's own screen direction and
+    // divided by the square of it, so what comes back is the point's range in
+    // multiples of the plume — the unit the stretch below is already in — and
+    // the sign arrives with it.
+    //
+    // Strictly greater than one is where it has to land: the foot is a point on
+    // the ray and the vanishing point is that ray's limit, so the foot always
+    // lies between the nozzle and it. Saying so rather than `> 0.0` is what
+    // holds `gone` inside `[0, 1)`, and a value under one would turn the fan
+    // inside out on the sublight branch below. It is the arithmetic's backstop
+    // rather than a case that arises.
+    let horizon = cam
+        .vanishing_point([
+            end[0] - flame.root[0],
+            end[1] - flame.root[1],
+            end[2] - flame.root[2],
+        ])
+        .map(|v| ((v.0 - flame.head.0) * dx + (v.1 - flame.head.1) * dy) / (span * span))
+        .filter(|h| h.is_finite() && *h > 1.0);
+
+    // How far along the way to that point the tip finished up. It is also,
+    // exactly, one minus the ratio of the tip's depth to the nozzle's — a ray
+    // projects so that `P(s) - V` is `(H - V)` times that ratio — which is the
+    // factor the far end of the fan is narrower by. So one division answers
+    // both questions, and neither needs the depth it is really about.
+    //
+    // Zero where there is no such point, which is a multiply by one below and
+    // the byte-for-byte abeam frame the reference flights are recorded from.
+    let mut gone = 0.0f32;
+
+    // A lit warp drive does not trail, it tears: from the beam the lance runs
+    // clean off the side of the frame, and it gets there the moment the drive
+    // catches rather than growing into it over the warp range. The white-out on
+    // `Ship::flash` covers that instant, so the jump arrives under cover.
     //
     // Stretched here, in screen space, on a direction that has already been
     // through the projection and the near-plane cut — so the lean is in it
@@ -1103,9 +1168,27 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         // The diagonal reaches the frame edge from anywhere inside it whatever
         // direction the plume is pointing, and `draw_streak` clips, so there is
         // nothing to be gained by working out which edge it leaves by.
-        let out = cam.width.hypot(cam.height) / span;
-        dx *= out;
-        dy *= out;
+        let mut lance = cam.width.hypot(cam.height) / span;
+        // The frame is not the only end a lance can have, and where the two
+        // disagree the frame is wrong. A plume pointed away from the eye —
+        // which is every camera angle forward of the beam — projects onto the
+        // segment between the nozzle and the point its direction vanishes at,
+        // and it never arrives: past that point there is no exhaust left to
+        // draw. Stretched to the frame edge regardless, each bell's lance goes
+        // clean through and out the far side, where a symmetric pair swap over
+        // and cross, which reads as two drives firing at each other rather than
+        // as one ship under way.
+        if let Some(horizon) = horizon {
+            lance = lance.min(horizon * LANCE_HORIZON);
+            gone = lance / horizon;
+        }
+        dx *= lance;
+        dy *= lance;
+    } else if let Some(horizon) = horizon {
+        // A plume the drive is not tearing into a lance is already the segment
+        // the projection handed it, so how far it has receded is simply how far
+        // along it went.
+        gone = 1.0 / horizon;
     }
 
     let brightness = TRAIL_INTENSITY
@@ -1144,9 +1227,16 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
             flame.head.0 + px * offset * throat,
             flame.head.1 + py * offset * throat,
         );
+        // The far end of the fan stands further off than the nozzle does, so it
+        // is smaller, and `1 - gone` is the ratio of those two depths exactly.
+        // Taken against this lane's own length rather than the centre one's: an
+        // outer lane stops short, so it has receded less far and narrows less,
+        // which is what keeps the fan a fan all the way to the tip instead of
+        // pinching every lane onto the same point.
+        let flare = widest * (1.0 - gone * shorten);
         let tip = (
-            nozzle.0 + (dx + px * offset * widest) * shorten,
-            nozzle.1 + (dy + py * offset * widest) * shorten,
+            nozzle.0 + (dx + px * offset * flare) * shorten,
+            nozzle.1 + (dy + py * offset * flare) * shorten,
         );
         // Divided back out, so what the constants above name is the brightness
         // at the nozzle rather than the brightness of a lane of some particular
@@ -1235,6 +1325,36 @@ mod tests {
             orbit(-140.0, -62.0, -100.0),
             orbit(35.0, 89.0, 45.0),
             orbit(115.0, 160.0, -70.0),
+        ]
+    }
+
+    /// Camera angles that put the ship's own vanishing point on the canvas
+    /// *with the hull clear of it*.
+    ///
+    /// Kept apart from [`orbits()`] rather than folded into it, because that
+    /// spread is chosen for coverage of the camera basis — the poles, past
+    /// them, the corners — and not one of its angles meets both halves of that.
+    /// At `--orbit 90,0,0` the point lands dead centre and the ship is sitting
+    /// on top of it; at `--orbit 55,35,20` and the rest of the corners it is off
+    /// the top or the side, where a lance overshooting it is clipped away
+    /// unseen. Which is how a lance several frame widths too long went
+    /// unnoticed for as long as it did: every sweep there was flew straight past
+    /// the one question.
+    ///
+    /// A plume recedes exactly when `cos(elevation) * sin(azimuth)` is positive,
+    /// so the whole aft half of the azimuth has no forward vanishing point at
+    /// all and an angle taken from it would be a line that never runs. The
+    /// mirrors here go over the top instead: a negative azimuth with the
+    /// elevation past the pole flips the cosine and puts the same shot back on
+    /// the forward side, inverted — which is the only way to fly the other sign
+    /// of the screen direction and still have something to measure.
+    fn forward_quarter() -> Vec<Orbit> {
+        vec![
+            orbit(65.0, 0.0, 0.0),
+            orbit(75.0, 12.0, 0.0),
+            orbit(-70.0, 180.0, 0.0),
+            orbit(110.0, -8.0, 25.0),
+            orbit(-115.0, 180.0, -25.0),
         ]
     }
 
@@ -2178,6 +2298,15 @@ mod tests {
         // stretched in screen space after the projection — if it were solved
         // for in hull units instead it would come up short at one zoom and
         // overshoot at the other.
+        //
+        // `Orbit::LEVEL` is a narrowing here and not a convenience, which it
+        // was when it was the only camera angle there was. The beam is the one
+        // framing where a plume lies flat in the image plane and so has no
+        // point to vanish at, and reaching the frame edge is the right answer
+        // only there. Swung toward the nose the lance stops at that point
+        // instead — see `a_plume_stops_at_the_point_it_vanishes_at` — so
+        // generalising this sweep over `orbits()` would pin the bug that one
+        // was written for.
         let ship = at_warp();
         assert!(
             ship.warp_engaged,
@@ -2301,6 +2430,175 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_plume_abeam_has_no_point_to_vanish_at() {
+        // Why swinging the camera is what broke this and the shot it opens on
+        // never showed it, and — said here rather than left to a hash — why the
+        // reference `side.txt` could not move for the fix.
+        //
+        // `Eye::to_camera` at `Orbit::LEVEL` is exactly `(x, y, z) -> (z, y,
+        // distance - x)`, so the hull's own axis lands flat in the image plane
+        // and its depth term is exactly zero. A plume laid along it recedes
+        // from the eye not at all, has no vanishing point to converge on, and
+        // takes the untouched arithmetic through `draw_trail`.
+        let ship = at_warp();
+        let (_, cam) = cam(200, 60, &ship);
+        let pose = attitude(&ship);
+        assert_eq!(pose, (0.0, 0.0, 0.0), "this flight is not flying level");
+
+        let eye = abeam();
+        let origin = place([0.0, 0.0, 0.0], pose, &eye);
+        let astern = place([0.0, 0.0, -1.0], pose, &eye);
+        let along = [
+            astern[0] - origin[0],
+            astern[1] - origin[1],
+            astern[2] - origin[2],
+        ];
+        assert_eq!(
+            along[2], 0.0,
+            "the beam shot has depth along the hull: {along:?}"
+        );
+        assert!(
+            cam.vanishing_point(along).is_none(),
+            "a plume laid flat in the image plane was given a point to vanish at"
+        );
+    }
+
+    /// How far clear of the vanishing point the whole ship has to be before the
+    /// test below will ask its question. A bell's glow reaches a dozen subpixels
+    /// at the close end of the dolly, and a hull nearly on top of the point it
+    /// vanishes at has no plume to speak of anyway — `draw_trail` gives up on a
+    /// projected length under one subpixel.
+    const CLEAR_OF_THE_HORIZON: f32 = 25.0;
+
+    #[test]
+    fn a_plume_stops_at_the_point_it_vanishes_at() {
+        // The bug this is here for. `draw_trail` stretches a lit drive's lance
+        // in screen space to the frame diagonal — an absolute length with
+        // nothing to do with the plume — and a ray running away from the eye
+        // projects onto a point that *approaches* its direction's vanishing
+        // point and never arrives. Past that point there is no exhaust to draw,
+        // so the stretch drew some anyway: from anywhere forward of the beam
+        // every lance went clean through and out the far side, where a
+        // symmetric pair of bells swap over and cross. It measured 612,286
+        // units of drive light on the wrong side of the point, reaching 231
+        // pixels past it, on the hauler at `--orbit 75,12,0`.
+        //
+        // Stated as a half-plane rather than as a length, because that is what
+        // the property is: the vanishing point is where a plume ends, whatever
+        // the terminal, the zoom or the hull. Asked only where the ship is
+        // comfortably clear of that point, since a drive halo straddling it is
+        // not the lance — and the cases are counted against a floor, so a sweep
+        // that stopped reaching them could not go quiet about it. The floor is
+        // there for the thinning as much as for the collapse: most of what
+        // qualifies does so at one end of the dolly, and a later nudge to
+        // `SHIP_SCREEN_FRAC` or to the gate below could quietly take the
+        // question down to a single frame while the test went on passing.
+        //
+        // Flown at impulse as well as at warp, which the lance itself does not
+        // need: down there the plume is the segment the projection gave it and
+        // could not overshoot if it tried. What that pass is for is the other
+        // half of the same arithmetic — a flame narrows toward the point it is
+        // receding to exactly as a lance does, off the one division, and that
+        // branch has nothing else flying through it.
+        let mut asked = 0usize;
+        for ship in [at_warp(), at_impulse()] {
+            // Neither of these turns on the model, the orbit or the zoom, and a
+            // fresh `Renderer` inside all three is a canvas the size of the
+            // frame allocated a few hundred times over.
+            let (renderer, cam) = cam(200, 60, &ship);
+            let (w, h) = renderer.canvas_dims();
+            let pose = attitude(&ship);
+            for model in models() {
+                for orbit in orbits().into_iter().chain(forward_quarter()) {
+                    for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
+                        let eye = eye_at(orbit, zoom);
+                        let origin = place([0.0, 0.0, 0.0], pose, &eye);
+                        let astern = place([0.0, 0.0, -1.0], pose, &eye);
+                        let Some(vanish) = cam.vanishing_point([
+                            astern[0] - origin[0],
+                            astern[1] - origin[1],
+                            astern[2] - origin[2],
+                        ]) else {
+                            continue;
+                        };
+
+                        // Which way the exhaust runs on screen: from the drive
+                        // toward the point it is heading for. Every bell shares that
+                        // point, so one line settles all of them.
+                        let heads: Vec<(f32, f32)> = model
+                            .engines
+                            .iter()
+                            .filter_map(|bell| cam.project(place(bell.at, pose, &eye)))
+                            .collect();
+                        let Some(mid) = heads
+                            .iter()
+                            .copied()
+                            .reduce(|a, b| (a.0 + b.0, a.1 + b.1))
+                            .map(|s| (s.0 / heads.len() as f32, s.1 / heads.len() as f32))
+                        else {
+                            continue;
+                        };
+                        let (ux, uy) = (vanish.0 - mid.0, vanish.1 - mid.1);
+                        let range = ux.hypot(uy);
+                        if !range.is_finite() || range <= 0.0 {
+                            continue;
+                        }
+                        let (ux, uy) = (ux / range, uy / range);
+                        let past = |p: (f32, f32)| (p.0 - vanish.0) * ux + (p.1 - vanish.1) * uy;
+
+                        let clear = heads.iter().all(|p| past(*p) <= -CLEAR_OF_THE_HORIZON)
+                            && model
+                                .verts
+                                .iter()
+                                .filter_map(|v| cam.project(place(*v, pose, &eye)))
+                                .all(|p| past(p) <= -CLEAR_OF_THE_HORIZON);
+                        if !clear {
+                            continue;
+                        }
+                        // Counted only when the point is on the canvas, and that is
+                        // the whole difference between a test and a shape of one.
+                        // A vanishing point off the side of the frame leaves the
+                        // overshoot off it too, where `draw_streak` clips it away
+                        // and the sweep sails past a lance running three frame
+                        // widths through the sky. Which is exactly what the angles
+                        // already in `orbits()` do.
+                        let onscreen = (0.0..w as f32).contains(&vanish.0)
+                            && (0.0..h as f32).contains(&vanish.1);
+                        if onscreen {
+                            asked += 1;
+                        }
+
+                        let mut canvas = Canvas::new(w, h);
+                        draw(&mut canvas, &cam, &ship, model, &eye, 0.0);
+                        for y in 0..h {
+                            for x in 0..w {
+                                let light = canvas.light_at(x, y);
+                                assert!(light.is_finite(), "{} drew a NaN", model.name);
+                                let over = past((x as f32, y as f32));
+                                assert!(
+                                    light <= 0.02 || over <= 0.0,
+                                    "{} lit a subpixel {over:.1} past the point its plume \
+                                 vanishes at, from {orbit:?} at zoom {zoom}",
+                                    model.name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 154 of them qualify today. The floor is well under that so an
+        // ordinary change to a hull or to the framing does not have to move it,
+        // and well over the handful that would mean the sweep had stopped
+        // asking the question in any but a corner of the range.
+        assert!(
+            asked >= 100,
+            "only {asked} frames put a vanishing point on the canvas with the ship clear \
+             of it, which is too few to be sure of noticing a lance running through one"
+        );
     }
 
     #[test]

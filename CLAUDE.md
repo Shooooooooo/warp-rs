@@ -33,8 +33,8 @@ the tree cannot do it — no `nalgebra` for the three-by-three matrices, no
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 255 unit + 7 flight + 3 golden, ~25s
-cargo test --locked --all-features      # 256 unit — adds the snapshot-gated one
+cargo test                              # 258 unit + 7 flight + 3 golden, ~25s
+cargo test --locked --all-features      # 259 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked                  # CI runs this too; `exclude` is by hand
@@ -127,7 +127,12 @@ The split is usually the sharpest thing you have: a change aimed at the hull
 moves `side.txt` and `orbit.txt` and must leave the three cockpit flights alone,
 and one aimed at the tunnel glare moves `warp.txt` and only `warp.txt`, since
 the two `--demo` flights never leave sublight and the outside view goes through
-`add_glow_oval` instead. A hash moving outside that shape has leaked.
+`add_glow_oval` instead. There is a third shape, and it is the sharpest of the
+lot: a change to something the outside view only does *off* the beam moves
+`orbit.txt` alone, because the whole of that geometry reduces exactly to the old
+arithmetic where `side.txt` has the camera. Stopping the engine lance at its
+vanishing point moved that one hash and no other. A hash moving outside the
+shape its change predicts has leaked.
 
 Say in the commit message what moved and why. Regenerating without explanation
 throws away the only thing that file is for.
@@ -397,6 +402,24 @@ machines, which is the one thing the whole test suite exists to stop.
 `draw_trail` multiplies the factor back out, so what `TRAIL_INTENSITY` names is
 the brightness at the nozzle. Anything else that picks its own streak length
 rather than being handed one has the same problem and the same answer.
+
+**That lance is stretched in screen space, and the frame edge is not the only
+end it has.** A straight ray running away from the eye projects onto a point
+that *approaches* the vanishing point of its own direction and never arrives, so
+past that point there is no exhaust left to draw. The stretch used to go there
+anyway — from anywhere forward of the beam every lance ran clean through and out
+the far side, where a symmetric pair of bells swap over and cross — and
+`Camera::vanishing_point` with `LANCE_HORIZON` is what holds it back now. The
+useful identity is that the fraction of the way to that point a tip covers is
+*exactly* one minus the ratio of the two depths, so the clamp and the amount the
+fan narrows by come out of one division and neither needs a depth. Reach for a
+hull-unit lance length instead and two tests say why not: the length is the
+frame's on purpose.
+
+The abeam shot is the case with no such point at all — `Eye::to_camera` at
+`Orbit::LEVEL` is exactly `(x, y, z) → (z, y, distance − x)`, so the hull's axis
+lies flat in the image plane and its depth term is exactly zero — which is why
+`side.txt` did not move for any of this and `orbit.txt` did.
 
 **`Canvas::splat_inside` does no bounds checking and will panic.** It is the
 innermost loop in the program and it trusts its caller — `draw_streak` and
