@@ -126,6 +126,25 @@ fn saturation_point(exposure: f32, gamma: f32) -> f32 {
     }
 }
 
+/// The length of a span on the canvas.
+///
+/// `f32::hypot` is libm's overflow-safe, correctly-rounded routine, and none of
+/// what makes it expensive is being used here: every span this measures is a
+/// difference of two canvas coordinates, so the squares cannot overflow, and
+/// the last bit of a length is not what a streak's sampling rate turns on. It
+/// was a real call out to the maths library per span, and the bent-streak path
+/// takes four of them per segment — four percent of every instruction an
+/// exterior frame retires.
+///
+/// Here rather than in [`crate::lens`] because [`Canvas::draw_path`] wants it
+/// too, and the two have to agree to the bit: `draw_path` reuses a span it
+/// measured once as the length it samples along, which is only sound while both
+/// are spelled the same way.
+#[inline]
+pub fn length_of(dx: f32, dy: f32) -> f32 {
+    (dx * dx + dy * dy).sqrt()
+}
+
 /// One face of a hull, ready to paint: where its outline lies on the canvas,
 /// and what colour it came out.
 ///
@@ -498,7 +517,7 @@ impl Canvas {
         }
         let total: f32 = points
             .windows(2)
-            .map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1))
+            .map(|p| length_of(p[1].0 - p[0].0, p[1].1 - p[0].1))
             .sum();
         // A path that went nowhere, or one with a NaN in it, is a point.
         if !total.is_finite() || total < 0.75 {
@@ -524,16 +543,25 @@ impl Canvas {
 
         for pair in points.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            let span = (b.0 - a.0).hypot(b.1 - a.1);
+            let span = length_of(b.0 - a.0, b.1 - a.1);
             // Clipping moves the endpoints, so the ramp has to be evaluated
             // against where they ended up along the *original* segment — not
             // against the clipped one, which would stretch the ramp back out
             // over whatever fragment survived.
             if let Some((from, to)) = self.clip(a, b) {
-                let at = |p: (f32, f32)| (travelled + (p.0 - a.0).hypot(p.1 - a.1)) * inv_total;
-                let (t0, t1) = (at(from), at(to));
+                // A segment the canvas did not cut is the overwhelming case,
+                // and there all three of these are already in hand: the near
+                // end is exactly where the walk had got to, the far end exactly
+                // one span further on, and the length is that span. Measuring
+                // them again is three roots for numbers already known.
+                let (t0, t1, length) = if from == a && to == b {
+                    (travelled * inv_total, (travelled + span) * inv_total, span)
+                } else {
+                    let at =
+                        |p: (f32, f32)| (travelled + length_of(p.0 - a.0, p.1 - a.1)) * inv_total;
+                    (at(from), at(to), length_of(to.0 - from.0, to.1 - from.1))
+                };
                 let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-                let length = (dx * dx + dy * dy).sqrt();
                 let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
                 let inv_steps = 1.0 / steps as f32;
                 let first = usize::from(resume_at == Some(from));

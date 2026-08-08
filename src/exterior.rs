@@ -377,7 +377,13 @@ impl ExteriorField {
             // Reaches zero exactly at the far wall, with zero slope, so stars
             // fade up out of nothing instead of blinking into existence.
             let depth = (1.0 - (z - Z_NEAR) / (Z_FAR - Z_NEAR)).clamp(0.0, 1.0);
-            let twinkle = 1.0 + twinkle_amt * (twinkle_phase + star.phase).sin();
+            // Exactly as in [`crate::starfield`], and for the same reason: the
+            // amount is a hard zero at warp, and `1 + 0·s` is one to the bit.
+            let twinkle = if twinkle_amt > 0.0 {
+                1.0 + twinkle_amt * (twinkle_phase + star.phase).sin()
+            } else {
+                1.0
+            };
             let intensity = class.luminosity * star.magnitude * depth.powf(DEPTH_FALLOFF) * twinkle;
             if intensity <= 0.0 {
                 return None;
@@ -512,7 +518,7 @@ fn band(half_width: f32, focal: f32, z: f32) -> f32 {
 fn subdivide(streak: &Streak, lens: &Lens, out: &mut Vec<(f32, f32)>) {
     out.clear();
     let (dx, dy) = (streak.to.0 - streak.from.0, streak.to.1 - streak.from.1);
-    let length = dx.hypot(dy);
+    let length = crate::canvas::length_of(dx, dy);
     // The head, where the star actually is, speaks for the streak.
     let bend = lens.curvature(streak.to).max(lens.curvature(streak.from));
     let pieces = if length.is_finite() {

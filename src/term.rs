@@ -19,6 +19,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Upper half block: foreground paints the top pixel, background the bottom.
 const HALF_BLOCK: char = '\u{2580}';
+/// The same glyph already encoded. Nearly every cell of every frame carries it,
+/// and `char::encode_utf8` branches on the code point and fills a scratch array
+/// to arrive at these three constant bytes.
+const HALF_BLOCK_UTF8: &[u8] = "\u{2580}".as_bytes();
 /// Brightness ramp for terminals that cannot do colour at all. Visible to
 /// the crate because the panel picks its ASCII face partly to avoid it: with
 /// no colour to separate glass from sky, an instrument drawn in a character
@@ -154,13 +158,26 @@ impl<W: Write> Sink<'_, W> {
                         buf.push(b'm');
                     }
                     Some((r, g, b)) => {
-                        buf.extend_from_slice(ground.rgb_prefix());
-                        push_decimal(buf, r as usize);
-                        buf.push(b';');
-                        push_decimal(buf, g as usize);
-                        buf.push(b';');
-                        push_decimal(buf, b as usize);
-                        buf.push(b'm');
+                        // Spelled into one stack sequence and handed over in a
+                        // single copy. The seven `push`es this replaced each
+                        // took the buffer's capacity check with them, and a
+                        // truecolor cell that changes colour spells two of
+                        // these — which came to a twentieth of every
+                        // instruction the program retired.
+                        let mut seq = [0u8; RGB_SEQUENCE_MAX];
+                        let prefix = ground.rgb_prefix();
+                        seq[..prefix.len()].copy_from_slice(prefix);
+                        let mut n = prefix.len();
+                        for (i, component) in [r, g, b].into_iter().enumerate() {
+                            if i > 0 {
+                                seq[n] = b';';
+                                n += 1;
+                            }
+                            n += write_u8(&mut seq[n..], component);
+                        }
+                        seq[n] = b'm';
+                        n += 1;
+                        buf.extend_from_slice(&seq[..n]);
                     }
                     None => buf.extend_from_slice(ground.reset()),
                 }
@@ -180,7 +197,15 @@ impl<W: Write> Sink<'_, W> {
     fn glyph(&mut self, ch: char) -> io::Result<()> {
         match self {
             Sink::Ansi(buf) => {
-                buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
+                // The half block is what `compose` writes into every cell it
+                // touches, so the panel and the picker are the only glyphs that
+                // ever miss this and the encoder is being asked the same
+                // question tens of thousands of times a frame.
+                if ch == HALF_BLOCK {
+                    buf.extend_from_slice(HALF_BLOCK_UTF8);
+                } else {
+                    buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
+                }
                 Ok(())
             }
             Sink::Commands(out) => {
@@ -226,8 +251,34 @@ impl Ground {
     }
 }
 
+/// The longest a 24-bit colour sequence gets: `\x1b[38;2;` and its closing `m`
+/// around three components of three digits and the two semicolons between them.
+const RGB_SEQUENCE_MAX: usize = 19;
+
+/// Decimal, into a fixed slice, answering how many bytes it took. Nothing a
+/// colour carries is wider than three digits, so this needs no loop over an
+/// unbounded value and — writing into a slice rather than onto a `Vec` — no
+/// capacity check either.
+fn write_u8(out: &mut [u8], value: u8) -> usize {
+    if value >= 100 {
+        out[0] = b'0' + value / 100;
+        out[1] = b'0' + value / 10 % 10;
+        out[2] = b'0' + value % 10;
+        3
+    } else if value >= 10 {
+        out[0] = b'0' + value / 10;
+        out[1] = b'0' + value % 10;
+        2
+    } else {
+        out[0] = b'0' + value;
+        1
+    }
+}
+
 /// Decimal, straight into the buffer. This is the whole of the formatting the
-/// fast path needs, and doing it here is most of why it is fast.
+/// fast path needs, and doing it here is most of why it is fast. A cursor
+/// address is a real `usize` and an unbounded one, so it stays on this path
+/// where a colour component takes [`write_u8`].
 fn push_decimal(buf: &mut Vec<u8>, value: usize) {
     let mut digits = [0u8; 20]; // a `usize` cannot be longer than this
     let mut n = 0;

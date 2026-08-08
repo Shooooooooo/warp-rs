@@ -182,6 +182,16 @@ behind the hull from ahead — both turn on a quantity that is exactly zero abea
 and neither could reach the shot recorded there. A hash moving outside the shape
 its change predicts has leaked.
 
+There is a fourth, and it wears the first one's clothes: a change to the
+arithmetic inside `lens`, `exterior` or `Canvas::draw_path` also moves
+`side.txt` and `orbit.txt` and nothing else — not because of what geometry those
+flights have, but because of which modules they reach. Nothing in the cockpit
+goes anywhere near the three; the tunnel is streaks and two glows. So the useful
+half of that shape is `warp.txt` staying byte-identical, which is what says a
+change to how a span is measured stayed inside the view it was aimed at. Taking
+`hypot` off the bent-streak path is the worked example, and
+`tests/golden/frames.sha256` carries it in full.
+
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
 The reference is one ship deep: neither flight with a hull in it passes
@@ -223,7 +233,46 @@ classic simplification and it silently makes the flight model depend on step
 size. Perf edits are documented with the measurement that justified them —
 `draw_streak` takes one reciprocal per streak rather than a divide per sample,
 worth about six percent of drawing time at twenty thousand stars — so do not
-undo one without a number saying why.
+undo one without a number saying why. The others on that list are the writer
+spelling a colour into one stack sequence instead of seven capacity-checked
+pushes (−30% of the write column), `canvas::length_of` in place of `hypot`
+(−6% of an exterior frame), `Lens::inv_axes` (−1.8%), `draw_path` reusing the
+span it already measured (−2.5%), and the twinkle `sin` skipped at warp, where
+its amount is a hard zero (−2%). Together they take the expensive frame — the
+outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2, which
+is the number to reproduce before believing a regression here.
+
+Measure the two trees back to back rather than against a figure written down
+earlier. This container drifts about ten percent between sessions, which is
+wider than most of the entries above.
+
+### What was measured and is not worth trying again
+
+This tree is compiled with fat LTO and `codegen-units = 1`, and LLVM is
+consequently doing far more than a reading of the source suggests. **The trap is
+optimising by eye.** `Camera::project` calls `self.bank.sin_cos()` on every
+star, which looks like sixty thousand libm calls a frame and is not one: `bank`
+is fixed for the frame, `sin` is `readnone`, and LICM hoists it — every `sinf`
+in the profile is accounted for by the twinkle alone. Measure first, and measure
+instructions rather than wall clock when the change is small; callgrind resolves
+a percent that a loaded machine's clock cannot.
+
+The following were each prototyped and measured, and none of them earned its
+place:
+
+| tried | measured |
+| --- | --- |
+| a table of pre-spelled decimals in the writer | **worse** — 0.46 ms to 0.64. One copy of a runtime-length slice costs more than the one to three pushes it replaces; the win was in copying the whole sequence at once, not in precomputing digits. |
+| skipping the magnification on the lens samples that discard it | nothing. The dead field is already dropped. |
+| `[f32; 4]` canvas pixels, for aligned SIMD splats | a wash — dense frames −1.3%, sparse frames +7%, because every whole-canvas pass moves a third more memory. |
+| `get_unchecked_mut` in `splat_inside`, 28% of a cockpit frame's instructions | 2.5%. Not a price worth the first `unsafe` in the tree, but worth knowing the size of before anyone argues for it. |
+| row-walking `apply_vignette` with `chunks_exact_mut` | nothing; the indexed form already compiles to the same thing. |
+| dropping the `palette_256` → `palette_rgb` round trip in `quantize_256` | nothing; the constant divisors are already folded. |
+
+Cachegrind is the other thing to know before reaching for a layout change: the
+D1 miss rate is 1.4% and last-level misses are in the tens of thousands for a
+whole run. The working set fits. This is instruction-bound, and shrinking
+`Star` or restriping the canvas is solving a problem it does not have.
 
 ## Layout
 
@@ -325,9 +374,12 @@ panel.
 exactly `--frames` frames. The deadline is checked only in the interactive loop.
 
 **`--fps` means two different things.** Interactively it is only a frame budget,
-and the panel shows a smoothed measurement. In headless and snapshot it *is* the
-simulation timestep — `dt = 1.0 / args.fps` — so changing it changes the flight,
-and changing how it is used moves the golden frames.
+and only while nothing is being typed — see the drain loop below, which spends
+it waiting and abandons what is left of it the moment a key has moved the
+flight. The panel shows a smoothed measurement, which is why it reads high for a
+moment when the stick is worked. In headless and snapshot it *is* the simulation
+timestep — `dt = 1.0 / args.fps` — so changing it changes the flight, and
+changing how it is used moves the golden frames.
 
 Three more asymmetries worth knowing before you touch the loops: `P` gates only
 `advance`, so a paused `--demo` still runs its autopilot, still repaints, and
@@ -343,12 +395,37 @@ asymptotic, so only an exact reset gets the camera back to the bitwise-level
 shot the fast paths below are written for.
 
 The interactive loop handles **input at the end of the frame**, in an
-event-drain loop that spends the rest of the frame budget blocking on
-`event::poll` rather than sleeping — so a key is acted on the moment it
-arrives, which at `--fps 5` is the difference between a screensaver that
-dismisses when touched and one that finishes its nap first. `dt` is measured
-frame-start to frame-start and therefore includes that wait; **there is no
-`sleep` anywhere in the loop, and adding one would break the frame cap.**
+event-drain loop that blocks on `event::poll` rather than sleeping — so a key
+is acted on the moment it arrives, which at `--fps 5` is the difference between
+a screensaver that dismisses when touched and one that finishes its nap first.
+`dt` is measured frame-start to frame-start and therefore includes that wait;
+**there is no `sleep` anywhere in the loop, and adding one would put a frame
+budget back on top of every keypress.**
+
+Acting on the key was only ever half of answering it, and the drain used to go
+back to `poll` afterwards and block out the rest of the budget anyway — so the
+stick was answered at once and the picture was not. It now carries an `acted`
+flag and breaks once something has moved the flight, which is a whole budget off
+the wait: measured through a pty with the key written at the start of a frame's
+window, 14.95 ms to 0.62 at `--fps 60`, 31.08 to 0.53 at 30, and 65.02 to 0.53
+at 15. **The queue is emptied before the wait is cut short** — that is the
+`!event::poll(Duration::ZERO)?` beside the flag, and it is load-bearing rather
+than tidiness: without it a burst of wheel notches is one frame each rather than
+one frame, and a resize the terminal settles out of buys itself a repaint.
+
+**So the frame cap holds while nothing is being typed and does not while
+something is**, which is the trade and is worth knowing before it is read as a
+bug. Idle is untouched — 4.1% of a core either way, the same bytes — and a key
+held down is free, 4.5% against 4.3%, because autorepeat tops out around thirty
+a second and thirty extra frames of a sub-millisecond render is nothing. Only a
+rate no hand reaches shows at all: a stuck key or a pasted burst at 500 Hz takes
+5.3% to 18.7%, and that is self-limiting at the render's own speed. A floor
+under how soon an input-driven frame may start was written and thrown away —
+gating the break is not enough while the wait above it is still the whole
+budget, and shortening the wait as well turned the drain into a spin that took
+the held-key case to nearly three times its resting cost while handing the
+latency back. If that ceiling ever wants bounding it
+wants its own attempt and its own measurement, not that shape.
 
 ### The two skies
 
@@ -698,6 +775,17 @@ lies flat in the image plane and its depth term is exactly zero — which is why
 The tail is the other shape: a ramp is not a question about the camera angle, so
 giving the lance one moved both of the flights that light a drive.
 
+**Every span on the canvas is measured by `canvas::length_of`, and the sharing
+is the point rather than a convenience.** It is `(dx² + dy²).sqrt()`, and it
+replaced `f32::hypot` — libm's overflow-safe, correctly-rounded routine, which
+was buying a guarantee the inputs cannot need, since every span here is a
+difference of two canvas coordinates. It was four percent of every instruction
+an exterior frame retired, four calls per segment on the bent path. It lives in
+`canvas` rather than in `lens` because **`draw_path` reuses the span it measured
+as the length it samples along**, and that shortcut is only sound while both are
+spelled by the same function. Tidying `lens.rs` back to `hypot`, or giving
+`draw_path` its own inline form, breaks a bit-exactness rather than a style.
+
 **`Canvas::splat_inside` does no bounds checking and will panic.** It is the
 innermost loop in the program and it trusts its caller — `draw_streak` and
 `draw_path` clamp every interpolated sample to `max_x`/`max_y` before handing
@@ -858,7 +946,7 @@ constant.
 1.0 on the ring, whichever way round it is measured — and every question the
 module used to answer with a distance and a radius it now answers with that and
 a bare number: the shadow is `SHADOW_FRAC`, the reach is `REACH`, the ring is
-one. Three consequences worth keeping.
+one. Four consequences worth keeping.
 
 `RING_MINOR` is `1.0 / RING_MAJOR` and must stay derived. The ring then encloses
 `π·radius²` whatever the elongation is, so `bends` sweeps the same area it
@@ -868,12 +956,23 @@ not assumed: 22.1 ms of drawing before, 21.4 ms after, at 20 000 stars on
 is what holds it, integrating through `offset` rather than multiplying the two
 constants together.
 
+`inv_axes` is on that list too, and for the same reason: it is `1.0 / axes`
+component-wise, it is set in all three constructors beside the `axes` it comes
+from, and **nothing may set one without the other.** It is there because
+`offsets` used to end on a divide per axis and is the floor every gate in the
+module stands on — `bends` and `shadowed` run it over the whole pool, `map` and
+`crosses_the_ring` over every sample of every bent streak — so two numbers fixed
+for the entire frame were being divided by a dozen times per sample. Worth 1.8%
+of drawing an exterior frame at twenty thousand stars, and it moves the last
+bit, so it arrived with the reference frames regenerated.
+
 Being an *ellipse* rather than an angle-dependent radius is why this got
 cheaper. Membership of an ellipse is a closed form, so `bends`, `shadowed`,
 `crosses_the_ring` and `curvature` have no square root in them at all; a ring
 whose radius varied with the angle would have needed one in each, on the two
 hottest gates in the program. If you reshape this again, reshape it by changing
-what `offset_sq` divides by.
+what `offset_sq` scales by — which now means `axes` and `inv_axes` together,
+since the second is the one the arithmetic actually reads.
 
 The wake is the *centre*, not the outline. `for_warp` seats the bubble
 `WAKE_SHIFT` of a semi-major axis astern of the ship it is handed, and the
@@ -1192,7 +1291,26 @@ place a person types the number.
 **Changing the renderer.** Expect the golden hashes to move, and regenerate
 them in the same commit with the reason written down. Run
 `cargo run --release --example bench` before and after if the change is in a
-hot loop — `draw_streak`, `resolve_into`, `Screen::flush`, `ExteriorField::draw`.
+hot loop — `draw_streak`, `resolve_into`, `ExteriorField::draw`.
+
+Two things about that instrument, because it is easy to trust further than it
+goes. **It does not measure `Screen::flush` at all**: the write column times
+`present_plain`, which is the headless writer and emits every cell, where the
+interactive path diffs against the front buffer. A change aimed at the cell diff
+is invisible here and wants a harness of its own. And it reports a bare mean of
+one run per case, which cannot tell a 2% improvement from the scheduler — take
+the minimum of five to seven sweeps before believing a small number.
+
+For anything finer, callgrind counts instructions and does not care what else
+the machine is doing. Release carries no debug info, so line attribution needs
+the profile overridden on the invocation rather than in `Cargo.toml`:
+
+```sh
+CARGO_TARGET_DIR=/tmp/prof CARGO_PROFILE_RELEASE_DEBUG=true \
+    cargo build --release --examples
+valgrind --tool=callgrind --cache-sim=no /tmp/prof/release/examples/bench 200 60 5000 side truecolor
+callgrind_annotate --auto=no callgrind.out.*
+```
 
 ## CI
 

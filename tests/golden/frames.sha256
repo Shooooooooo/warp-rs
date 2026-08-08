@@ -78,6 +78,33 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+# `side.txt` and `orbit.txt` moved together when three measurements in the
+# outside view stopped being taken the expensive way. `hypot` is libm's
+# overflow-safe, correctly-rounded routine and every span it was measuring here
+# is a difference of two canvas coordinates, so it was buying a guarantee the
+# inputs could not need; `Lens::offsets` ended on a divide per axis by two
+# numbers fixed for the whole frame; and `draw_path` measured a segment's length
+# three more times after already having it. All three are the same arithmetic to
+# within a rounding, and none of them is the same arithmetic to the bit.
+#
+# Two hashes, and it is the shape this change has to have. Nothing in the
+# cockpit reaches `lens`, `exterior` or `draw_path` — the tunnel is streaks and
+# two glows — so the three `--demo` flights and `warp.txt` came back
+# byte-identical, and a hash moving outside these two would have meant the reach
+# was wider than the change claimed. It is the same split the hull changes below
+# have, arrived at from the other side: those two are the flights with a ship in
+# them, and they are also the only two that light a lens.
+#
+# Those two changes met in a merge, and the hashes below are what the merged
+# tree actually renders rather than one side's set kept and the other's
+# discarded. Both moved what is drawn, so neither branch's file was right for
+# the tree that has both: the density decides how many stars every one of these
+# six flights spawns, and the measurements decide where the two that light a
+# lens put them. Regenerated from the merge and read against `main` rather than
+# against the branch, which is the sharper baseline — `main` already carries the
+# density, so `side.txt` and `orbit.txt` differ from it and the other four are
+# byte-identical to it, exactly as the paragraph above says they must be.
+#
 # All six moved together when `AUTO_DENSITY` went from 0.005 to 0.02, and this
 # is the second time this file has recorded that shape for that constant — see
 # the halving below, which is the change this one partly walks back. The reading
@@ -199,5 +226,5 @@ b0b11b243027c81eac96a641df34cf484920e626819d363a7171233e848eb2cd  truecolor.txt
 c745fb56071a4065ffe72cc6ce1da35bc06e1d49230df88f20c2049ac7f6f1bc  ascii.txt
 6aaef3142e7323ce74789c573d906e48b2b2fabd87601a2f0bb7709ee4445de1  ansi256.txt
 8e4d6fe37cf5ebbb63c6af30f858185ed2741ec63ea5771e4fd35e7daff3175a  warp.txt
-7ddd93a5ecf1b158daa8782a69d84477f5c33196067dfc945b0d0a30066823b9  side.txt
-cb12ad22e17ccce4af63b846a38adc4f3f8fba6fa48a2b7e8a3226e48550478a  orbit.txt
+e00c1f3479261e40f2add1e1d812981d4d53b30e07c50402a675d1f8eb66a009  side.txt
+faf3197578b9f23939f2980d5e8a476f81933733fa6ee94286cbab24b8922079  orbit.txt

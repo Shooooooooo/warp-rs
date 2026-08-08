@@ -441,7 +441,15 @@ impl StarField {
             // star swung past the far plane by a turn simply stays dark until
             // it is close enough to matter again.
             let depth = (1.0 - (z - Z_NEAR) / (Z_FAR - Z_NEAR)).clamp(0.0, 1.0);
-            let twinkle = 1.0 + twinkle_amt * (twinkle_phase + star.phase).sin();
+            // The amount is *exactly* zero from a third of light speed up, and
+            // `1 + 0·s` is exactly one for any finite `s` — so this is the same
+            // number the multiply would have reached, without a `sin` per star
+            // on the frame that can least afford one.
+            let twinkle = if twinkle_amt > 0.0 {
+                1.0 + twinkle_amt * (twinkle_phase + star.phase).sin()
+            } else {
+                1.0
+            };
             let intensity = class.luminosity * star.magnitude * depth.powf(DEPTH_FALLOFF) * twinkle;
             if intensity <= 0.0 {
                 return None;

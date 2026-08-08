@@ -787,6 +787,14 @@ fn run_interactive(args: &Args) -> io::Result<()> {
         // sleep happens to finish — which at 60 fps is a few milliseconds, and
         // at `--fps 5` is the difference between a screensaver that dismisses
         // when touched and one that finishes its nap first.
+        //
+        // Acting on the key was only ever half of answering it, though. Once
+        // something has moved the flight there is a frame owing to it, and
+        // going back to `poll` for the rest of the budget is that frame waiting
+        // on a clock: the stick was answered at once and the picture was not.
+        // So the wait is what is left of the budget *until* something has been
+        // acted on, and nothing after it.
+        let mut acted = false;
         loop {
             // Saturating, not checked: a frame that has already run over its
             // budget has nothing left to wait, but a terminal too slow to keep
@@ -815,10 +823,14 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                     if let Action::Quit = handle_key(key, &mut flight, args, &mut paused) {
                         break 'flying;
                     }
+                    acted = true;
                 }
                 // No screensaver arm above this one: capture is not asked for
                 // in that mode, so nothing here can arrive.
-                Event::Mouse(mouse) => handle_mouse(mouse, &mut flight),
+                Event::Mouse(mouse) => {
+                    handle_mouse(mouse, &mut flight);
+                    acted = true;
+                }
                 // Only repaint if the size really changed: terminals emit
                 // resize events that settle on the size already in use, and
                 // clearing on those makes the field blink for no reason.
@@ -827,9 +839,17 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                     if changed {
                         out.queue(terminal::Clear(terminal::ClearType::All))?;
                         flight.renderer.screen().force_redraw();
+                        acted = true;
                     }
                 }
                 _ => {}
+            }
+            // The queue is emptied before the wait is cut short, so a burst of
+            // wheel notches is one frame rather than one frame each — and a
+            // resize the terminal settles out of, which changes nothing, does
+            // not buy itself a repaint.
+            if acted && !event::poll(Duration::ZERO)? {
+                break;
             }
         }
     }

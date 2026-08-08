@@ -28,7 +28,7 @@ cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 | `--demo [SECS]` | Fly on autopilot, then exit. Defaults to 45 seconds. |
 | `--screensaver` | Fly on autopilot forever; any key quits. For tmux's `lock-command`. |
 | `--stars N` | Star count. `0` (default) suits it to the terminal. |
-| `--fps N` | Frame rate cap. Default 60. |
+| `--fps N` | Frame rate cap, while nothing is being typed. Default 60. |
 | `--color auto\|truecolor\|256\|ascii` | Colour depth. Auto-detected by default. |
 | `--engage` | Start with the drive already lit. |
 | `--view cockpit\|side` | Which camera to start behind. `C` cycles them. |
