@@ -295,7 +295,7 @@ Or just as a window: `tmux new-window -n warp 'warp --screensaver'`.
 | `--demo [SECS]` | Fly on autopilot, then exit. Defaults to 45 seconds. |
 | `--screensaver` | Fly on autopilot forever; any key quits. For tmux's `lock-command`. |
 | `--stars N` | Star count. `0` (default) suits it to the terminal. |
-| `--fps N` | Frame rate cap. Default 60. |
+| `--fps N` | Frame rate cap, while nothing is being typed. Default 60. |
 | `--color auto\|truecolor\|256\|ascii` | Colour depth. Auto-detected by default. |
 | `--engage` | Start with the drive already lit. |
 | `--view cockpit\|side` | Which camera to start behind. `C` cycles them. |
@@ -358,11 +358,12 @@ cargo run --release -- --headless --frames 120 --seed 1 --size 120x36 --demo | s
 
 Repeatable is not the same as unchanged, though — a renderer that draws every
 frame differently is still perfectly repeatable about it — so the bytes
-themselves are committed, in `tests/golden/frames.sha256`. Five flights are
-pinned: sublight in truecolor and in ASCII, one at full warp, one at full warp
-from outside the ship, and one of those with the camera swung off the beam,
-which between them reach the streak ramp, the tunnel glare, the lens and the
-hulls. `cargo test` reproduces them in process
+themselves are committed, in `tests/golden/frames.sha256`. Six flights are
+pinned: sublight in truecolor, in ASCII and in 256 colours, one at full warp,
+one at full warp from outside the ship, and one of those with the camera swung
+off the beam, which between them reach the streak ramp, the tunnel glare, the
+lens, the hulls and both spellings of a colour. `cargo test` reproduces them in
+process
 and CI re-checks the same hashes against a release binary, so an edit meant to
 touch one thing that touched the whole sky fails on your own machine; when the
 change was the point, that file says how to regenerate it. The hashes hold
