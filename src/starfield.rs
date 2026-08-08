@@ -235,9 +235,11 @@ impl StarField {
         self.stars.len()
     }
 
-    /// Always false in practice — `resize_pool` keeps at least one star, and a
-    /// field is never constructed empty by anything that draws. Here because a
-    /// pool with a length is expected to answer this too.
+    /// True only when the count asked for was zero, which `--stars 0` is
+    /// allowed to ask for. The two ends of the pool are not symmetric about
+    /// that and deliberately: [`Self::new`] builds exactly what it is handed,
+    /// where [`Self::resize_pool`] keeps a star back however far down the `-`
+    /// key is walked, so a sky can be *started* empty and cannot be *emptied*.
     pub fn is_empty(&self) -> bool {
         self.stars.is_empty()
     }

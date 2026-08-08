@@ -199,8 +199,11 @@ impl ExteriorField {
         self.stars.len()
     }
 
-    /// Always false in practice — `resize_pool` keeps at least one star — but a
-    /// pool with a length is expected to answer this too.
+    /// True only when the count asked for was zero, which `--stars 0` is
+    /// allowed to ask for. The same asymmetry [`crate::starfield::StarField`]
+    /// has and for the same reason: [`Self::new`] builds exactly what it is
+    /// handed, where [`Self::resize_pool`] keeps a star back, so a sky can be
+    /// started empty and cannot be emptied.
     pub fn is_empty(&self) -> bool {
         self.stars.is_empty()
     }

@@ -26,11 +26,13 @@ const MAX_CELLS: usize = 2_000_000;
 const MAX_DIM: u16 = 10_000;
 /// Ceiling on a star pool, however the pool was asked for.
 ///
-/// Three doors reach it and this is the only number behind all three: `--stars`
-/// here, the automatic count in [`crate::app`] when `--stars` is 0, and the `+`
-/// key. That key used to have a ceiling of its own, 20 000, which sat *under*
-/// what this file already allowed — so `--stars 100000` and a single press
-/// shrank the pool by four fifths, which is not what that key says.
+/// Two doors reach it and this is the only number behind both: `--stars` here
+/// and the `+` key. That key used to have a ceiling of its own, 20 000, which
+/// sat *under* what this file already allowed — so `--stars 100000` and a
+/// single press shrank the pool by four fifths, which is not what that key
+/// says. There was a third door once, an automatic count in [`crate::app`] that
+/// sized the pool from the canvas; it is gone, and [`DEFAULT_STARS`] is what
+/// stands where it stood.
 ///
 /// It is also the one bound in this file not enforced only at parse time, and
 /// for a reason rather than by omission: a pool is the one thing on the list
@@ -38,6 +40,36 @@ const MAX_DIM: u16 = 10_000;
 /// 40 bytes, so this is 40 MB of it — an allocation rather than an abort on
 /// anything this will run on.
 pub const MAX_STARS: usize = 1_000_000;
+/// How many stars a flight opens with when the command line does not say.
+///
+/// This used to be a *density* — stars per subpixel, at 0.02 — so the sky was a
+/// function of the window, and the number here was the sentinel `0` that asked
+/// for it. What that bought was an even-looking field at every size; what it
+/// cost was that no two terminals flew the same sky, and that a flight already
+/// under way had its pool rebuilt underneath it every time the window moved.
+/// The density's own answers say how wide that spread was: 19 stars at 40x12,
+/// 76 at 80x24, 172 at 120x36, 480 at 200x60, 1080 at 300x90. A fixed count is
+/// a picture the notes, the reference frames and two people on two machines can
+/// all be talking about.
+///
+/// 256 sits inside that range and toward its thin end on purpose. The pool is
+/// the same on every canvas now, so it has to be a number that a small window
+/// can carry without becoming a wash — and the field is drawn as the segment
+/// each star swept, so lighting the drive turns every one of them into a streak
+/// several times its own length. Density is what a large window loses, and
+/// depth parallax is what it keeps; the streaks lengthen with the frame either
+/// way.
+pub const DEFAULT_STARS: usize = 256;
+/// So a default the parser would refuse is a compile error rather than a
+/// command line that fails on every invocation. `default_value_t` is spelled
+/// and then read back through the `value_parser` like anything typed at the
+/// prompt, so a default past the ceiling would not be found until the binary
+/// was run — which is the one way a number in this file can be wrong without
+/// anything here saying so.
+const _: () = assert!(
+    DEFAULT_STARS <= MAX_STARS,
+    "the default star count is past its own ceiling"
+);
 /// Ceiling on the two counts that are spent rather than allocated — `--frames`
 /// and `--warmup`. Nothing runs out of memory over these; a `u32` of them is
 /// simply a process that never comes back, and at sixty a second this is
@@ -61,10 +93,23 @@ const MAX_SCALE: usize = 16;
     about = "Fly a starship through the universe at warp, in your terminal"
 )]
 pub struct Args {
-    /// How many stars to keep in flight. 0 suits the count to the terminal.
+    /// How many stars to keep in flight. 0 flies an empty sky.
+    ///
+    /// Zero is a count like any other here rather than the error the other
+    /// zeroes on this command line are, and the reason is that the renderer
+    /// draws it: the hull, the bubble, the drive, the vignette and the panel
+    /// are all still there and only the sky behind them goes, which is the one
+    /// way to look at any of them with nothing streaming past. `--frames 0` and
+    /// `--scale 0` are refused because they are an allocation of nothing; this
+    /// is a picture.
+    ///
+    /// It used to be the sentinel that asked for a count taken off the canvas,
+    /// so the number reaching [`crate::app`] was never this one. The help text
+    /// says what it does now rather than leaving it to be found, because a
+    /// command line carrying `--stars 0` from before means something else.
     #[arg(
         long,
-        default_value_t = 0,
+        default_value_t = DEFAULT_STARS,
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(0..=MAX_STARS as u64)
     )]
     pub stars: usize,
@@ -377,7 +422,10 @@ mod tests {
     fn defaults_are_sane() {
         let args = args_for(&[]);
         assert_eq!(args.fps, 60);
-        assert_eq!(args.stars, 0);
+        // The literal rather than the constant, exactly as the frame rate above
+        // it is: this is the one place the defaults are pinned as numbers, and
+        // asserting a constant against itself pins nothing.
+        assert_eq!(args.stars, 256);
         assert!(args.demo.is_none() && !args.headless && !args.engage);
     }
 
@@ -502,7 +550,7 @@ mod tests {
         assert!(Args::try_parse_from(["warp", "--stars", "1000000"]).is_ok());
         assert!(
             Args::try_parse_from(["warp", "--stars", "0"]).is_ok(),
-            "0 still means auto"
+            "an empty sky is a count like any other"
         );
 
         assert!(parse_size("60000x60000").is_err());
