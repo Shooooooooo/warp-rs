@@ -98,6 +98,31 @@ cargo run --release --features snapshot -- \
 The PNG is the **starfield only**. The instrument panel and the ship picker
 live in the character grid, not in the pixel buffer, so they are not in it.
 
+The two images on the README's front page are that command with a seed on it,
+and they are written down here because they were not: both recipes lived only
+in the commit messages that shot them, which is how the hero came to advertise
+twice the sky a default run draws for the whole life of the renderer before
+anyone thought to check it.
+
+```sh
+common="--engage --throttle 1.0 --warmup 600 --scale 2"
+warp --snapshot docs/warp.png   $common --seed 6
+warp --snapshot docs/astern.png $common --view side --orbit 245,30,0 --seed 8
+```
+
+**Neither passes `--size`**, and that is the whole of what keeps the pair tidy.
+`run_snapshot` falls back to 240x68 and a cell is two subpixels tall, so both
+come out 480x272 and stack with their edges in line. The hero used to ask for
+`--size 220x60` and came out 440x240, which put a forty-pixel step down the
+right of the page for no reason anyone had written down. A reshoot that reaches
+for `--size` puts it back.
+
+Nothing pins these bytes — `tests/golden/frames.sha256` is the *text* frames and
+knows nothing about the PNGs — so a reshoot is checked by looking at it. What
+the flags guarantee is only that the drive is lit and fully spooled: 600 warmup
+frames at the default `--fps 60` is ten simulated seconds, and `run_snapshot`
+prints the velocity it finished at, which at `--throttle 1.0` is 2000 c.
+
 ## The golden frames — read this before touching the renderer
 
 `--headless` renders on a fixed timestep with no terminal control, so a fixed
@@ -454,16 +479,31 @@ identity, because the angles are unchanged bit for bit when nothing moved them.
 Depth travel runs only when `travel[2] != 0.0`, and the vertical fold only when
 depth or height moved, because `fold` is *not* an exact identity for a value
 already inside its band and the level shot is exactly where `y` never moves.
-Off the beam two things the band was written never to face come alive. Stars
+Off the beam three things the band was written never to face come alive. Stars
 cross the near and far walls and have to be respawned, and a respawn is handed
 the trail it *would* have had, one step back along the track — without that, at
 full warp two to four percent of the pool draws a bare point every frame, which
 is the sky flickering between streaks and dots that the sideways fold exists to
-avoid, arriving by the other door. And the Doppler is measured against the
+avoid, arriving by the other door. The Doppler is measured against the
 cached `nose` rather than against camera `+x`, which is only the direction of
 travel while the camera is abeam; measured against the frame, a chase view would
 redden the sky ahead and blue the wake. Abeam the nose is `(1, 0, 0)`, so that
 dot product is `pos[0]` to the bit.
+
+And **a star's range changes while it flies, so a step has two of them and the
+fold has to name which.** Carrying a folded trail across means turning a
+world-space jump into a screen-space one, which is a divide by the range — and
+the range it wants is the one `prev` was projected through, not the one the star
+ends the step at. `z_prev` is captured beside that projection for exactly this,
+and moving it below the depth travel puts the fault straight back. Abeam the two
+are the same bit for bit, so nothing showed there for as long as the camera was
+pinned; off the beam the trail lands out by `shift · focal · (1/z_new − 1/z_old)`
+along one camera axis, `streaks` multiplies it by six at full warp, and the sky
+grows a lattice of long faint streaks lying across the flow.
+`a_trail_carried_over_the_fold_is_scaled_by_the_range_it_was_drawn_at` is the
+guard, and it is a property over the whole pool rather than a reference frame —
+`orbit.txt` had the fault recorded *in* it, which is what a pinned frame does
+with anything nobody has looked at.
 
 The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
 `Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with

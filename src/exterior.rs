@@ -14,6 +14,14 @@
 //! rather than the distance down the nose. Travel therefore never changes a
 //! star's depth — which means a star that runs off the trailing edge has not
 //! flown past anything, and belongs back out in front at the range it had.
+//!
+//! All of which is the camera *abeam*, which is where this was written and is
+//! no longer where it has to stay. Swing it and travel picks up a depth
+//! component: a star's range changes as it flies, the trailing edge stops being
+//! the only way out of the band, and anything here that turns a distance into a
+//! size on the screen has to say which of a step's two ranges it means. That
+//! last one is the fold's arithmetic below, and getting it wrong is visible —
+//! as a lattice of streaks lying across the flow rather than running with it.
 
 use crate::canvas::Canvas;
 use crate::lens::{Image, Lens};
@@ -255,6 +263,11 @@ impl ExteriorField {
         let mut stars = std::mem::take(&mut self.stars);
         for star in &mut stars {
             star.prev = cam.project(star.pos);
+            // The range `prev` was projected through, kept because the fold
+            // below has to undo that projection and cannot use the range the
+            // star ends the step at. Taken here rather than three lines down so
+            // it is the depth of the point `prev` actually is, swing included.
+            let z_prev = star.pos[2];
 
             // The trail is deliberately left where it was. A camera that is
             // being swung really does smear what it sweeps past, and at the
@@ -309,7 +322,7 @@ impl ExteriorField {
             // between streaks and dots reads as static rather than as speed.
             if shift != 0.0 {
                 if let Some(p) = &mut star.prev {
-                    let d = shift * focal / z;
+                    let d = shift * focal / z_prev;
                     p.0 += d * bank_cos;
                     p.1 += d * bank_sin;
                 }
@@ -332,7 +345,7 @@ impl ExteriorField {
                 star.pos[1] = folded;
                 if shift != 0.0 {
                     if let Some(p) = &mut star.prev {
-                        let d = shift * focal / z;
+                        let d = shift * focal / z_prev;
                         p.0 -= d * bank_sin;
                         p.1 += d * bank_cos;
                     }
@@ -798,6 +811,77 @@ mod tests {
             points, 0,
             "{points} of {drawn} stars came back without the streak they swept"
         );
+    }
+
+    #[test]
+    fn a_trail_carried_over_the_fold_is_scaled_by_the_range_it_was_drawn_at() {
+        // The bug this is here for: the fold turns a world-space jump into a
+        // screen-space one by dividing by the star's range, and it was dividing
+        // by the range the star *ends* the step at, where `prev` had been
+        // projected through the range it *started* it at. Abeam that is not a
+        // bug at all — travel is exactly (-1, 0, 0), so the two ranges are the
+        // same bit for bit — which is why every reference frame but the orbited
+        // one was blind to it, and why the shot on the README's front page had
+        // a lattice of streaks lying across the flow instead of running with
+        // it. Off the beam the trail landed short or long by
+        // `shift · focal · (1/z_new − 1/z_old)`, along the camera's own x for
+        // the sideways fold and y for the vertical one, and `streaks` then
+        // multiplied the whole thing by six at full warp.
+        //
+        // The invariant is stronger than the fold and covers the whole pool: a
+        // star's trail is where it was one step back along the track, whether
+        // it folded, crossed a wall, or simply flew. Measured on `prev` rather
+        // than on a `Streak` so it is one per star in order, and at the ranges
+        // and angles that actually differ.
+        let cam = cam();
+        let orbits = [
+            Orbit::LEVEL,
+            Orbit {
+                azimuth: 0.96,
+                elevation: 0.61,
+                roll: 0.35,
+            },
+            Orbit {
+                azimuth: 4.28,
+                elevation: 0.52,
+                roll: 0.0,
+            },
+            Orbit {
+                azimuth: 1.4,
+                elevation: -0.9,
+                roll: 2.7,
+            },
+        ];
+        let mut checked = 0usize;
+        for orbit in orbits {
+            let travel = orbit.sky_travel();
+            for speed in [40.0, crate::ship::WARP_MAX] {
+                let step = speed / 120.0;
+                let mut field = ExteriorField::new(500, 23, &cam, orbit);
+                for _ in 0..90 {
+                    field.update(1.0 / 120.0, speed, &cam, orbit);
+                    for (i, star) in field.stars.iter().enumerate() {
+                        let Some(prev) = star.prev else { continue };
+                        let was = [
+                            star.pos[0] - travel[0] * step,
+                            star.pos[1] - travel[1] * step,
+                            star.pos[2] - travel[2] * step,
+                        ];
+                        let Some(want) = cam.project(was) else {
+                            continue;
+                        };
+                        checked += 1;
+                        let off = crate::canvas::length_of(prev.0 - want.0, prev.1 - want.1);
+                        assert!(
+                            off < 0.05,
+                            "star {i} trails from {prev:?} where it swept from \
+                             {want:?}, {off} subpixels out"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "only {checked} trails were looked at");
     }
 
     #[test]
