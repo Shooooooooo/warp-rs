@@ -59,8 +59,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 276 unit + 7 flight + 3 golden, ~11s
-cargo test --locked --all-features      # 277 unit — adds the snapshot-gated one
+cargo test                              # 278 unit + 7 flight + 3 golden, ~14s
+cargo test --locked --all-features      # 279 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -498,13 +498,15 @@ take the sky with it or the control is a barrel roll wearing new keys —
 picks the case that makes it sharp, lifting the camera at zero azimuth, where
 the *flow direction* does not change at all.
 
-The band therefore has three fast paths that are switched **off** rather than
-reduced to identities, and all three are exact at `Orbit::LEVEL`. The pool is
+The band therefore has four fast paths that are switched **off** rather than
+reduced to identities, and all four are exact at `Orbit::LEVEL`. The pool is
 turned only when `orbit != self.orbit` — compared, not composed with an
 identity, because the angles are unchanged bit for bit when nothing moved them.
 Depth travel runs only when `travel[2] != 0.0`, and the vertical fold only when
 depth or height moved, because `fold` is *not* an exact identity for a value
-already inside its band and the level shot is exactly where `y` never moves.
+already inside its band and the level shot is exactly where `y` never moves. The
+fourth is the relocation described two paragraphs down, gated on `turns_z`, and
+it is the one that would move `side.txt` if the gate were ever widened.
 Off the beam three things the band was written never to face come alive. Stars
 cross the near and far walls and have to be respawned, and a respawn is handed
 the trail it *would* have had, one step back along the track — without that, at
@@ -551,6 +553,54 @@ runs toward the eye and its projection diverges rather than converging; and the
 gate is `stretch > 1.0`, which is a hard identity at sublight. That is why not
 one reference hash moved for it — and why the reference grew `astern.txt`, since
 the case those three exclusions leave is exactly what nothing was watching.
+
+**The fold is the right boundary for a translation and no boundary at all for a
+scale, and a change of range is a scale.** A star's place in the frame is
+`focal · pos / z`, so a step that moves its range does not slide it across the
+band — it magnifies it about the middle of the frame, by `z_before / z_after`.
+Wrapping says nothing about that, and the two directions fail differently:
+contracting, the band widens away from a pool shrinking inside it and nothing
+refills the frame edges; expanding, a star is put back on the very edge it was
+just carried over and the next step carries it over again, so the pool piles
+into the off-screen margin and the middle drains. Two seconds of holding `A` or
+`D` emptied the top and bottom of the frame and left a bar of stars across the
+middle — 45 to 1 across the frame against an abeam baseline of 1.3, or three
+quarters of the pool off screen on the other side of the beam. `update` now puts
+the scale's own share back by hand: `1 − λ²` of each range shell onto the rim a
+contraction vacates, and whatever an expansion carried out scattered over the
+whole band. Both are exactly the density the shell started with rather than an
+approximation of it, both are relocations of stars already in the pool so the
+count is self-balancing, and `1 − λ` per axis is the natural mistake — it
+double-counts the corners and comes out nearly twice too small.
+`a_range_change_leaves_the_shell_as_evenly_spread_as_it_found_it` pins the rates
+and the shape on a single shell, and
+`the_sky_is_as_even_off_the_beam_as_it_is_abeam` is the acceptance test over a
+flight.
+
+**What that fix does not reach, and it is written down because it looks like the
+same thing.** A swing scales the frame too — a rigid turn of the sky is
+area-preserving on the sphere, so it scales screen area by the *cube* of its
+range ratio, with the extra factor landing on whichever axis the camera turned
+across. That scale is neither uniform over the frame nor equal on the two axes,
+so the deficit it leaves is spread over the leading half rather than standing on
+the rim, and the relocation above puts stars in the wrong place for it. What
+survives is a left-to-right gradient of about 3.5 to 1 *while a key is actually
+down*, gone within a step of letting go, with the frame still even top to bottom
+— which is why the guard holds the bands tightly and the frame loosely there.
+Both the exact anisotropic rate and a uniform placement were tried and both made
+it worse: a larger correction placed symmetrically is worse than a smaller one.
+Putting it right means placing by the deficit profile, which is its own change
+and its own measurement.
+
+Two more things about the recycle. A star crossing a depth wall comes back
+just inside the wall the flow is *entering* through — `Reentry::Wall`, which is
+the fold in `z` written in distribution — because seeding it anywhere in the
+band turns a one-way flow into a linear ramp in the count per unit range,
+measured at seven to one at 45 degrees off the beam against 1.04 abeam. And
+`starfield::DepthRule` answers the same question with the far plane alone and is
+right to: the cockpit has one flow regime for the life of the program, where the
+band's regime is a camera control, so seeding one end out here would make the
+sky's character a function of where the eye is parked. **Do not unify the two.**
 
 The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
 `Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with

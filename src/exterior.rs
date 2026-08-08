@@ -22,6 +22,23 @@
 //! size on the screen has to say which of a step's two ranges it means. That
 //! last one is the fold's arithmetic below, and getting it wrong is visible —
 //! as a lattice of streaks lying across the flow rather than running with it.
+//!
+//! The deeper consequence of that swing, and the one the fold cannot answer on
+//! its own. A star's place in the frame is `focal · pos / z`, so a step that
+//! moves its range does not translate it across the band — it *scales* it about
+//! the middle of the frame. Wrapping is exactly right for a translation and
+//! says nothing at all about a scale, so left to the fold the sky falls in on
+//! itself: contracting, the band widens away from a pool shrinking inside it
+//! and nothing refills the frame edges; expanding, a star is put back on the
+//! very edge it was carried over and the next step carries it over again, so
+//! the pool piles into the off-screen margin and the middle drains. Two seconds
+//! of holding the camera round was enough to empty the top and bottom of the
+//! frame and leave a bar of stars across the middle. So `update` puts the
+//! scale's own share of the pool back by hand — on the rim a contraction
+//! vacates, scattered over the band when an expansion carries one out — and
+//! seats a wall crossing just inside the wall the flow is entering through
+//! rather than anywhere in the band. All of it is switched off, not reduced to
+//! an identity, wherever the range is still.
 
 use crate::canvas::Canvas;
 use crate::lens::{Image, Lens};
@@ -76,6 +93,42 @@ const MAX_ARCS: usize = 24;
 /// is left of it lands in an invisible pile at the centre.
 const FAINTEST_COUNTER_IMAGE: f32 = 0.03;
 
+/// Thinnest a re-entry sliver may be, as a fraction of the band's depth.
+///
+/// The sliver is how far the flow carries a star in one step, so at a crawl it
+/// is a rounding error and at a standstill it is nothing at all —
+/// `random_range` panics on an empty range, and at `Z_NEAR` an addition of
+/// `f32::MIN_POSITIVE` is not even a different number. A floor a thousandth of
+/// the band deep costs nothing at any speed that can be seen and cannot
+/// degenerate.
+const THINNEST_SLIVER: f32 = 0.001;
+
+/// Where a star put back into the band comes in.
+///
+/// [`Reentry::Wall`] is the flow's own answer: a star that crossed a wall
+/// overshot it by somewhere in the distance the flow covers in a step, so
+/// putting it back that far inside the *opposite* wall is the fold in `z`,
+/// spelled out in distribution rather than in arithmetic. It keeps the count
+/// per unit range flat, where seeding through the whole band turns a one-way
+/// flow into a linear ramp — measured at seven to one with the camera forty
+/// five degrees off the beam, against 1.04 abeam.
+///
+/// [`crate::starfield::StarField`] answers the same question with the far
+/// plane alone and is right to: the cockpit has one flow regime for the life of
+/// the program, so a steady state weighted toward the far wall is simply what
+/// its sky looks like. Out here the regime is a *camera control* — swing one
+/// way and the sky recedes, the other and it closes — so a rule that seeds one
+/// end would make the sky's whole character a function of where the eye is
+/// parked, and panning would repaint it. Do not unify the two.
+#[derive(Debug, Clone, Copy)]
+enum Reentry {
+    /// Anywhere in the band. What a fresh pool is laid out with, and what a
+    /// wall crossing gets when nothing is carrying the star through it.
+    Anywhere,
+    /// Just inside the wall the flow is coming from.
+    Wall(f32, f32),
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Star {
     /// In the side camera's space: `x` runs along the ship's track, `y` is
@@ -103,6 +156,16 @@ pub struct ExteriorField {
     /// because [`Self::streaks`] takes `&self` and the Doppler is measured
     /// against the direction of travel rather than against the frame.
     nose: [f32; 3],
+    /// How much of the rim a contracting step has vacated and not yet had a
+    /// star put back into, in stars.
+    ///
+    /// Carried across steps so the relocation rate over the pool is exactly the
+    /// `1 - lambda^2` the arithmetic asks for, rather than a coin flipped per
+    /// star: the decision then costs no random number at all and only the
+    /// destination draws one. Which body it falls to does not matter — a
+    /// relocation moves a star and changes nothing else about it, and they are
+    /// interchangeable — so a fixed starting phase is enough.
+    rim_owed: f32,
     /// Scratch for bending a streak, reused across every star of every frame.
     source: Vec<(f32, f32)>,
     bent: Vec<(f32, f32)>,
@@ -121,11 +184,12 @@ impl ExteriorField {
             focal: cam.focal.max(f32::MIN_POSITIVE),
             orbit: orbit.held(),
             nose: orbit.held().nose_in_camera(),
+            rim_owed: 1.0,
             source: Vec::with_capacity(MAX_ARCS + 1),
             bent: Vec::with_capacity(MAX_ARCS + 1),
         };
         for _ in 0..count {
-            let star = field.spawn();
+            let star = field.spawn(Reentry::Anywhere);
             field.stars.push(star);
         }
         field
@@ -164,7 +228,7 @@ impl ExteriorField {
             self.stars.pop();
         }
         while self.stars.len() < count {
-            let star = self.spawn();
+            let star = self.spawn(Reentry::Anywhere);
             self.stars.push(star);
         }
     }
@@ -173,8 +237,11 @@ impl ExteriorField {
     /// screen and back-projected through the range, which keeps apparent
     /// density even at every distance: sampling a world-space volume instead
     /// would crowd the far wall and starve the near one.
-    fn spawn(&mut self) -> Star {
-        let z = self.rng.random_range(Z_NEAR..Z_FAR);
+    fn spawn(&mut self, reentry: Reentry) -> Star {
+        let z = match reentry {
+            Reentry::Anywhere => self.rng.random_range(Z_NEAR..Z_FAR),
+            Reentry::Wall(lo, hi) => self.rng.random_range(lo..hi),
+        };
         let (hw, hh) = self.bound;
         let (sx, sy) = (
             self.rng.random_range(-hw..hw),
@@ -189,6 +256,39 @@ impl ExteriorField {
             class: self.pick_class(),
             magnitude: MAGNITUDE_FLOOR + (1.0 - MAGNITUDE_FLOOR) * u * u * u,
             phase: self.rng.random_range(0.0..TAU),
+        }
+    }
+
+    /// Somewhere uniform across the whole band at the range `z`, in the world
+    /// units the pool is kept in. `spawn`'s two screen draws and its
+    /// back-projection, without touching anything else about the star.
+    fn relocate_uniform(&mut self, z: f32) -> (f32, f32) {
+        let (hw, hh) = self.bound;
+        let (sx, sy) = (
+            self.rng.random_range(-hw..hw),
+            self.rng.random_range(-hh..hh),
+        );
+        let scale = z / self.focal;
+        (sx * scale, sy * scale)
+    }
+
+    /// Somewhere uniform *by area* on the rim a contraction has just vacated:
+    /// the frame between `lambda` of the band and the band itself, at the range
+    /// the star ends the step at.
+    ///
+    /// Split into the two kinds of slab and picked by the share of the rim each
+    /// pair covers rather than by rejection, so the cost is three draws and no
+    /// loop however thin the rim gets. The left and right slabs are the band's
+    /// full height and so hold `1 / (1 + lambda)` of it between them.
+    fn relocate_rim(&mut self, bx: f32, by: f32, lambda: f32) -> (f32, f32) {
+        let pick: f32 = self.rng.random_range(0.0..1.0);
+        let along: f32 = self.rng.random_range(-1.0..1.0);
+        let out: f32 = self.rng.random_range(-1.0..1.0);
+        let edge = (lambda + (1.0 - lambda) * out.abs()) * out.signum();
+        if pick * (1.0 + lambda) < 1.0 {
+            (bx * edge, by * along)
+        } else {
+            (bx * lambda * along, by * edge)
         }
     }
 
@@ -260,6 +360,20 @@ impl ExteriorField {
         let turns_z = swing.is_some() || travel[2] != 0.0;
         let turns_y = turns_z || travel[1] != 0.0;
 
+        // Where a star crossing a wall comes back in. A step that moves no
+        // range cannot put one through a wall in the first place, so the
+        // `Anywhere` arm is only ever reached by a swing that turned one out —
+        // which has no direction of flow to come back along.
+        let reentry = if travel[2] > 0.0 {
+            let sliver = (travel[2] * step).max((Z_FAR - Z_NEAR) * THINNEST_SLIVER);
+            Reentry::Wall(Z_NEAR, Z_NEAR + sliver)
+        } else if travel[2] < 0.0 {
+            let sliver = (-travel[2] * step).max((Z_FAR - Z_NEAR) * THINNEST_SLIVER);
+            Reentry::Wall(Z_FAR - sliver, Z_FAR)
+        } else {
+            Reentry::Anywhere
+        };
+
         let mut stars = std::mem::take(&mut self.stars);
         for star in &mut stars {
             star.prev = cam.project(star.pos);
@@ -267,7 +381,14 @@ impl ExteriorField {
             // below has to undo that projection and cannot use the range the
             // star ends the step at. Taken here rather than three lines down so
             // it is the depth of the point `prev` actually is, swing included.
-            let z_prev = star.pos[2];
+            //
+            // The whole position is kept, not only that range, and the other
+            // two components are wanted for a different question: whether the
+            // step's *scale* carried the star out of the band, which has to be
+            // asked of where it started because a swing translates it as well.
+            // Moving this line breaks both at once.
+            let before = star.pos;
+            let z_prev = before[2];
 
             // The trail is deliberately left where it was. A camera that is
             // being swung really does smear what it sweeps past, and at the
@@ -288,7 +409,7 @@ impl ExteriorField {
             // deep against a fold width of a few tens, so a star crosses it in
             // seconds where it wraps round in `x` several times a second.
             if turns_z && !(Z_NEAR..Z_FAR).contains(&star.pos[2]) {
-                *star = self.spawn();
+                *star = self.spawn(reentry);
                 // Given the trail it would have had. Without this a recycled
                 // star draws a bare point on its first frame, and off the beam
                 // at full warp two to four percent of the pool recycles every
@@ -305,11 +426,71 @@ impl ExteriorField {
                 continue;
             }
 
+            let z = star.pos[2];
+
+            // A star's place in the frame is `focal * pos / z`, so anything
+            // that moves its range scales that place. The fold below is the
+            // right answer for the *translation* that comes after it and no
+            // answer at all for a scale, which is the whole of the bug:
+            // contracting, the band widens away from a pool shrinking inside
+            // it and nothing refills the frame edges; expanding, the fold puts
+            // a star back on the very edge it was carried over and the next
+            // step carries it over again, which piles the sky into the margin
+            // and drains the middle. Neither can happen while the range is
+            // still, which is why this is `turns_z` and why the shot the
+            // reference frames are recorded from never reaches it.
+            let mut relocated = false;
+            if turns_z {
+                // Both bands, and deliberately not hoisted out to join the
+                // fold's: on the pinned path `turns_y` is false and the half
+                // height is never computed at all.
+                let bx = band(half_width, focal, z);
+                let by = band(half_height, focal, z);
+                let lambda = z_prev / z;
+                if lambda < 1.0 {
+                    // A uniform shell comes out uniform on `lambda` of the
+                    // band at `1 / lambda^2` of the density, so putting
+                    // `1 - lambda^2` of it back on the rim that leaves is not
+                    // an approximation of the right answer but the right
+                    // answer. Spent from a running total rather than rolled
+                    // for per star, so the rate over the pool is the
+                    // arithmetic itself and the decision costs no draw.
+                    self.rim_owed -= 1.0 - lambda * lambda;
+                    if self.rim_owed <= 0.0 {
+                        self.rim_owed += 1.0;
+                        (star.pos[0], star.pos[1]) = self.relocate_rim(bx, by, lambda);
+                        relocated = true;
+                    }
+                } else if before[0].abs() >= bx || before[1].abs() >= by {
+                    // Expanding, and the scale alone has carried this one out.
+                    // Asked of where the star started rather than where it now
+                    // is, which is the same question while only the range is
+                    // moving and a different one under a swing: a swing slides
+                    // the whole frame along as well, and a star carried over
+                    // the edge by *that* has been panned past rather than
+                    // magnified past, and belongs to the fold. Answering it
+                    // from the new position instead leaks stars off the
+                    // leading edge into a uniform scatter, which reads as the
+                    // sky thinning on the side the camera is turning toward.
+                    //
+                    // Comparing against the band at the range the star ends
+                    // at is what makes the two the same test when nothing
+                    // swung: the old band scaled by `lambda` is the new band.
+                    //
+                    // What is still inside is `1 / lambda^2` of the shell, so
+                    // scattering what went over across the whole
+                    // band — rather than wrapping it onto the edge it just
+                    // crossed, where the next step carries it over again —
+                    // comes back to the density it started with, exactly.
+                    (star.pos[0], star.pos[1]) = self.relocate_uniform(z);
+                    relocated = true;
+                }
+            }
+
             // Range never changes when the camera is abeam — travel is along
             // the track — so the only way out of the band is off the trailing
             // edge, and the honest place for a star the ship has just overtaken
             // is back out in front at the range it already had.
-            let z = star.pos[2];
             let (folded, shift) = fold(star.pos[0] + travel[0] * step, band(half_width, focal, z));
             star.pos[0] = folded;
 
@@ -328,28 +509,41 @@ impl ExteriorField {
                 }
             }
 
-            if !turns_y {
-                continue;
-            }
-            star.pos[1] += travel[1] * step;
-            // Folded only when it has actually gone over the edge, where `x`
-            // above is folded every frame regardless. The asymmetry is on
-            // purpose and is not a tidying opportunity: `fold` is not an exact
-            // identity for a value already inside its band, so folding a `y`
-            // that never moves would round it, and the shot the reference
-            // frames are recorded from is exactly the shot where it never
-            // moves.
-            let half = band(half_height, focal, z);
-            if star.pos[1] < -half || star.pos[1] >= half {
-                let (folded, shift) = fold(star.pos[1], half);
-                star.pos[1] = folded;
-                if shift != 0.0 {
-                    if let Some(p) = &mut star.prev {
-                        let d = shift * focal / z_prev;
-                        p.0 -= d * bank_sin;
-                        p.1 += d * bank_cos;
+            if turns_y {
+                star.pos[1] += travel[1] * step;
+                // Folded only when it has actually gone over the edge, where
+                // `x` above is folded every frame regardless. The asymmetry is
+                // on purpose and is not a tidying opportunity: `fold` is not an
+                // exact identity for a value already inside its band, so
+                // folding a `y` that never moves would round it, and the shot
+                // the reference frames are recorded from is exactly the shot
+                // where it never moves.
+                let half = band(half_height, focal, z);
+                if star.pos[1] < -half || star.pos[1] >= half {
+                    let (folded, shift) = fold(star.pos[1], half);
+                    star.pos[1] = folded;
+                    if shift != 0.0 {
+                        if let Some(p) = &mut star.prev {
+                            let d = shift * focal / z_prev;
+                            p.0 -= d * bank_sin;
+                            p.1 += d * bank_cos;
+                        }
                     }
                 }
+            }
+
+            // A relocated star did not travel to where it is, so it is handed
+            // the trail it would have had — the same answer the wall recycle
+            // gives, for the same reason. Last rather than beside the move,
+            // because the fold above may have carried a shift into `prev` and
+            // that shift belongs to a star that folded, which this one did not.
+            if relocated {
+                let was = [
+                    star.pos[0] - travel[0] * step,
+                    star.pos[1] - travel[1] * step,
+                    star.pos[2] - travel[2] * step,
+                ];
+                star.prev = cam.project(was);
             }
         }
         self.stars = stars;
@@ -1392,8 +1586,15 @@ mod tests {
         }
     }
 
-    /// How evenly the pool covers the frame, as the ratio of the fullest patch
-    /// of sky to the emptiest, and what share of it is on screen at all.
+    /// How evenly the pool covers the frame: the fullest patch of sky over the
+    /// emptiest, the fullest *band* of sky over the emptiest, and what share of
+    /// the pool is on screen at all.
+    ///
+    /// The bands are the patches summed across, and they are worth their own
+    /// number rather than being covered by the patches: the fault this was
+    /// written for empties the top and bottom of the frame and leaves the
+    /// middle, so it is the bands it shows up in first and hardest, and it is
+    /// the bands that say whether it has come back.
     ///
     /// Measured on the pool rather than on a rendered frame on purpose. A
     /// frame carries the streak lengths, the vignette, the lens glow and the
@@ -1401,7 +1602,7 @@ mod tests {
     /// moves too — so a count of lit cells cannot say whether the stars went
     /// away or merely stopped smearing. Projecting the pool asks the one
     /// question.
-    fn evenness(field: &ExteriorField, cam: &Camera) -> (f32, f32) {
+    fn evenness(field: &ExteriorField, cam: &Camera) -> (f32, f32, f32) {
         const COLS: usize = 6;
         const ROWS: usize = 4;
         let mut grid = [0usize; COLS * ROWS];
@@ -1416,14 +1617,128 @@ mod tests {
             let r = ((y / cam.height * ROWS as f32) as usize).min(ROWS - 1);
             grid[r * COLS + c] += 1;
         }
-        let (lo, hi) = grid
-            .iter()
-            .fold((usize::MAX, 0), |(l, h), &v| (l.min(v), h.max(v)));
+        let ratio = |(lo, hi): (usize, usize)| hi as f32 / lo.max(1) as f32;
+        let span = |acc: (usize, usize), v: usize| (acc.0.min(v), acc.1.max(v));
+
+        let patches = grid.iter().fold((usize::MAX, 0), |a, &v| span(a, v));
+        let bands = grid
+            .chunks_exact(COLS)
+            .map(|row| row.iter().sum::<usize>())
+            .fold((usize::MAX, 0), span);
         let on: usize = grid.iter().sum();
         (
-            hi as f32 / lo.max(1) as f32,
+            ratio(patches),
+            ratio(bands),
             on as f32 / field.stars.len() as f32,
         )
+    }
+
+    /// A range change leaves a shell as evenly spread as it found it.
+    ///
+    /// The sharp statement of what the relocation in `update` is for, where
+    /// `the_sky_is_as_even_off_the_beam_as_it_is_abeam` is the acceptance test
+    /// over a whole flight. The whole pool is put on one range shell, spread
+    /// evenly across the frame, and stepped once with the camera dead ahead so
+    /// that travel is purely along the view axis: nothing translates, the fold
+    /// cannot fire, and the only thing acting is the scale.
+    ///
+    /// It pins the two rates, which are the part most easily got wrong — the
+    /// natural mistake is `1 - lambda` per axis, which double-counts the
+    /// corners and comes out nearly twice too large — and it pins the shape
+    /// they are put back in, by checking the spread afterwards rather than
+    /// only the count.
+    #[test]
+    fn a_range_change_leaves_the_shell_as_evenly_spread_as_it_found_it() {
+        const POOL: usize = 20_000;
+        // A near shell and a fast step, so the scale is a fifth rather than a
+        // few percent: `1 - lambda` and `1 - lambda^2` are then far enough
+        // apart that the tolerance below can tell them apart, which is the
+        // whole reason this test exists.
+        const AT: f32 = 40.0;
+        const SPEED: f32 = 600.0;
+        const DT: f32 = 1.0 / 120.0;
+        let cam = cam();
+        let quarter = std::f32::consts::FRAC_PI_2;
+
+        // Dead ahead and dead astern: `sky_travel` is `(0, 0, ±1)` at both, to
+        // the bit, so `travel[0]` cannot move a star sideways.
+        for azimuth in [quarter, -quarter] {
+            let orbit = Orbit {
+                azimuth,
+                elevation: 0.0,
+                roll: 0.0,
+            };
+            let mut field = ExteriorField::new(POOL, 4, &cam, orbit);
+            for star in &mut field.stars {
+                star.pos[2] = AT;
+            }
+            let (hw, hh) = field.bound;
+            let focal = field.focal;
+            // Spread evenly over the band, in screen units, which is the
+            // measure `spawn` lays a fresh pool out in, then back-projected
+            // the way `spawn` back-projects it.
+            let scale = AT / focal;
+            let placed: Vec<(f32, f32)> = (0..POOL)
+                .map(|_| {
+                    (
+                        field.rng.random_range(-hw..hw) * scale,
+                        field.rng.random_range(-hh..hh) * scale,
+                    )
+                })
+                .collect();
+            for (star, &(x, y)) in field.stars.iter_mut().zip(&placed) {
+                star.pos[0] = x;
+                star.pos[1] = y;
+            }
+
+            field.update(DT, SPEED, &cam, orbit);
+            let moved = SPEED * DT * azimuth.sin().signum();
+            let lambda = AT / (AT + moved);
+            let expected = if lambda < 1.0 {
+                1.0 - lambda * lambda
+            } else {
+                1.0 - 1.0 / (lambda * lambda)
+            };
+
+            let mut relocated = 0usize;
+            let mut inside = [0usize; 3];
+            for (star, &(x, y)) in field.stars.iter().zip(&placed) {
+                // Nothing but a relocation moves a star across the band on
+                // this path: the range travel leaves both of these alone and
+                // the fold's own shift is a rounding.
+                if (star.pos[0] - x).abs() > 0.01 || (star.pos[1] - y).abs() > 0.01 {
+                    relocated += 1;
+                }
+                // How far out it sits, as a fraction of the band in the
+                // max norm — the coordinate a uniform square is uniform in.
+                let now = star.pos[2] / focal;
+                let out = (star.pos[0] / (now * hw))
+                    .abs()
+                    .max((star.pos[1] / (now * hh)).abs());
+                for (i, edge) in [0.25f32, 0.5, 0.75].iter().enumerate() {
+                    if out <= *edge {
+                        inside[i] += 1;
+                    }
+                }
+            }
+
+            let share = relocated as f32 / POOL as f32;
+            assert!(
+                (share - expected).abs() < 0.02,
+                "a step at azimuth {azimuth} relocated {share:.3} of the shell \
+                 where the scale of {lambda:.4} asks for {expected:.3}"
+            );
+            for (i, edge) in [0.25f32, 0.5, 0.75].iter().enumerate() {
+                let got = inside[i] as f32 / POOL as f32;
+                let want = edge * edge;
+                assert!(
+                    (got - want).abs() < 0.02,
+                    "after a step at azimuth {azimuth} the shell has {got:.3} \
+                     of itself inside {edge} of the band, where an even one \
+                     has {want:.3} — the stars went back in the wrong shape"
+                );
+            }
+        }
     }
 
     /// The orbit a held camera key produces, one sim step at a time: the target
@@ -1443,69 +1758,72 @@ mod tests {
         .held()
     }
 
-    /// The sky has to be as even off the beam as it is abeam.
+    /// The sky is as even off the beam as it is abeam.
     ///
-    /// It is not, and this is the guard for it. The band is held inside a
-    /// range-scaled screen frustum by folding `x` and `y` modulo
-    /// `band(half, focal, z)`, which keeps every star's *screen* position
-    /// inside the frame but says nothing about how the pool is spread across
-    /// it. Two things move that spread and nothing puts it back:
+    /// The regression test for the fault the relocation in `update` exists for.
+    /// The band is held inside a range-scaled screen frustum by folding `x` and
+    /// `y` modulo `band(half, focal, z)`, which is the right answer for the
+    /// *translation* the flow applies and no answer at all for the *scale* that
+    /// any change of range applies alongside it — a star's place in the frame
+    /// being `focal * pos / z`. Left alone that emptied the top and bottom of
+    /// the frame and left a bar of stars across the middle, which is what a
+    /// couple of seconds on `A` or `D` used to produce and what this holds.
     ///
-    /// The range travel. A star's screen position is `focal * pos / z`, and
-    /// `travel[2]` moves `z` while leaving `pos[0]` and `pos[1]` alone, so
-    /// every star's screen position is multiplied by `z_before / z_after`
-    /// every step. Range growing contracts the whole sky toward the vanishing
-    /// point and the fold never fires, because the band widens faster than the
-    /// star moves — so the frame edges empty. Range shrinking expands it, the
-    /// fold wraps a star off one edge onto the other, and it heads straight
-    /// back out — so the pool piles into the margin and the middle drains.
+    /// Measured before the fix, at the settings below and against an abeam
+    /// baseline of 1.30 over six seeds: parked at 45 degrees the sky was 25 to
+    /// 1 across the frame, at 135 it was 27, and with a key held it reached 45
+    /// and went on climbing. On the other side of the beam it wore the other
+    /// face — the frame stayed smooth at about 1.5 while three quarters of the
+    /// pool piled into the off-screen margin — which is why this measures
+    /// coverage as well as spread. Every one of those is now inside the
+    /// baseline's own scatter.
     ///
-    /// The pool rotation, which has its own half of it and needs no travel at
-    /// all. Turning the camera by `theta` about its own down axis maps a star
-    /// at screen `(u, v)`, in focal lengths, to
-    /// `((u + t) / (1 - u t), v sec(theta) / (1 - u t))` with `t = tan(theta)`.
-    /// That is honest perspective — a star high in the frame really does climb
-    /// as it sweeps toward the edge — but the `u`-correlated part averages out
-    /// over a sweep and the `sec(theta)` does not, so `v` walks outward until
-    /// it reaches the fold, which sends it to the far edge to start outward
-    /// again. The mean cannot show it, because the fold bounds it; the pile at
-    /// both edges can, and does.
+    /// **What is not fixed, and is asserted loosely on purpose.** While a key
+    /// is actually down the frame still carries a left-to-right gradient, 3.5
+    /// to 1 at its worst. It is not the reported fault and not the same shape:
+    /// the *bands* stay flat, so the sky is even top to bottom and merely
+    /// leans toward the side the camera is turning away from, and it is gone
+    /// within a step of letting go. It is what is left of the swing, whose
+    /// scale is neither uniform across the frame nor the same on both axes —
+    /// a pan stretches the frame sideways by the square of the range ratio
+    /// where it stretches it vertically by the ratio itself, and the deficit
+    /// that leaves is spread over the leading half of the frame rather than
+    /// standing on the rim. Putting it right needs the relocation to place by
+    /// that profile instead of on the rim, which is a change of its own with
+    /// its own measurement; both were tried here and both made the gradient
+    /// worse, because a bigger correction placed symmetrically is worse than a
+    /// smaller one. So the bands are held tightly, the frame loosely, and the
+    /// loose bound is a ratchet against the 45 it came from rather than a
+    /// statement that this is right.
     ///
-    /// Measured on this tree at the settings below, against an abeam baseline
-    /// of 1.30 over six seeds: parked at 45 degrees the sky is 25 to 1 across
-    /// the frame, at 135 it is 27, and with a key held it reaches 45 and goes
-    /// on climbing for as long as the key is down. On the other side of the
-    /// beam it wears the other face — evenness stays near 1.5 while three
-    /// quarters of the pool piles into the margin and leaves the frame, which
-    /// is why this measures both. With the flow stopped dead the rotation on
-    /// its own still reaches 3 to 1 inside three seconds, with the pile at the
-    /// top and bottom of the band, and that is the half that lets go when the
-    /// key does.
-    ///
-    /// The reference frames cannot see any of it. `side.txt` and `warp.txt`
+    /// The reference frames cannot see any of this. `side.txt` and `warp.txt`
     /// are shot at [`Orbit::LEVEL`], where `travel[2]` is exactly zero, and
     /// `orbit.txt` is shot at `--throttle 1.0`, where one step is longer than
     /// the whole band so a star is recycled before it can drift anywhere.
     #[test]
-    #[ignore = "the sky collapses off the beam; this is the guard, not the fix"]
     fn the_sky_is_as_even_off_the_beam_as_it_is_abeam() {
         // Wide enough that a bin holds hundreds of stars, so the baseline is
         // set by the sky rather than by counting noise: 8000 stars over
-        // twenty-four bins is about 250 each, which measures 1.30 abeam over
-        // six seeds. A finer grid needs a bigger pool to say the same thing,
-        // and this runs on every `cargo test`.
+        // twenty-four bins is about 250 each, which measures 1.20 to 1.30
+        // abeam over six seeds. A finer grid needs a bigger pool to say the
+        // same thing, and this runs on every `cargo test`.
         const POOL: usize = 8_000;
         const EVEN: f32 = 2.0;
+        /// The residual gradient while a key is held, which is a ratchet on
+        /// the 45 to 1 this was written for rather than a target.
+        const EVEN_SWINGING: f32 = 4.5;
+        const BANDS_EVEN: f32 = 1.6;
         const ON_SCREEN: f32 = 0.65;
         // 10.8 c, which is where the report was shot, and slow enough that a
         // star takes a couple of hundred steps to cross the band. At full warp
-        // one step is longer than the band and nothing can accumulate.
+        // one step is longer than the band and nothing can accumulate, which
+        // is why the reference frame with the camera off the beam is recorded
+        // in the one regime where this cannot happen.
         const SPEED: f32 = 280.0;
         const DT: f32 = 1.0 / 120.0;
 
-        // Two and a half seconds. The collapse is well past a factor of ten
-        // by then and still climbing; the point of stopping here is that this
-        // runs on every `cargo test` and the fault does not need longer.
+        // Two and a half seconds, which is about what it took to report. The
+        // fault was well past a factor of ten by then and still climbing.
         const STEPS: usize = 300;
 
         let cam = cam();
@@ -1518,23 +1836,25 @@ mod tests {
         };
 
         // Abeam and dead astern are the two angles where `travel[2]` is
-        // exactly zero. They pass today, and are here to say the measurement
-        // is of the sky and not of the instrument.
+        // exactly zero, and the two the fault could never reach. They are here
+        // to say the measurement is of the sky and not of the instrument.
         let astern = Orbit {
             azimuth: std::f32::consts::PI,
             elevation: 0.0,
             roll: 0.0,
         };
         for orbit in [Orbit::LEVEL, astern] {
-            let (ratio, on) = parked(orbit);
+            let (patches, bands, on) = parked(orbit);
             assert!(
-                ratio <= EVEN && on >= ON_SCREEN,
+                patches <= EVEN && bands <= BANDS_EVEN && on >= ON_SCREEN,
                 "the sky went uneven at {orbit:?}, where nothing moves the \
-                 range: {ratio:.2} to 1 with {on:.2} of the pool on screen"
+                 range: {patches:.2} to 1 across the frame, {bands:.2} top to \
+                 bottom, {on:.2} of the pool on screen"
             );
         }
 
-        // Parked off the beam, which is where a pan leaves the camera.
+        // Parked off the beam, which is where a pan leaves the camera and
+        // where it spends every second the key is not down.
         for (az, el) in [
             (45.0f32, 0.0f32),
             (-45.0, 0.0),
@@ -1549,11 +1869,17 @@ mod tests {
                 elevation: el.to_radians(),
                 roll: 0.0,
             };
-            let (ratio, on) = parked(orbit);
+            let (patches, bands, on) = parked(orbit);
             assert!(
-                ratio <= EVEN,
-                "the sky is {ratio:.2} to 1 across the frame with the camera \
+                patches <= EVEN,
+                "the sky is {patches:.2} to 1 across the frame with the camera \
                  parked at {az}, {el} — abeam it is 1.3"
+            );
+            assert!(
+                bands <= BANDS_EVEN,
+                "the sky is {bands:.2} to 1 top to bottom with the camera \
+                 parked at {az}, {el} — this is the bar across the middle of \
+                 the frame, and abeam it is 1.05"
             );
             assert!(
                 on >= ON_SCREEN,
@@ -1565,7 +1891,7 @@ mod tests {
         // And with a key leaned on, which is how it was found: measured while
         // the camera is still swinging, and again once it has been let go, so
         // a fault that only lives in the rotation cannot hide behind one that
-        // only lives in the flow.
+        // only lives in the flow, or the other way about.
         for presses in [30.0f32, -30.0] {
             let mut field = ExteriorField::new(POOL, 1, &cam, Orbit::LEVEL);
             let (mut orbit, mut target) = (Orbit::LEVEL, Orbit::LEVEL);
@@ -1573,21 +1899,30 @@ mod tests {
                 orbit = leaned_on(orbit, &mut target, presses);
                 field.update(DT, SPEED, &cam, orbit);
             }
-            let (ratio, on) = evenness(&field, &cam);
+            let (patches, bands, on) = evenness(&field, &cam);
             assert!(
-                ratio <= EVEN && on >= ON_SCREEN,
-                "the sky is {ratio:.2} to 1 with the camera swinging at \
-                 {presses} presses a second, {on:.2} of it on screen"
+                bands <= BANDS_EVEN && on >= ON_SCREEN,
+                "the sky is {bands:.2} to 1 top to bottom with the camera \
+                 swinging at {presses} presses a second, {on:.2} of it on \
+                 screen — this is the reported fault, and it is the one thing \
+                 here that is not allowed back"
+            );
+            assert!(
+                patches <= EVEN_SWINGING,
+                "the sky is {patches:.2} to 1 across the frame with the camera \
+                 swinging at {presses} presses a second, against a residual of \
+                 3.5 and a baseline of 1.3"
             );
 
             for _ in 0..STEPS {
                 field.update(DT, SPEED, &cam, orbit);
             }
-            let (ratio, on) = evenness(&field, &cam);
+            let (patches, bands, on) = evenness(&field, &cam);
             assert!(
-                ratio <= EVEN && on >= ON_SCREEN,
-                "the sky is still {ratio:.2} to 1 long after the camera was \
-                 let go at {presses} presses a second, {on:.2} of it on screen"
+                patches <= EVEN && bands <= BANDS_EVEN && on >= ON_SCREEN,
+                "the sky is still {patches:.2} to 1 across the frame and \
+                 {bands:.2} top to bottom long after the camera was let go at \
+                 {presses} presses a second, {on:.2} of it on screen"
             );
         }
     }
