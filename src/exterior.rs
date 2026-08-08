@@ -790,6 +790,12 @@ mod tests {
         // walls and have to be put back. Every star has to stay inside all
         // three bounds afterwards, or the depth sorting the hull relies on
         // stops being true and the frame starts showing holes.
+        //
+        // Containment only. A pool collapsed onto the vanishing point passes
+        // this trivially, which is how the sky came to fall in on itself off
+        // the beam with every test in the module still green;
+        // `the_sky_is_as_even_off_the_beam_as_it_is_abeam` is the half that
+        // asks where in the band the stars actually are.
         let cam = Camera::new(120, 72);
         for (az, el, roll) in [
             (1.2f32, 0.0f32, 0.0f32),
@@ -1383,6 +1389,206 @@ mod tests {
                 .stars
                 .iter()
                 .all(|s| s.pos.iter().all(|c| c.is_finite())));
+        }
+    }
+
+    /// How evenly the pool covers the frame, as the ratio of the fullest patch
+    /// of sky to the emptiest, and what share of it is on screen at all.
+    ///
+    /// Measured on the pool rather than on a rendered frame on purpose. A
+    /// frame carries the streak lengths, the vignette, the lens glow and the
+    /// brightness ramp on top of the sky, and off the beam every one of those
+    /// moves too — so a count of lit cells cannot say whether the stars went
+    /// away or merely stopped smearing. Projecting the pool asks the one
+    /// question.
+    fn evenness(field: &ExteriorField, cam: &Camera) -> (f32, f32) {
+        const COLS: usize = 6;
+        const ROWS: usize = 4;
+        let mut grid = [0usize; COLS * ROWS];
+        for star in &field.stars {
+            let Some((x, y)) = cam.project(star.pos) else {
+                continue;
+            };
+            if x < 0.0 || x >= cam.width || y < 0.0 || y >= cam.height {
+                continue;
+            }
+            let c = ((x / cam.width * COLS as f32) as usize).min(COLS - 1);
+            let r = ((y / cam.height * ROWS as f32) as usize).min(ROWS - 1);
+            grid[r * COLS + c] += 1;
+        }
+        let (lo, hi) = grid
+            .iter()
+            .fold((usize::MAX, 0), |(l, h), &v| (l.min(v), h.max(v)));
+        let on: usize = grid.iter().sum();
+        (
+            hi as f32 / lo.max(1) as f32,
+            on as f32 / field.stars.len() as f32,
+        )
+    }
+
+    /// The orbit a held camera key produces, one sim step at a time: the target
+    /// runs on by [`crate::view::ORBIT_STEP`] per autorepeat press — about
+    /// thirty a second — and the eased value chases it exactly the way
+    /// `Flight::advance` does.
+    fn leaned_on(orbit: Orbit, target: &mut Orbit, presses_per_second: f32) -> Orbit {
+        const STEP: f32 = 1.0 / 120.0;
+        target.azimuth += presses_per_second * STEP * crate::view::ORBIT_STEP;
+        *target = target.held();
+        let ease = 1.0 - (-crate::view::ORBIT_EASE * STEP).exp();
+        Orbit {
+            azimuth: orbit.azimuth
+                + crate::ship::wrap_signed(target.azimuth - orbit.azimuth) * ease,
+            ..orbit
+        }
+        .held()
+    }
+
+    /// The sky has to be as even off the beam as it is abeam.
+    ///
+    /// It is not, and this is the guard for it. The band is held inside a
+    /// range-scaled screen frustum by folding `x` and `y` modulo
+    /// `band(half, focal, z)`, which keeps every star's *screen* position
+    /// inside the frame but says nothing about how the pool is spread across
+    /// it. Two things move that spread and nothing puts it back:
+    ///
+    /// The range travel. A star's screen position is `focal * pos / z`, and
+    /// `travel[2]` moves `z` while leaving `pos[0]` and `pos[1]` alone, so
+    /// every star's screen position is multiplied by `z_before / z_after`
+    /// every step. Range growing contracts the whole sky toward the vanishing
+    /// point and the fold never fires, because the band widens faster than the
+    /// star moves — so the frame edges empty. Range shrinking expands it, the
+    /// fold wraps a star off one edge onto the other, and it heads straight
+    /// back out — so the pool piles into the margin and the middle drains.
+    ///
+    /// The pool rotation, which has its own half of it and needs no travel at
+    /// all. Turning the camera by `theta` about its own down axis maps a star
+    /// at screen `(u, v)`, in focal lengths, to
+    /// `((u + t) / (1 - u t), v sec(theta) / (1 - u t))` with `t = tan(theta)`.
+    /// That is honest perspective — a star high in the frame really does climb
+    /// as it sweeps toward the edge — but the `u`-correlated part averages out
+    /// over a sweep and the `sec(theta)` does not, so `v` walks outward until
+    /// it reaches the fold, which sends it to the far edge to start outward
+    /// again. The mean cannot show it, because the fold bounds it; the pile at
+    /// both edges can, and does.
+    ///
+    /// Measured on this tree at the settings below, against an abeam baseline
+    /// of 1.30 over six seeds: parked at 45 degrees the sky is 25 to 1 across
+    /// the frame, at 135 it is 27, and with a key held it reaches 45 and goes
+    /// on climbing for as long as the key is down. On the other side of the
+    /// beam it wears the other face — evenness stays near 1.5 while three
+    /// quarters of the pool piles into the margin and leaves the frame, which
+    /// is why this measures both. With the flow stopped dead the rotation on
+    /// its own still reaches 3 to 1 inside three seconds, with the pile at the
+    /// top and bottom of the band, and that is the half that lets go when the
+    /// key does.
+    ///
+    /// The reference frames cannot see any of it. `side.txt` and `warp.txt`
+    /// are shot at [`Orbit::LEVEL`], where `travel[2]` is exactly zero, and
+    /// `orbit.txt` is shot at `--throttle 1.0`, where one step is longer than
+    /// the whole band so a star is recycled before it can drift anywhere.
+    #[test]
+    #[ignore = "the sky collapses off the beam; this is the guard, not the fix"]
+    fn the_sky_is_as_even_off_the_beam_as_it_is_abeam() {
+        // Wide enough that a bin holds hundreds of stars, so the baseline is
+        // set by the sky rather than by counting noise: 8000 stars over
+        // twenty-four bins is about 250 each, which measures 1.30 abeam over
+        // six seeds. A finer grid needs a bigger pool to say the same thing,
+        // and this runs on every `cargo test`.
+        const POOL: usize = 8_000;
+        const EVEN: f32 = 2.0;
+        const ON_SCREEN: f32 = 0.65;
+        // 10.8 c, which is where the report was shot, and slow enough that a
+        // star takes a couple of hundred steps to cross the band. At full warp
+        // one step is longer than the band and nothing can accumulate.
+        const SPEED: f32 = 280.0;
+        const DT: f32 = 1.0 / 120.0;
+
+        // Two and a half seconds. The collapse is well past a factor of ten
+        // by then and still climbing; the point of stopping here is that this
+        // runs on every `cargo test` and the fault does not need longer.
+        const STEPS: usize = 300;
+
+        let cam = cam();
+        let parked = |orbit: Orbit| {
+            let mut field = ExteriorField::new(POOL, 1, &cam, orbit);
+            for _ in 0..STEPS {
+                field.update(DT, SPEED, &cam, orbit);
+            }
+            evenness(&field, &cam)
+        };
+
+        // Abeam and dead astern are the two angles where `travel[2]` is
+        // exactly zero. They pass today, and are here to say the measurement
+        // is of the sky and not of the instrument.
+        let astern = Orbit {
+            azimuth: std::f32::consts::PI,
+            elevation: 0.0,
+            roll: 0.0,
+        };
+        for orbit in [Orbit::LEVEL, astern] {
+            let (ratio, on) = parked(orbit);
+            assert!(
+                ratio <= EVEN && on >= ON_SCREEN,
+                "the sky went uneven at {orbit:?}, where nothing moves the \
+                 range: {ratio:.2} to 1 with {on:.2} of the pool on screen"
+            );
+        }
+
+        // Parked off the beam, which is where a pan leaves the camera.
+        for (az, el) in [
+            (45.0f32, 0.0f32),
+            (-45.0, 0.0),
+            (90.0, 0.0),
+            (-90.0, 0.0),
+            (135.0, 0.0),
+            (90.0, 25.0),
+            (-120.0, -20.0),
+        ] {
+            let orbit = Orbit {
+                azimuth: az.to_radians(),
+                elevation: el.to_radians(),
+                roll: 0.0,
+            };
+            let (ratio, on) = parked(orbit);
+            assert!(
+                ratio <= EVEN,
+                "the sky is {ratio:.2} to 1 across the frame with the camera \
+                 parked at {az}, {el} — abeam it is 1.3"
+            );
+            assert!(
+                on >= ON_SCREEN,
+                "only {on:.2} of the pool is on screen at {az}, {el} — abeam \
+                 it is 0.76, and the rest has piled into the margin"
+            );
+        }
+
+        // And with a key leaned on, which is how it was found: measured while
+        // the camera is still swinging, and again once it has been let go, so
+        // a fault that only lives in the rotation cannot hide behind one that
+        // only lives in the flow.
+        for presses in [30.0f32, -30.0] {
+            let mut field = ExteriorField::new(POOL, 1, &cam, Orbit::LEVEL);
+            let (mut orbit, mut target) = (Orbit::LEVEL, Orbit::LEVEL);
+            for _ in 0..STEPS {
+                orbit = leaned_on(orbit, &mut target, presses);
+                field.update(DT, SPEED, &cam, orbit);
+            }
+            let (ratio, on) = evenness(&field, &cam);
+            assert!(
+                ratio <= EVEN && on >= ON_SCREEN,
+                "the sky is {ratio:.2} to 1 with the camera swinging at \
+                 {presses} presses a second, {on:.2} of it on screen"
+            );
+
+            for _ in 0..STEPS {
+                field.update(DT, SPEED, &cam, orbit);
+            }
+            let (ratio, on) = evenness(&field, &cam);
+            assert!(
+                ratio <= EVEN && on >= ON_SCREEN,
+                "the sky is still {ratio:.2} to 1 long after the camera was \
+                 let go at {presses} presses a second, {on:.2} of it on screen"
+            );
         }
     }
 }
