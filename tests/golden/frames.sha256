@@ -91,6 +91,51 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+# `orbit.txt` and `astern.txt` moved together when the band stopped letting the
+# sky fall in on itself off the beam. A star's place in the frame is
+# `focal · pos / z`, so every change of range scales it, and the fold — which is
+# the right answer for the *translation* the flow applies — is no answer at all
+# for a scale.
+# Contracting, the band widened away from a pool shrinking inside it and nothing
+# refilled the frame edges; expanding, the fold put a star back on the very edge
+# it had just been carried over and the next step carried it over again, so the
+# pool piled into the off-screen margin and the middle drained. Two seconds on
+# `A` or `D` was enough to empty the top and bottom of the frame and leave a bar
+# of stars across the middle. The step now puts back `1 − λ²` of each range
+# shell on the rim a contraction vacates, and scatters what an expansion carried
+# out across the whole band rather than wrapping it, both of which are the
+# density it started with exactly rather than an approximation of it. The depth
+# recycle changed with it: a star crossing a wall now comes back just inside the
+# wall the flow is entering through instead of anywhere in the band, which is
+# the fold in `z` in distribution and holds the count per unit range flat where
+# seeding through the whole band had turned a one-way flow into a seven-to-one
+# ramp.
+#
+# Two hashes, and they are the two flights that have a `travel[2]` at all — a
+# sharper split than the entry below, which is the same pair of camera angles
+# read the other way round. Every new branch is gated on `turns_z`, which is
+# `swing.is_some() || travel[2] != 0.0`: at `Orbit::LEVEL` travel is exactly
+# `(-1, 0, 0)` and `--orbit` is snapped at startup, so nothing in a headless
+# `side.txt` step reaches any of it and the arithmetic is the old arithmetic to
+# the bit. The three cockpit flights and `warp.txt` never build an
+# `ExteriorField` at all. `orbit.txt` is at `--orbit 55,35,20`, where
+# `travel[2]` is `cos 35° · sin 55° = 0.671`, and `astern.txt` at
+# `--orbit -75,6,20`, where it is `cos 6° · sin −75° = −0.961` — one flight
+# contracting the sky and one expanding it, which is the pair of failure modes
+# the change is about. Both move for three reasons at once: the recycle draws
+# from a different range so the RNG stream diverges, the range profile goes from
+# a ramp to flat, and the transverse boundary is now maintained.
+#
+# Note what that means for this file again. Both were recorded *with* the
+# collapse in them, and neither could have caught it in any case, because both
+# are shot at `--throttle 1.0` where one step is longer than the whole
+# three-hundred-deep band and a star is recycled before it can drift anywhere.
+# It shows at ten c and not at two thousand — so a seventh flight was added for
+# a fault it could not see either, one commit before this one. The guard is
+# `the_sky_is_as_even_off_the_beam_as_it_is_abeam` in `exterior.rs`, which
+# measures the pool's spread across the frame rather than a hash of it, at the
+# speed the report was shot at.
+#
 # `astern.txt` arrived with the fix for a fault not one of the six could see,
 # and the useful half of that entry is that **no hash moved for it**. A trail is
 # stretched back along the track in *screen* space — the step the star swept,
@@ -291,5 +336,5 @@ c745fb56071a4065ffe72cc6ce1da35bc06e1d49230df88f20c2049ac7f6f1bc  ascii.txt
 6aaef3142e7323ce74789c573d906e48b2b2fabd87601a2f0bb7709ee4445de1  ansi256.txt
 8e4d6fe37cf5ebbb63c6af30f858185ed2741ec63ea5771e4fd35e7daff3175a  warp.txt
 e00c1f3479261e40f2add1e1d812981d4d53b30e07c50402a675d1f8eb66a009  side.txt
-934833f2619626f2c0e0efe90214c021af73d7f0f4c3061758d3ae81a7448911  orbit.txt
-98d2ee91b64d25ca88626064466d74e43838b954784c6417b406012f791173c2  astern.txt
+1e35a966aa36fdbfa0262c74cba389e579c17b61d6563fd27e47139a361e321b  orbit.txt
+42475df2bb313c88af52da7e505da07bbadcdcc7a34e1efc7230d2f7482fc26e  astern.txt
