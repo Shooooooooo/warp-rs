@@ -81,8 +81,8 @@ const MAX_COUNT: u32 = 1_000_000;
 /// the image is the canvas magnified on both axes, so at the snapshot's
 /// default 240x68 — 240 by 136 subpixels — sixteen comes to 3840 by 2176, or
 /// 25 MB of RGB. Past that the useful range has long since been left behind;
-/// the README's snapshots are both taken at 2, as is every other image in
-/// `docs/`.
+/// the README's two snapshots, which are the whole of `docs/`, are both taken
+/// at 2.
 #[cfg(feature = "snapshot")]
 const MAX_SCALE: usize = 16;
 
