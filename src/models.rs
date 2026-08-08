@@ -329,6 +329,44 @@ impl Section {
             [self.cx - self.hx, self.cy + self.hy, self.z],
         ]
     }
+
+    /// The same outline cut into `sides` points instead of four, going round
+    /// the same way the corners do.
+    ///
+    /// At four this *is* [`Self::corners`], handed back untouched rather than
+    /// recomputed. That is not an optimisation: the general form below would
+    /// return a right angle a fraction of an ulp off square, and five of the
+    /// six ships in the hangar are lofted through this — moving any of them by
+    /// an ulp repaints a sky nothing asked to have repainted.
+    ///
+    /// Past four, the outline is the polygon that *circumscribes* the ellipse
+    /// the rectangle encloses: vertex `k` at `π + π/n + k·2π/n`, pushed out by
+    /// `1/cos(π/n)` so the edges touch the ellipse rather than the corners
+    /// sitting on it. That is exactly what makes the four-sided case the
+    /// rectangle and not the diamond inscribed in it, which is what lets one
+    /// spelling serve both.
+    ///
+    /// Keep `sides` a multiple of four. `hx` and `hy` are half-extents at 4, 8
+    /// and 12 because a vertex lands on each axis exactly; at ten the top and
+    /// bottom of the ring overshoot `hy` by five percent and a section stops
+    /// meaning what its fields are named.
+    fn ring(&self, sides: usize) -> Vec<[f32; 3]> {
+        if sides == 4 {
+            return self.corners().to_vec();
+        }
+        let step = std::f32::consts::TAU / sides as f32;
+        let out = 1.0 / (step * 0.5).cos();
+        (0..sides)
+            .map(|k| {
+                let theta = std::f32::consts::PI + step * 0.5 + k as f32 * step;
+                [
+                    self.cx + self.hx * theta.cos() * out,
+                    self.cy + self.hy * theta.sin() * out,
+                    self.z,
+                ]
+            })
+            .collect()
+    }
 }
 
 /// Somewhere to accumulate a hull while it is being assembled.
@@ -351,25 +389,43 @@ impl Builder {
     /// cargo block and an engine housing. Anything that would be a flat plate
     /// is given a little thickness instead, so it stays a solid.
     fn shell(&mut self, sections: &[Section]) {
+        self.loft(sections, 4);
+    }
+
+    /// The same, with each section's rectangle cut into `sides` points.
+    ///
+    /// A rectangle lofted along the track is a box, and a box is the wrong
+    /// shape for the two things this ship is mostly made of: a saucer is a disc
+    /// seen from above and a nacelle is a tube seen from anywhere. The count is
+    /// per solid rather than per hull, so a flat blade and a thin strut go on
+    /// costing four points each while the shapes that need to be round pay for
+    /// being round.
+    ///
+    /// [`Self::shell`] is this at four, and [`Section::ring`] is written so it
+    /// is that *bit for bit* — everything below is the arithmetic that was
+    /// already here, over a ring of `n` points instead of a ring of 4.
+    fn loft(&mut self, sections: &[Section], sides: usize) {
         assert!(sections.len() >= 2, "a shell needs two sections to loft");
+        assert!(sides >= 3, "a ring needs three points to enclose anything");
         let rings: Vec<u16> = sections
             .iter()
-            .map(|s| self.push_ring(s.corners()))
+            .map(|s| self.push_ring(s.ring(sides)))
             .collect();
 
+        let n = sides as u16;
         for pair in rings.windows(2) {
             let (aft, fore) = (pair[0], pair[1]);
-            for i in 0..4u16 {
-                let j = (i + 1) % 4;
+            for i in 0..n {
+                let j = (i + 1) % n;
                 self.faces.push(vec![aft + i, aft + j, fore + j, fore + i]);
             }
         }
         // The nose cap faces forward; the tail cap is the same ring the other
         // way about, so its normal points aft.
         let fore = rings[rings.len() - 1];
-        self.faces.push(vec![fore, fore + 1, fore + 2, fore + 3]);
+        self.faces.push((0..n).map(|i| fore + i).collect());
         let aft = rings[0];
-        self.faces.push(vec![aft + 3, aft + 2, aft + 1, aft]);
+        self.faces.push((0..n).rev().map(|i| aft + i).collect());
     }
 
     /// A hoop standing across the ship, drawn as a square-section tube. The
@@ -470,86 +526,245 @@ pub fn by_name(name: &str) -> Option<usize> {
     models().iter().position(|m| m.name == name)
 }
 
-/// Saucer, neck, engineering hull, two nacelles on swept pylons — a bow to the
-/// ship every warp drive since has been drawn against.
+/// The saucer's radius, in hull units.
 ///
-/// It is designed as a *profile*, because that is the only view this camera
-/// gives, and the profile is three masses stacked in a particular order: the
-/// saucer highest and furthest forward, the nacelles just below and well aft of
-/// it, and the engineering hull slung underneath on a neck that leans forward.
-/// Get that stacking wrong — nacelles above the saucer, say — and every line is
-/// still in the right place while the ship stops being this ship. Seen from the
-/// beam the two nacelles line up into one, which is the silhouette everybody
-/// already has in mind, and the reason this hull is the one flown by default.
+/// The one length the rest of this ship is measured against, and the only place
+/// the unit box is spent by hand: the ship is `4.523` saucer radii from the
+/// front of the disc to the back of a nacelle, and pinning the nose at `+1.0`
+/// and the tail where it has always been leaves the disc this big.
+const SAUCER_R: f32 = 0.415;
+/// Where the disc's centre sits along the track, which puts its front edge on
+/// the nose.
+const SAUCER_Z: f32 = 1.0 - SAUCER_R;
+/// And where its plane sits across the track: far enough above centre that the
+/// engineering hull hanging under it and the nacelles standing over it come out
+/// either side of the axis the ship rolls about.
+const SAUCER_Y: f32 = -0.172;
+
+/// How much taller than scale this hull is drawn.
 ///
-/// Everything vertical is drawn thicker than scale. The shot opens with the
-/// whole ship a quarter of the canvas height long — [`SHIP_SCREEN_FRAC`] of it
-/// either side of centre — so on a thirty-row terminal, sixty subpixels tall,
-/// one unit here is about seven subpixels, and an honest saucer would not come
-/// out even a subpixel thick: nothing at all, rather than a shape. Zooming in
-/// buys that back, but the hull has to read at the framing it opens on.
+/// At true proportion the ship is 0.44 units from the top of a nacelle to the
+/// bottom of the engineering hull against 1.88 along the track, and the shot
+/// opens with one unit about seven subpixels — so the neck, the pylons and the
+/// gap under the nacelles would each come out thinner than a subpixel, which is
+/// nothing at all rather than a thin thing. Every offset from the saucer's
+/// plane and every girth is stretched by this; the saucer's own radius and
+/// every length along the track are left honest, so the plan view is the ship's
+/// and only the profile is flattered.
+///
+/// It stood at about 2.15 before, unwritten and spread across two dozen
+/// literals, which read as a ship built out of pipes. Pulled up by the framing
+/// the shot opens on and pulled down by every framing past it, since the zoom
+/// goes to 2.8 and a terminal can be far taller than thirty rows.
+const STOUT: f32 = 1.4;
+
+/// Saucer, neck, engineering hull, two nacelles on pylons — a bow to the ship
+/// every warp drive since has been drawn against.
+///
+/// Its proportions are measured rather than judged, off a reference mesh, and
+/// they are written here in units of the saucer's own radius so that what is on
+/// the page is the ratio and not somebody's arithmetic. The five that carry the
+/// ship: the disc is a fifth of the length across and centred a radius back from
+/// the nose; the engineering hull is `0.61` radii below its plane and only
+/// `1.67` long; the nacelles are `0.65` radii out — *inside* the disc's rim, not
+/// level with it — and `0.12` radii **above** the plane, tops square with the
+/// bridge; and the neck leans forward as it climbs, because on this ship it
+/// does.
+///
+/// That the nacelles stand above the saucer and not below it is the whole of
+/// what makes the profile this ship's rather than a flying saucer with engines
+/// bolted under it. It is worth saying because the opposite was asserted here
+/// for a long time and drawn that way, and the silhouette that came out was
+/// wrong in a manner nothing in the tree could notice: every line in the right
+/// place and the stack upside down.
+///
+/// The one deliberate lie is [`STOUT`], and it is only ever told across the
+/// track. Seen from the beam the two nacelles line up into one, which is the
+/// silhouette everybody already has in mind; seen from above — which the camera
+/// can now do — the saucer has to be a disc, and that is why it is lofted
+/// through a circle's own chords instead of being a box with the corners
+/// knocked off.
 ///
 /// [`SHIP_SCREEN_FRAC`]: crate::view::SHIP_SCREEN_FRAC
 fn enterprise() -> ShipModel {
     let mut b = Builder::default();
-    // The saucer: widest across the middle, and about as long as it is wide, so
-    // from above it would read as the disc it is. Deliberately thin — a saucer
-    // as deep as a nacelle reads as a third nacelle — with the bridge dome
-    // above it doing the work of saying which way up the ship goes.
+
+    // Reference units into hull units. Along and across the track the ship is
+    // drawn at scale; up and down it is drawn `STOUT` times taller, and so is
+    // every girth, which is the same lie told about the same axis twice.
+    let z_of = |z: f32| SAUCER_Z + z * SAUCER_R;
+    let x_of = |x: f32| x * SAUCER_R;
+    let y_of = |up: f32| SAUCER_Y - up * SAUCER_R * STOUT;
+    let girth = |g: f32| g * SAUCER_R * STOUT;
+
+    // The saucer, lofted along the track through the disc's own chords: the
+    // half-width at each station is the circle's, so the plan outline is round
+    // by construction rather than by choosing flattering numbers. Seven
+    // stations, bunched toward the rim where the chord falls away fastest —
+    // evenly spaced ones cut the front and back off the disc.
+    //
+    // The profile is the reference's: a crown rising to `0.155` over the middle
+    // and an underside dropping to `0.107` under the rim, both closing on the
+    // rim as a station runs out of disc to be. It is one solid; the bridge and
+    // the sensor dome are their own, because a lens cannot grow a lump.
+    let saucer: Vec<Section> = [-0.97f32, -0.78, -0.45, 0.0, 0.45, 0.78, 0.97]
+        .iter()
+        .map(|&u| {
+            let chord = (1.0 - u * u).sqrt();
+            let (top, bottom) = (y_of(0.021 + 0.134 * chord * chord), y_of(-0.107 * chord));
+            Section::offset(
+                z_of(u),
+                0.0,
+                (top + bottom) * 0.5,
+                x_of(chord),
+                (bottom - top) * 0.5,
+            )
+        })
+        .collect();
+    b.loft(&saucer, 8);
+    // The bridge, and the deck that swells up to meet it: the thing that says
+    // which way up the ship goes, and the only part of the disc the eye can
+    // find the middle of.
+    b.loft(
+        &[
+            Section::offset(z_of(-0.22), 0.0, y_of(0.150), x_of(0.14), girth(0.040)),
+            Section::offset(z_of(0.00), 0.0, y_of(0.178), x_of(0.22), girth(0.048)),
+            Section::offset(z_of(0.22), 0.0, y_of(0.150), x_of(0.14), girth(0.040)),
+        ],
+        8,
+    );
+    // And the sensor dome hanging under the middle of it.
+    b.loft(
+        &[
+            Section::offset(z_of(-0.20), 0.0, y_of(-0.150), x_of(0.12), girth(0.055)),
+            Section::offset(z_of(0.00), 0.0, y_of(-0.180), x_of(0.18), girth(0.110)),
+            Section::offset(z_of(0.20), 0.0, y_of(-0.150), x_of(0.12), girth(0.055)),
+        ],
+        8,
+    );
+    // The impulse deck, across the back of the saucer and standing a little
+    // proud of it — which is what gives the bell aft of it something to sit on.
     b.shell(&[
-        Section::offset(0.22, 0.0, -0.31, 0.12, 0.032),
-        Section::offset(0.36, 0.0, -0.32, 0.30, 0.065),
-        Section::offset(0.58, 0.0, -0.32, 0.42, 0.085),
-        Section::offset(0.80, 0.0, -0.32, 0.36, 0.070),
-        Section::offset(0.94, 0.0, -0.31, 0.19, 0.044),
-        Section::offset(1.00, 0.0, -0.30, 0.05, 0.024),
+        Section::offset(z_of(-1.021), 0.0, y_of(-0.023), x_of(0.200), girth(0.044)),
+        Section::offset(z_of(-0.572), 0.0, y_of(-0.023), x_of(0.264), girth(0.044)),
     ]);
+    // The neck, leaning forward as it climbs from the engineering hull. Four
+    // points: it is a blade, and a blade seen edge-on is the one shape a round
+    // section would spend its points hiding.
     b.shell(&[
-        Section::offset(0.50, 0.0, -0.40, 0.10, 0.040),
-        Section::offset(0.68, 0.0, -0.41, 0.13, 0.048),
-        Section::offset(0.82, 0.0, -0.39, 0.08, 0.030),
+        Section::offset(z_of(-1.313), 0.0, y_of(-0.409), girth(0.048), girth(0.100)),
+        Section::offset(z_of(-0.373), 0.0, y_of(-0.055), girth(0.048), girth(0.100)),
     ]);
-    // The neck, leaning forward as it climbs from the engineering hull.
-    b.shell(&[
-        Section::offset(-0.02, 0.0, 0.16, 0.055, 0.15),
-        Section::offset(0.34, 0.0, -0.18, 0.05, 0.11),
-    ]);
-    // The engineering hull, slung below and aft, with the deflector at its
-    // forward end.
-    b.shell(&[
-        Section::offset(-0.82, 0.0, 0.34, 0.055, 0.055),
-        Section::offset(-0.64, 0.0, 0.34, 0.12, 0.13),
-        Section::offset(-0.22, 0.0, 0.34, 0.145, 0.155),
-        Section::offset(0.20, 0.0, 0.32, 0.12, 0.13),
-        Section::offset(0.34, 0.0, 0.31, 0.08, 0.085),
-        Section::offset(0.40, 0.0, 0.31, 0.04, 0.045),
-    ]);
+    // The engineering hull: a tube slung below and aft, fattest a third of the
+    // way along and tapering both ways. Short — it ends well forward of the
+    // nacelles, which is most of what stops this reading as a ship with three
+    // engines.
+    b.loft(
+        &[
+            Section::offset(z_of(-2.244), 0.0, y_of(-0.608), girth(0.145), girth(0.145)),
+            Section::offset(z_of(-1.900), 0.0, y_of(-0.608), girth(0.205), girth(0.205)),
+            Section::offset(z_of(-1.300), 0.0, y_of(-0.608), girth(0.233), girth(0.233)),
+            Section::offset(z_of(-0.800), 0.0, y_of(-0.608), girth(0.215), girth(0.215)),
+            Section::offset(z_of(-0.579), 0.0, y_of(-0.605), girth(0.171), girth(0.171)),
+        ],
+        8,
+    );
+    // The deflector, capping it: a shallow dish standing off the hull's forward
+    // end, its aft ring inside the hull's so the two read as one casting.
+    b.loft(
+        &[
+            Section::offset(z_of(-0.579), 0.0, y_of(-0.605), girth(0.127), girth(0.127)),
+            Section::offset(z_of(-0.500), 0.0, y_of(-0.605), girth(0.120), girth(0.120)),
+            Section::offset(z_of(-0.426), 0.0, y_of(-0.605), girth(0.055), girth(0.055)),
+        ],
+        8,
+    );
     for side in [-1.0f32, 1.0] {
-        // Pylons, reaching out, up and aft all at once: the strut is what makes
-        // the gap between hull and nacelle read as a gap rather than as a join.
+        // A pylon, out of the hull's upper flank and up to the nacelle's
+        // underside. On the reference it is a slab standing at one station of
+        // the track, which a loft along the track cannot make thin; so the two
+        // sections are the two faces of that slab, and the strut leans aft as it
+        // climbs by exactly its own thickness. It occupies the z the reference
+        // gives it and reads as a strut rather than as the wall a single
+        // upright section would have swept.
         b.plate(
-            Section::offset(-0.56, side * 0.40, 0.06, 0.035, 0.10),
-            Section::offset(-0.20, side * 0.10, 0.28, 0.045, 0.11),
+            Section::offset(
+                z_of(-1.759),
+                side * x_of(0.553),
+                y_of(-0.039),
+                girth(0.060),
+                girth(0.045),
+            ),
+            Section::offset(
+                z_of(-1.684),
+                side * x_of(0.240),
+                y_of(-0.363),
+                girth(0.060),
+                girth(0.045),
+            ),
         );
-        // Nacelles: below the saucer's plane and well behind it, which is the
-        // half of the stacking that says this is not a flying saucer with an
-        // engine bolted on.
-        b.shell(&[
-            Section::offset(-0.88, side * 0.42, -0.06, 0.050, 0.050),
-            Section::offset(-0.76, side * 0.42, -0.06, 0.080, 0.085),
-            Section::offset(-0.10, side * 0.42, -0.06, 0.080, 0.085),
-            Section::offset(0.02, side * 0.42, -0.06, 0.050, 0.055),
-        ]);
+        // A nacelle: a tube standing *above* the saucer's plane and well aft of
+        // it, closer in than the disc's rim, with the bussard rounded off the
+        // front. Its aft cap is the tail of the whole ship.
+        let (cx, cy) = (side * x_of(0.649), y_of(0.121));
+        b.loft(
+            &[
+                Section::offset(z_of(-3.523), cx, cy, girth(0.102), girth(0.102)),
+                Section::offset(z_of(-3.300), cx, cy, girth(0.118), girth(0.118)),
+                Section::offset(z_of(-2.400), cx, cy, girth(0.117), girth(0.117)),
+                Section::offset(z_of(-1.550), cx, cy, girth(0.129), girth(0.129)),
+                Section::offset(z_of(-1.332), cx, cy, girth(0.070), girth(0.070)),
+            ],
+            8,
+        );
+        // The intercooler down its inboard flank. Small, and it earns its eight
+        // faces from above and from head-on, where two bare tubes otherwise read
+        // as two bare tubes.
+        b.plate(
+            Section::offset(
+                z_of(-3.100),
+                side * x_of(0.530),
+                cy,
+                girth(0.020),
+                girth(0.042),
+            ),
+            Section::offset(
+                z_of(-1.500),
+                side * x_of(0.530),
+                cy,
+                girth(0.020),
+                girth(0.042),
+            ),
+        );
     }
     b.finish(
         "enterprise",
         "Heavy cruiser. Saucer, neck, and two nacelles.",
         [0.21, 0.24, 0.31],
         vec![
-            engine([-0.42, -0.06, -0.92], 0.11),
-            engine([0.42, -0.06, -0.92], 0.11),
-            // Impulse, out of the back of the saucer, and much the smaller.
-            engine([0.0, -0.31, 0.21], 0.07),
+            // The bells keep the radii they had, and are the one thing here not
+            // taken off the reference. A bell is a light rather than a plate, so
+            // it is allowed to be wider than the cap it sits on — it was 2.2
+            // times the old nacelle's and is 1.85 times this one's, so it has
+            // come *closer* to the geometry rather than further from it while
+            // the tube around it got slimmer.
+            //
+            // Scaling them down with the hull was tried and put the nacelles at
+            // 0.095, which reads the same and measures quite differently: the
+            // plume's lane count follows the fan's width in subpixels, and
+            // between 0.100 and 0.105 it steps from three lanes to five at a
+            // 120x36 terminal and the lance's brightness there very nearly
+            // doubles. Below the step the drive burns *brighter* the wider the
+            // window, which is the one thing
+            // `the_lance_burns_as_brightly_on_any_terminal` exists to catch, and
+            // it caught it. The rest of the fleet sits at 0.11 to 0.17 for the
+            // same reason, whether or not anyone knew it.
+            engine([-x_of(0.649), y_of(0.121), z_of(-3.58)], 0.11),
+            engine([x_of(0.649), y_of(0.121), z_of(-3.58)], 0.11),
+            // Impulse, out of the back of the saucer, and much the smaller. It
+            // fires between the nacelles rather than under them now, and washes
+            // their inboard flanks on the way past.
+            engine([0.0, y_of(-0.023), z_of(-1.05)], 0.07),
         ],
     )
 }
@@ -1013,10 +1228,12 @@ struct Drive<'a> {
 /// between the two and the drive belongs underneath — from ahead it is behind
 /// the whole ship. Square to the track and behind it the plume is genuinely in
 /// front, and it costs something to say so: the Enterprise's impulse engine is
-/// the one bell in the fleet that is not on the tail, and its plume clears the
-/// nacelle tops by 0.165 hull units — a subpixel and a half at the reference
-/// framing, so a roll walks it straight across them. Drawn under the plates it
-/// would be chopped by a silhouette it is barely clear of; drawn over them it
+/// the one bell in the fleet that is not on the tail, and its exhaust runs
+/// *between* the nacelles rather than clear of them — 0.19 hull units inboard
+/// of the nearer flank, 0.009 under their lower edge, and thrown in a fan
+/// 0.11 wide. So it misses them in the round and lies straight across them from
+/// the beam, where hull `x` is nearly pure camera depth. Drawn under the plates
+/// it would be chopped by a silhouette it never touches; drawn over them it
 /// shines through as the wash a hot plume genuinely puts on structure it plays
 /// over. That is still the cheaper mistake, and it is still the one made — but
 /// only on the side of the beam where the plume really is the nearer of the
@@ -1775,6 +1992,95 @@ mod tests {
     }
 
     #[test]
+    fn four_sided_a_loft_is_the_shell_it_replaced() {
+        // `shell` is `loft` at four and has to *be* it rather than agree with
+        // it: five of the six ships are built through this, and a ring rebuilt
+        // from sines and cosines would come back a fraction of an ulp off
+        // square. That would move four hulls nothing had asked to move, and
+        // through them the reference frames. `Section::ring` hands the corners
+        // back untouched at four, and this is what says so.
+        //
+        // Flown over sections that use every field — offset centres, unequal
+        // half-extents, a leaning run — since a ring at the origin would agree
+        // by symmetry whatever the arithmetic did.
+        let sections = [
+            Section::at(-0.6, 0.2, 0.15),
+            Section::offset(-0.1, 0.13, -0.22, 0.31, 0.08),
+            Section::offset(0.35, -0.07, 0.19, 0.09, 0.27),
+            Section::at(0.8, 0.05, 0.05),
+        ];
+        let mut by_shell = Builder::default();
+        by_shell.shell(&sections);
+        let mut by_loft = Builder::default();
+        by_loft.loft(&sections, 4);
+
+        assert_eq!(
+            by_shell.verts, by_loft.verts,
+            "a four-sided loft moved a vertex the shell it replaced did not"
+        );
+        assert_eq!(
+            by_shell.faces, by_loft.faces,
+            "a four-sided loft wound a face differently from the shell"
+        );
+    }
+
+    #[test]
+    fn the_saucer_is_as_round_as_it_is_long() {
+        // The one thing the enterprise's disc is for, and the thing it was not:
+        // it used to be a rectangle lofted along the track, which is a
+        // hexagonal slab seen from above. Nobody could see that while the
+        // camera was pinned to the beam. The camera goes over the top now, and
+        // `orbit.txt` is shot at thirty-five degrees of elevation.
+        //
+        // Asked of the outline in plan rather than of the section list, so it
+        // is a fact about the hull a later tidy-up would have to keep rather
+        // than a restatement of how this one happens to be spelled. The bound
+        // is loose because the disc is lofted through a circle's chords and a
+        // chord is inside its arc — seven stations leave the outline about five
+        // percent shy of round at its worst, which is a third of a subpixel at
+        // the framing the shot opens on.
+        // Seen from above, a station's outline is its *widest* vertex — the
+        // ones on the crown and the underside are on their way to the axis and
+        // are not on the silhouette at all. So the outline is gathered per
+        // station rather than per vertex.
+        //
+        // Two filters find the disc, and it takes both. Its own stretch of the
+        // track and its own plane: the engineering hull runs *under* the front
+        // of the saucer and its widest ring is a hair over a third of the disc
+        // across, so track alone lets it in. And then a third of the disc's
+        // width, which is what leaves the bridge, the sensor dome and the
+        // impulse deck out — all three stand in the disc's plane and none of
+        // them is anything like that wide.
+        let ship = &models()[0];
+        let mut widest: HashMap<u32, f32> = HashMap::new();
+        for v in &ship.verts {
+            if v[2] <= SAUCER_Z - SAUCER_R || (v[1] - SAUCER_Y).abs() > SAUCER_R * 0.25 {
+                continue;
+            }
+            let at = widest.entry(v[2].to_bits()).or_insert(0.0);
+            *at = at.max(v[0].abs());
+        }
+        let mut stations = 0;
+        for (z, half) in &widest {
+            if *half < SAUCER_R * 0.30 {
+                continue;
+            }
+            let along = f32::from_bits(*z) - SAUCER_Z;
+            let r = (half * half + along * along).sqrt();
+            assert!(
+                r <= SAUCER_R * 1.001 && r > SAUCER_R * 0.94,
+                "the saucer's outline is {r} from its centre at {along} along, \
+                 against a radius of {SAUCER_R}: that is a slab, not a disc"
+            );
+            stations += 1;
+        }
+        assert!(
+            stations >= 5,
+            "only {stations} stations of the disc were wide enough to ask about"
+        );
+    }
+
+    #[test]
     fn every_hull_stays_inside_its_own_bubble() {
         // The bubble is drawn out along the track and seated astern of the
         // hull, which trades clearance across the ship for clearance along it.
@@ -2018,8 +2324,8 @@ mod tests {
         // The other half, and the reason the order is a question rather than a
         // rule. Square to the track and behind it the plume is genuinely the
         // nearer of the two — the enterprise's impulse bell is mid-ship and its
-        // plume clears the nacelle tops by a subpixel and a half, so a roll
-        // walks it straight across them — and it is meant to shine through as
+        // plume runs between the nacelles and just under them, so from the beam
+        // it lies straight across them — and it is meant to shine through as
         // the wash a hot plume puts on structure it plays over. An occlusion
         // rule that fired at every angle would take that away and read as a
         // drive going out whenever the camera moved.

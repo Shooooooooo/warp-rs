@@ -232,8 +232,8 @@ change to how a span is measured stayed inside the view it was aimed at. Taking
 
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
-The reference is one ship deep: neither flight with a hull in it passes
-`--ship`, so both fly the enterprise. Clearing the hull band over the span it is
+The reference is one ship deep: not one of the three flights with a hull in it
+passes `--ship`, so all three fly the enterprise. Clearing the hull band over the span it is
 read over rather than written to changed real frames for the dart, the needle,
 the hauler and the trident — three of five camera angles for two of them — and
 moved not one hash here, because the enterprise's outline does not happen to
@@ -829,10 +829,12 @@ it cancels bit for bit, which is what left `side.txt` untouched.
 Square to the track and behind it the plume genuinely is the nearer of the two,
 and saying so costs something. Five of the six ships put every bell a hair aft
 of the hull, so their plumes stream into clear sky and the order could not
-matter less; the enterprise's impulse bell is mid-ship, and its plume clears the
-nacelle tops by 0.165 hull units — a subpixel and a half at the reference
-framing, so a roll walks it straight across them. Drawn *under* the plates it
-would be chopped by a silhouette it is barely clear of. Over them it shines
+matter less; the enterprise's impulse bell is mid-ship, and its exhaust runs
+*between* the nacelles — 0.19 hull units inboard of the nearer flank, 0.009
+under their lower edge, in a fan 0.11 wide. So it misses them in the round and
+lies straight across them from the beam, where hull `x` is nearly pure camera
+depth. Drawn *under* the plates it
+would be chopped by a silhouette it never touches. Over them it shines
 through as the wash a hot plume genuinely puts on structure it plays over, which
 is still the cheaper mistake and is still the one made, on that side of the beam.
 `the_drive_still_washes_the_hull_it_plays_over` is what holds that half, and
@@ -1373,6 +1375,18 @@ box, give it a lowercase ASCII `name` and a one-line `blurb`. `--ship` and the
 picker both read `models::models()`, and the tests iterate it, so nothing else
 needs touching. The cockpit draws neither the hull nor its name — the panel's
 `SHIP` row is gated on `ViewMode::Side` — so the golden hashes do not move.
+
+`shell` is `loft` at four sides and the count is per *solid*, so a blade or a
+strut goes on costing four points while a tube or a disc pays for being round.
+Keep it a multiple of four: `hx` and `hy` are half-extents at 4, 8 and 12
+because a vertex lands on each axis exactly, and at ten the ring overshoots
+`hy` by five percent. `Section::ring` hands the corners straight back at four
+rather than recomputing them, and
+`four_sided_a_loft_is_the_shell_it_replaced` holds that bit for bit — five of
+the six ships are built through it, and an ulp there repaints two reference
+frames. Face count is cheap but not free: the enterprise went from 100 faces to
+242 for about 3.7% of the drawing time on the exterior frame where the hull is
+the largest share, and nothing measurable on the one at twenty thousand stars.
 
 An `Engine`'s `radius` is doing more work than it looks like. It sets the bell's
 glow, and it also sets how long and how bright a trail that bell throws — a
