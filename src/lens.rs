@@ -157,6 +157,15 @@ pub struct Lens {
     /// track, and a camera swung round toward the nose sees that length
     /// foreshortened. [`Lens::for_warp`] is where they come from.
     axes: (f32, f32),
+    /// The reciprocals of those two, worked out once when the bubble is built.
+    ///
+    /// [`Lens::offsets`] ended on a divide per axis, and it is the floor every
+    /// gate in this module stands on — `bends` and `shadowed` run it on the
+    /// whole pool, `map` and `crosses_the_ring` on every sample of every bent
+    /// streak. Two numbers fixed for the frame were being divided by a dozen
+    /// times per sample. Derived rather than stored independently: nothing may
+    /// set one without the other.
+    inv_axes: (f32, f32),
     /// Which way the long axis lies on the canvas, as `(cos, sin)`.
     ///
     /// Exactly `(1.0, 0.0)` whenever the camera is abeam of the track — which
@@ -222,6 +231,7 @@ impl Lens {
         center: (0.0, 0.0),
         radius: 0.0,
         axes: (0.0, 0.0),
+        inv_axes: (0.0, 0.0),
         turn: (1.0, 0.0),
     };
 
@@ -293,6 +303,7 @@ impl Lens {
             center: (center.0 - wake * turn.0, center.1 - wake * turn.1),
             radius,
             axes: (along, across),
+            inv_axes: (1.0 / along, 1.0 / across),
             turn,
         }
     }
@@ -338,7 +349,7 @@ impl Lens {
         } else {
             (dx * cos + dy * sin, dy * cos - dx * sin)
         };
-        (along / self.axes.0, across / self.axes.1)
+        (along * self.inv_axes.0, across * self.inv_axes.1)
     }
 
     /// Which way the long axis lies on the canvas, as `(cos, sin)`. What the
@@ -483,7 +494,7 @@ impl Lens {
 
         let (dx, dy) = (p.0 - self.center.0, p.1 - self.center.1);
         let (ex, ey) = self.offsets(p);
-        let m = ex.hypot(ey);
+        let m = crate::canvas::length_of(ex, ey);
 
         // On the axis the source images as the complete ring, which a single
         // point cannot be drawn as. Pick a direction — any fixed one will do,
@@ -573,7 +584,7 @@ impl Lens {
         let (a, b) = self.semi_axes();
         let polar = |p: (f32, f32)| {
             let (ex, ey) = self.offsets(p);
-            (ex.hypot(ey), ey.atan2(ex))
+            (crate::canvas::length_of(ex, ey), ey.atan2(ex))
         };
         let (r0, th0) = polar(from);
         let (r1, th1) = polar(to);
@@ -626,6 +637,7 @@ mod tests {
             center,
             radius,
             axes: (radius * RING_MAJOR, radius * RING_MINOR),
+            inv_axes: (1.0 / (radius * RING_MAJOR), 1.0 / (radius * RING_MINOR)),
             turn: (1.0, 0.0),
         }
     }

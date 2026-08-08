@@ -518,7 +518,7 @@ fn band(half_width: f32, focal: f32, z: f32) -> f32 {
 fn subdivide(streak: &Streak, lens: &Lens, out: &mut Vec<(f32, f32)>) {
     out.clear();
     let (dx, dy) = (streak.to.0 - streak.from.0, streak.to.1 - streak.from.1);
-    let length = dx.hypot(dy);
+    let length = crate::canvas::length_of(dx, dy);
     // The head, where the star actually is, speaks for the streak.
     let bend = lens.curvature(streak.to).max(lens.curvature(streak.from));
     let pieces = if length.is_finite() {

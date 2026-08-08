@@ -78,6 +78,23 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+# `side.txt` and `orbit.txt` moved together when three measurements in the
+# outside view stopped being taken the expensive way. `hypot` is libm's
+# overflow-safe, correctly-rounded routine and every span it was measuring here
+# is a difference of two canvas coordinates, so it was buying a guarantee the
+# inputs could not need; `Lens::offsets` ended on a divide per axis by two
+# numbers fixed for the whole frame; and `draw_path` measured a segment's length
+# three more times after already having it. All three are the same arithmetic to
+# within a rounding, and none of them is the same arithmetic to the bit.
+#
+# Two hashes, and it is the shape this change has to have. Nothing in the
+# cockpit reaches `lens`, `exterior` or `draw_path` — the tunnel is streaks and
+# two glows — so the three `--demo` flights and `warp.txt` came back
+# byte-identical, and a hash moving outside these two would have meant the reach
+# was wider than the change claimed. It is the same split the hull changes below
+# have, arrived at from the other side: those two are the flights with a ship in
+# them, and they are also the only two that light a lens.
+#
 # `orbit.txt` moved on its own when the drive stopped shining through the hull.
 # The bells and the exhaust they throw are light, the plates are opaque, and
 # `models::draw` laid the first over the second unconditionally — so from
@@ -188,5 +205,5 @@
 3c33f4c8f3d25fff908687f3a51c88058ce1095a4c5bffa1139086535080ad89  ascii.txt
 9455b1bb7cc7003a701015cbc202e2cf5b5323f155e26fe38d4de2bddb925294  ansi256.txt
 917e650b079f5b7753695005c7a16c6f56c8c42a6659d82a004d7eb556fc748a  warp.txt
-e9ad79e933ff7862086e57250fcc8edf5f2994f919cfd5d92ac0f725eb3b3bd0  side.txt
-196058eccea7c9cf96e5b02fe82bbb76c479d4cf3dc0feeb6f240d78a36ec063  orbit.txt
+356b86f456602a437cd3ae96e9e709bfc855f49f5aa82b42f3e18dd28dc7a60e  side.txt
+c339ae932f1b42ba6ecbafda5efdde815ad331e0bc9a167a9288b2bc9ffcb589  orbit.txt
