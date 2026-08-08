@@ -372,16 +372,34 @@ impl ExteriorField {
         // without the phase going coarse after days aloft.
         let twinkle_phase = (time * 2.3).rem_euclid(std::f64::consts::TAU) as f32;
 
+        // Where a trail run backward along the track ends up, if it ends up
+        // anywhere at all — see [`trail_head`] for what that is for. `None`
+        // covers three cases and every one of them wants the plain stretch
+        // below: a sublight sky, where `stretch` is exactly one and there is
+        // nothing to overreach; the camera abeam, where the nose lies flat in
+        // the image plane and `vanishing_point` refuses a direction that does
+        // not recede; and the camera anywhere forward of the beam, where a
+        // trail runs *toward* the eye and its projection diverges rather than
+        // converging on anything. Switched off in all three rather than reduced
+        // to an identity, which is what keeps every frame recorded at one of
+        // those angles the bytes it has always been.
+        let vanish = (stretch > 1.0)
+            .then(|| cam.vanishing_point(self.nose))
+            .flatten();
+
         self.stars.iter().filter_map(move |star| {
             let to = cam.project(star.pos)?;
             // Stretch backward along the direction of travel, exactly as the
             // cockpit does: a star close to the camera sweeps further per frame
             // and so draws the longer streak, with no special casing.
             let from = match star.prev {
-                Some(prev) => (
-                    to.0 + (prev.0 - to.0) * stretch,
-                    to.1 + (prev.1 - to.1) * stretch,
-                ),
+                Some(prev) => match vanish {
+                    Some(point) => trail_head(to, prev, point, stretch),
+                    None => (
+                        to.0 + (prev.0 - to.0) * stretch,
+                        to.1 + (prev.1 - to.1) * stretch,
+                    ),
+                },
                 None => to,
             };
 
@@ -495,6 +513,48 @@ impl ExteriorField {
         self.source = source;
         self.bent = bent;
     }
+}
+
+/// Where a star's trail begins, when the track it is stretched back along
+/// recedes and so has a point it vanishes at.
+///
+/// The bug this is here for, and it is [`crate::models::draw_trail`]'s, arrived
+/// at from the other end. A trail is stretched in *screen* space — the one step
+/// the star actually swept, multiplied by `stretch` — and a straight ray running
+/// away from the eye does not project onto a screen-space ray. It projects onto
+/// the segment between the star and the point its direction vanishes at, which
+/// it *approaches* and never reaches, so past that point there is no trail left
+/// to draw. Multiplied out regardless, the nearest stars in the band ran
+/// clean through it and out the far side, and every star at the one depth where
+/// the stretch comes to exactly the whole distance laid its trailing end
+/// precisely on it — a spike sitting inside a spread, which between them make a
+/// cusp. Swing the camera aft of the beam so that point is on the canvas and
+/// the cusp is a hot spot: at `--orbit -75,12,0` and full warp, within two
+/// subpixels of it the mean was 2.3 times the surrounding sky and every
+/// subpixel of it was lit, so the sky lost the black between its streaks and
+/// stopped reading as distance.
+///
+/// The arithmetic is one division and needs no depth, exactly as the lance's
+/// does. `along / span` is the fraction of the way to the point that one step
+/// covered, taken as a dot product against the run to the point and divided by
+/// the square of it; `k` steps then cover `k·u / (1 + (k-1)·u)`, which is under
+/// one for every `u` under one — so a trail can reach for the point and never
+/// touch it, whatever the stretch. Both guards are the arithmetic's backstop
+/// rather than cases that arise: the star lies between its own past and that
+/// point, so `along` is positive and short of `span` whenever the projection
+/// gave an honest answer.
+fn trail_head(to: (f32, f32), prev: (f32, f32), point: (f32, f32), stretch: f32) -> (f32, f32) {
+    let (ax, ay) = (point.0 - to.0, point.1 - to.1);
+    let span = ax * ax + ay * ay;
+    let along = (prev.0 - to.0) * ax + (prev.1 - to.1) * ay;
+    if !(0.0..span).contains(&along) {
+        return (
+            to.0 + (prev.0 - to.0) * stretch,
+            to.1 + (prev.1 - to.1) * stretch,
+        );
+    }
+    let frac = stretch * along / (span + (stretch - 1.0) * along);
+    (to.0 + ax * frac, to.1 + ay * frac)
 }
 
 /// Fold a position back into `[-half, half)`, and say how far it was moved.
@@ -973,6 +1033,148 @@ mod tests {
             .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
             .sum();
         assert!(moving > 100.0, "warp should smear the band: {moving}");
+    }
+
+    #[test]
+    fn a_trail_never_runs_past_the_point_the_track_vanishes_at() {
+        // The bug this is here for. A trail is stretched in *screen* space, and
+        // a ray running away from the eye does not project onto a screen-space
+        // ray: it projects onto the segment between the star and the point its
+        // own direction vanishes at, approaching that point and never reaching
+        // it. Multiplied out regardless, the nearest stars ran clean through
+        // and out the far side, and every star at the depth where the stretch
+        // comes to exactly one laid its trailing end precisely on it — so the
+        // two together piled a cusp of light on one spot. Over this pool:
+        // 95 of 800 trails finished within a tenth of the point and 77 of those
+        // went past it, the worst half again as far as it. The frame that shows
+        // it is `--orbit -75,12,0` at full warp, where within two subpixels of
+        // the point the mean was 2.3 times the surrounding sky and every
+        // subpixel of it was lit, so the sky lost the black between its streaks
+        // and read as a hot spot rather than as distance. Nothing now reaches
+        // past two thirds of the way.
+        //
+        // Asked of the whole pool rather than of a reference frame, because
+        // until this landed no pinned flight put the camera aft of the beam —
+        // the only half of the range where this point exists at all, and
+        // exactly why it went unnoticed for as long as it did.
+        let cam = cam();
+        let astern = Orbit {
+            azimuth: (-75.0f32).to_radians(),
+            elevation: 12.0f32.to_radians(),
+            roll: 0.0,
+        }
+        .held();
+        assert!(
+            astern.nose_in_camera()[2] > 0.0,
+            "this camera has to be aft of the beam or there is no point to run past"
+        );
+        let mut field = ExteriorField::new(800, 29, &cam, astern);
+        for _ in 0..600 {
+            field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, astern);
+        }
+        let vanish = cam
+            .vanishing_point(field.nose)
+            .expect("a nose that recedes vanishes somewhere");
+
+        let mut asked = 0usize;
+        for (star, streak) in field.stars.iter().zip(field.streaks(&cam, 1.0, 0.0)) {
+            let Some(prev) = star.prev else { continue };
+            let (ax, ay) = (vanish.0 - streak.to.0, vanish.1 - streak.to.1);
+            let span = ax * ax + ay * ay;
+            let step = ((prev.0 - streak.to.0) * ax + (prev.1 - streak.to.1) * ay) / span;
+            let drawn =
+                ((streak.from.0 - streak.to.0) * ax + (streak.from.1 - streak.to.1) * ay) / span;
+            if !(0.0..1.0).contains(&step) {
+                continue;
+            }
+            asked += 1;
+            assert!(
+                drawn < 1.0,
+                "a trail reached {drawn} of the way to the point its track vanishes at, \
+                 where the whole of the track only ever approaches it"
+            );
+            // And it still stretches: the drawn trail reaches further than the
+            // one step the star actually swept, or the smear has gone with the
+            // overshoot.
+            assert!(
+                drawn >= step,
+                "a trail was drawn shorter than the step it was stretched from: \
+                 {drawn} against {step}"
+            );
+        }
+        assert!(
+            asked > 400,
+            "only {asked} trails were pointed at the vanishing point, which is too few \
+             to be sure of noticing one running through it"
+        );
+    }
+
+    #[test]
+    fn a_sky_with_nowhere_to_vanish_is_stretched_exactly_as_it_always_was() {
+        // The other half, and it is what every pinned exterior frame rests on.
+        // Abeam the nose lies flat in the image plane and forward of the beam a
+        // trail runs toward the eye, so in neither case is there a point to be
+        // held back from — and the trail has to come out not merely close to
+        // the segment the plain stretch drew, but the same floats.
+        let cam = cam();
+        let ahead = Orbit {
+            azimuth: 1.0,
+            elevation: -0.3,
+            roll: 0.4,
+        }
+        .held();
+        assert!(
+            ahead.nose_in_camera()[2] < 0.0,
+            "this camera has to be forward of the beam"
+        );
+        for orbit in [Orbit::LEVEL, ahead] {
+            let mut field = ExteriorField::new(500, 31, &cam, orbit);
+            for _ in 0..300 {
+                field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, orbit);
+            }
+            assert!(
+                cam.vanishing_point(field.nose).is_none(),
+                "{orbit:?} was given a point to vanish at"
+            );
+            let stretch = 1.0 + 1.0 * 1.0 * 5.0;
+            for (star, streak) in field.stars.iter().zip(field.streaks(&cam, 1.0, 0.0)) {
+                let Some(prev) = star.prev else { continue };
+                let want = (
+                    streak.to.0 + (prev.0 - streak.to.0) * stretch,
+                    streak.to.1 + (prev.1 - streak.to.1) * stretch,
+                );
+                assert_eq!(
+                    streak.from, want,
+                    "the trail moved at {orbit:?}, where nothing may touch it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_sublight_trail_is_the_step_the_star_swept_and_nothing_more() {
+        // `stretch` is exactly one below the drive, so a trail is the segment
+        // the projection handed over and there is nothing to hold back — said
+        // as an equality because the branch is gated on `stretch > 1.0` and
+        // would otherwise round `prev` onto the line to the vanishing point.
+        let cam = cam();
+        let astern = Orbit {
+            azimuth: -1.3,
+            elevation: 0.2,
+            roll: 0.0,
+        }
+        .held();
+        let mut field = ExteriorField::new(400, 37, &cam, astern);
+        for _ in 0..300 {
+            field.update(1.0 / 120.0, 40.0, &cam, astern);
+        }
+        for (star, streak) in field.stars.iter().zip(field.streaks(&cam, 0.0, 0.0)) {
+            let Some(prev) = star.prev else { continue };
+            assert_eq!(
+                streak.from, prev,
+                "a sublight trail is not where the star was a step ago"
+            );
+        }
     }
 
     #[test]

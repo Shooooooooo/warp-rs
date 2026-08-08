@@ -11,7 +11,7 @@
 # drifted it; the `headless` CI job produces the same files from a release
 # binary and runs `sha256sum -c` over this, which also proves the two agree.
 #
-# Six flights, sharing
+# Seven flights, sharing
 #
 #     --headless --frames 120 --seed 1 --size 120x36
 #
@@ -23,6 +23,7 @@
 #     warp.txt        --engage --throttle 1.0 --color truecolor
 #     side.txt        --engage --throttle 1.0 --view side --color truecolor
 #     orbit.txt       the same, --orbit 55,35,20
+#     astern.txt      the same, --orbit -75,6,20
 #
 # The last one is the camera swung off the beam, and it is here for the reason
 # the two before it are: the outside view's whole geometry is written to reduce
@@ -32,6 +33,17 @@
 # angles off zero at once, which is the only configuration that turns the
 # bubble's outline off the horizontal, and it puts the star band's depth travel,
 # its vertical fold and its wall recycle on the path as well.
+#
+# `astern.txt` is the newest and it is here because the six above it all watch
+# the ship from abeam or from in front of it. The camera goes all the way round;
+# the point the ship's own *track* vanishes at is on the screen from behind and
+# from nowhere else. So half the range of a control had no reference at all, and
+# it was the half where a trail stretched in screen space can be drawn clean
+# through a place the track only ever approaches. It is recorded at
+# `--orbit -75,6,20` — all three angles off zero, the nose receding, and the
+# point landing 24 subpixels from the ship and 20 from the nearest edge, which
+# are the two conditions that make the question askable at all and are the same
+# pair `models::forward_quarter()` picks its angles for.
 #
 # The three before it are here because the first two turned out to cover very
 # little.
@@ -74,9 +86,32 @@
 #     ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
-#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt \
+#     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
+#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt \
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
+#
+# `astern.txt` arrived with the fix for a fault not one of the six could see,
+# and the useful half of that entry is that **no hash moved for it**. A trail is
+# stretched back along the track in *screen* space — the step the star swept,
+# multiplied by six at full warp — and a ray running away from the eye does not
+# project onto a screen-space ray. It projects onto the segment between the star
+# and the point its own direction vanishes at, approaching it and never
+# arriving, so the multiply drew trail past the place it had already gone. It is
+# `models::draw_trail`'s bug, in the star band, and it wears the same fix:
+# `Camera::vanishing_point`, and one division.
+#
+# Every one of the six answers `None` to that division and so cannot move.
+# Abeam the nose lies flat in the image plane; forward of the beam the track
+# runs toward the eye and its projection diverges rather than converging; and
+# the three cockpit flights are a different module. That is not a change
+# vindicated by six green hashes, it is a change that found the hole those six
+# leave — and the hole is a whole half of where the camera can be put. Hence
+# this flight, and hence `a_trail_never_runs_past_the_point_the_track_vanishes_at`
+# in `exterior.rs`, which is the guard at the level the fault lives at: it holds
+# every trail in the pool short of that point and no shorter than the step it
+# was stretched from. Recorded *after* the fix, so what it pins is the sky with
+# the cusp gone.
 #
 # `orbit.txt` moved on its own when a folded trail stopped being scaled by the
 # wrong range. The band wraps a star that runs off an edge round to the other
@@ -241,8 +276,9 @@
 # re-expression of what was there before. The panel names the controls, and the
 # controls changed.
 #
-# The case list lives here, in `tests/golden.rs` and in the `headless` CI job.
-# Adding a flight means adding it to all three.
+# The case list lives here, in `tests/golden.rs` and in the `headless` CI job,
+# and the file names again in `.gitignore`. Adding a flight means adding it to
+# all four.
 #
 # The hashes hold across build profiles and rustc versions — checked against
 # 1.85 and 1.94, debug and release — but not across platforms: sin, cos, exp
@@ -256,3 +292,4 @@ c745fb56071a4065ffe72cc6ce1da35bc06e1d49230df88f20c2049ac7f6f1bc  ascii.txt
 8e4d6fe37cf5ebbb63c6af30f858185ed2741ec63ea5771e4fd35e7daff3175a  warp.txt
 e00c1f3479261e40f2add1e1d812981d4d53b30e07c50402a675d1f8eb66a009  side.txt
 934833f2619626f2c0e0efe90214c021af73d7f0f4c3061758d3ae81a7448911  orbit.txt
+98d2ee91b64d25ca88626064466d74e43838b954784c6417b406012f791173c2  astern.txt
