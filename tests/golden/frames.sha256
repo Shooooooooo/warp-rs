@@ -78,6 +78,34 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+# `orbit.txt` moved on its own when a folded trail stopped being scaled by the
+# wrong range. The band wraps a star that runs off an edge round to the other
+# side and carries its trail with it, which means turning a world-space jump
+# into a screen-space one — a divide by the star's range. It was dividing by the
+# range the star *ends* the step at, where the trail had been projected through
+# the range it *started* it at, so the trail landed short or long by
+# `shift · focal · (1/z_new − 1/z_old)`, along the camera's own x for the
+# sideways fold and y for the vertical one. `streaks` then multiplies the whole
+# tail-to-head vector by six at full warp, and what reached the frame was a
+# lattice of long faint streaks lying across the flow instead of running with
+# it — faint because `draw_streak` divides a streak's light by its length, so a
+# streak several times longer than the motion it stands for is spread that much
+# thinner.
+#
+# One hash, and it is the only shape this change can have. Travel is exactly
+# `(-1, 0, 0)` at `Orbit::LEVEL`, so `travel[2]` is a hard zero, the two ranges
+# are the same bit for bit, and the correction was already exact where
+# `side.txt` has the camera. The three cockpit flights are a different module
+# again. Note which way round that leaves this file: `orbit.txt` was recorded
+# with the fault in it and pinned it for as long as it stood, which is what a
+# reference frame does with anything nobody has looked at — it was found by
+# looking at the README's own screenshot, not by anything here. The guard is
+# therefore a property test at the level the fault lives at,
+# `a_trail_carried_over_the_fold_is_scaled_by_the_range_it_was_drawn_at` in
+# `exterior.rs`, which holds every star's trail to the projection of where it
+# was one step back along the track — folded, recycled or merely flown — at
+# four camera angles and two speeds.
+#
 # `side.txt` and `orbit.txt` moved together when three measurements in the
 # outside view stopped being taken the expensive way. `hypot` is libm's
 # overflow-safe, correctly-rounded routine and every span it was measuring here
@@ -227,4 +255,4 @@ c745fb56071a4065ffe72cc6ce1da35bc06e1d49230df88f20c2049ac7f6f1bc  ascii.txt
 6aaef3142e7323ce74789c573d906e48b2b2fabd87601a2f0bb7709ee4445de1  ansi256.txt
 8e4d6fe37cf5ebbb63c6af30f858185ed2741ec63ea5771e4fd35e7daff3175a  warp.txt
 e00c1f3479261e40f2add1e1d812981d4d53b30e07c50402a675d1f8eb66a009  side.txt
-faf3197578b9f23939f2980d5e8a476f81933733fa6ee94286cbab24b8922079  orbit.txt
+934833f2619626f2c0e0efe90214c021af73d7f0f4c3061758d3ae81a7448911  orbit.txt

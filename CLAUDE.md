@@ -479,16 +479,31 @@ identity, because the angles are unchanged bit for bit when nothing moved them.
 Depth travel runs only when `travel[2] != 0.0`, and the vertical fold only when
 depth or height moved, because `fold` is *not* an exact identity for a value
 already inside its band and the level shot is exactly where `y` never moves.
-Off the beam two things the band was written never to face come alive. Stars
+Off the beam three things the band was written never to face come alive. Stars
 cross the near and far walls and have to be respawned, and a respawn is handed
 the trail it *would* have had, one step back along the track — without that, at
 full warp two to four percent of the pool draws a bare point every frame, which
 is the sky flickering between streaks and dots that the sideways fold exists to
-avoid, arriving by the other door. And the Doppler is measured against the
+avoid, arriving by the other door. The Doppler is measured against the
 cached `nose` rather than against camera `+x`, which is only the direction of
 travel while the camera is abeam; measured against the frame, a chase view would
 redden the sky ahead and blue the wake. Abeam the nose is `(1, 0, 0)`, so that
 dot product is `pos[0]` to the bit.
+
+And **a star's range changes while it flies, so a step has two of them and the
+fold has to name which.** Carrying a folded trail across means turning a
+world-space jump into a screen-space one, which is a divide by the range — and
+the range it wants is the one `prev` was projected through, not the one the star
+ends the step at. `z_prev` is captured beside that projection for exactly this,
+and moving it below the depth travel puts the fault straight back. Abeam the two
+are the same bit for bit, so nothing showed there for as long as the camera was
+pinned; off the beam the trail lands out by `shift · focal · (1/z_new − 1/z_old)`
+along one camera axis, `streaks` multiplies it by six at full warp, and the sky
+grows a lattice of long faint streaks lying across the flow.
+`a_trail_carried_over_the_fold_is_scaled_by_the_range_it_was_drawn_at` is the
+guard, and it is a property over the whole pool rather than a reference frame —
+`orbit.txt` had the fault recorded *in* it, which is what a pinned frame does
+with anything nobody has looked at.
 
 The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
 `Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with
