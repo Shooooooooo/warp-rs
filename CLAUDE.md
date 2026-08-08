@@ -1,10 +1,11 @@
 # CLAUDE.md
 
 Notes for AI assistants working in this repository. [`README.md`](README.md) is
-the user-facing document — what the program does, which keys fly it, how to
-wire it into tmux. This one is about the inside: how the code is arranged, what
-it depends on that is not obvious, and how to write changes that read like what
-is already here.
+the user-facing document, and it is deliberately thin: what the program is, how
+to run it, and what the flags do. It no longer lists the keys or the tmux
+wiring, so it is not a second copy of anything here to be kept in step. This one
+is about the inside: how the code is arranged, what it depends on that is not
+obvious, and how to write changes that read like what is already here.
 
 ## What this is
 
@@ -234,10 +235,16 @@ size. Perf edits are documented with the measurement that justified them —
 worth about six percent of drawing time at twenty thousand stars — so do not
 undo one without a number saying why. The others on that list are the writer
 spelling a colour into one stack sequence instead of seven capacity-checked
-pushes (−28% of the write column), `canvas::length_of` in place of `hypot`
+pushes (−30% of the write column), `canvas::length_of` in place of `hypot`
 (−6% of an exterior frame), `Lens::inv_axes` (−1.8%), `draw_path` reusing the
 span it already measured (−2.5%), and the twinkle `sin` skipped at warp, where
-its amount is a hard zero (−2%).
+its amount is a hard zero (−2%). Together they take the expensive frame — the
+outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2, which
+is the number to reproduce before believing a regression here.
+
+Measure the two trees back to back rather than against a figure written down
+earlier. This container drifts about ten percent between sessions, which is
+wider than most of the entries above.
 
 ### What was measured and is not worth trying again
 
@@ -400,7 +407,7 @@ back to `poll` afterwards and block out the rest of the budget anyway — so the
 stick was answered at once and the picture was not. It now carries an `acted`
 flag and breaks once something has moved the flight, which is a whole budget off
 the wait: measured through a pty with the key written at the start of a frame's
-window, 15.71 ms to 0.42 at `--fps 60`, 31.79 to 0.45 at 30, and 65.03 to 0.46
+window, 14.95 ms to 0.62 at `--fps 60`, 31.08 to 0.53 at 30, and 65.02 to 0.53
 at 15. **The queue is emptied before the wait is cut short** — that is the
 `!event::poll(Duration::ZERO)?` beside the flag, and it is load-bearing rather
 than tidiness: without it a burst of wheel notches is one frame each rather than
@@ -408,15 +415,16 @@ one frame, and a resize the terminal settles out of buys itself a repaint.
 
 **So the frame cap holds while nothing is being typed and does not while
 something is**, which is the trade and is worth knowing before it is read as a
-bug. Idle is untouched — 2.7% of a core either way, the same bytes — and a key
-held down is free, because autorepeat tops out around thirty a second and thirty
-extra frames of a sub-millisecond render is nothing. Only a rate no hand reaches
-shows at all: a stuck key or a pasted burst at 500 Hz takes 3.9% to 14.4%, and
-that is self-limiting at the render's own speed. A floor under how soon an
-input-driven frame may start was written and thrown away — gating the break is
-not enough while the wait above it is still the whole budget, and shortening the
-wait as well turned the drain into a spin that took the held-key case from 2.8%
-to 7.8% while handing the latency back. If that ceiling ever wants bounding it
+bug. Idle is untouched — 4.1% of a core either way, the same bytes — and a key
+held down is free, 4.5% against 4.3%, because autorepeat tops out around thirty
+a second and thirty extra frames of a sub-millisecond render is nothing. Only a
+rate no hand reaches shows at all: a stuck key or a pasted burst at 500 Hz takes
+5.3% to 18.7%, and that is self-limiting at the render's own speed. A floor
+under how soon an input-driven frame may start was written and thrown away —
+gating the break is not enough while the wait above it is still the whole
+budget, and shortening the wait as well turned the drain into a spin that took
+the held-key case to nearly three times its resting cost while handing the
+latency back. If that ceiling ever wants bounding it
 wants its own attempt and its own measurement, not that shape.
 
 ### The two skies
@@ -861,9 +869,11 @@ so they cannot walk the pool past what the command line would have accepted.
 They used to clamp to a separate 20 000 that sat *under* what `--stars` allowed,
 which meant `--stars 100000` and a single `+` shrank the pool by four fifths.
 Their *floor* moved with the density and is now `POOL_FLOOR`: 64 was chosen
-against an automatic minimum of 300, and at 0.005 an ordinary terminal opens at
-nineteen stars, so a floor up there made `-` *add* forty-five of them and landed
-both keys on the same number. It is 8 rather than 1 because `+` multiplies by
+against an automatic minimum of 300, and a floor up there sits over the count on
+any window the density opens thin, so `-` *added* stars and landed both keys on
+the same number. Which windows those are moves with `AUTO_DENSITY` — at 0.005 it
+was an ordinary 80x24, at today's 0.02 it is 40x12 — so the test that holds it
+flies both. It is 8 rather than 1 because `+` multiplies by
 1.25 and truncates, so below four stars the key gives the same number back and
 swallows the press — `the_star_keys_move_the_pool_the_way_they_point` holds both
 halves of that.
@@ -888,10 +898,10 @@ this view could do that the cockpit cannot — a barrel roll flown and watched
 from the beam — and bought a stick that means one thing in each view instead of
 two things in one of them.
 
-Four places have to move together if you change any of it: `handle_key`, the
+Three places have to move together if you change any of it: `handle_key`, the
 four hint arrays in `hud.rs` (a face per colour mode times a face per view —
-they are the only place the *running program* writes the controls down),
-`README.md`'s two `Flying` tables, and the tests that pin the split.
+and since the README stopped listing the keys, the only place the controls are
+written down at all), and the tests that pin the split.
 `the_stick_flies_the_camera_outside_and_the_ship_inside` says the ship's rates
 never move when a camera key is pressed and that every one of those keys moves
 *something*; `the_camera_is_not_connected_in_the_cockpit` and
@@ -1244,8 +1254,8 @@ naming the camera cost three columns over `QE roll`: `WASDQE cam` rather than
 `draw_hints` needs `chars + 2 <= cols`, so it fits a sixty-column window with
 two columns to spare — and sixty is the width `tests/flight.rs` flies at, so a
 longer word there would shed the tier and lose the *throttle* to gain the
-camera. `README.md`'s two `Flying` tables are the other place the keys are
-written down.
+camera. Those tiers are now the only place the keys are written down anywhere,
+so a control that fits none of them is one nothing ever tells the user about.
 
 **Adding a NAV readout.** The panel has one spare row and no test guarding it.
 The bottom three rows are counted *up* from the bottom — status at `rows - 3`,
@@ -1257,9 +1267,9 @@ side view where the `SHIP` row already makes six, the closing rule lands on row
 **Changing what a stick key does.** It is written twice, once per view, in
 `handle_key`'s guard-gated arms — the cockpit block first, the camera block
 below it, each key spelled once per view and falling through from one to the
-other — and in four places besides: the hint tiers in `hud.rs` (both faces),
-`README.md`'s two `Flying` tables, and the pair of tests in `app.rs` that pin
-the split, `the_stick_flies_the_camera_outside_and_the_ship_inside` and
+other — and in three places besides: the hint tiers in `hud.rs` (both faces)
+and the pair of tests in `app.rs` that pin the split,
+`the_stick_flies_the_camera_outside_and_the_ship_inside` and
 `the_camera_is_not_connected_in_the_cockpit`. Between them they say the ship's
 rates do not move when a camera key is pressed, the camera does not move when a
 ship key is, and every one of the six keys moves *something* in both views — a

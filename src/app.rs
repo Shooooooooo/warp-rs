@@ -41,39 +41,48 @@ const MAX_FRAME_DT: f32 = 0.25;
 const MAX_STEP_DT: f32 = 1.0;
 /// Stars per subpixel when the count is chosen automatically.
 ///
-/// Thinned three times now, 0.05 to 0.02 to 0.01 to this, and every time for
-/// the same reason: a field that looks right held still is too dense to fly.
-/// Every star is drawn as the segment it swept, so lighting the drive turns
-/// each one into a streak several times its own length, and what was a
-/// scattering of points becomes a wash with no individual star left in it —
-/// the depth parallax that is most of what the view is for goes with them.
-/// Larger terminals feel it first, because the count follows the area while
-/// the streaks lengthen with the frame as well.
+/// Pulled hard both ways, and it has now been all the way down and part of the
+/// way back. It was thinned three times — 0.05 to 0.02 to 0.01 to 0.005 —
+/// every time on the same argument: a field that looks right held still is too
+/// dense to fly. Every star is drawn as the segment it swept, so lighting the
+/// drive turns each one into a streak several times its own length, and what
+/// was a scattering of points becomes a wash with no individual star left in
+/// it — the depth parallax that is most of what the view is for goes with
+/// them. Larger terminals feel that first, because the count follows the area
+/// while the streaks lengthen with the frame as well.
 ///
-/// It had a floor and a ceiling either side of it and both are gone. The floor
-/// was 300, which at 0.01 was the answer on every window under fifteen
-/// thousand cells — so on an ordinary terminal this number decided nothing at
-/// all, and halving it with the floor still in place would have changed
-/// nothing anybody could see. The ceiling was 20 000, and it is what the
-/// density now answers on its own: `cli`'s cell ceiling holds a canvas to two
-/// million cells, which is four million subpixels, and four million at this
-/// density comes out at twenty thousand.
+/// Pulling the other way: parallax needs something to be read against, and at
+/// 0.005 an ordinary window opened with a sky that could be counted off by eye
+/// — nineteen stars at 80x24, forty-three at 120x36. This is back at 0.02, the
+/// value the second thinning reached, which is four times that sky and still
+/// well under where it started.
 ///
-/// What is left of a ceiling is [`cli::MAX_STARS`], and it is not decoration —
+/// It had a floor and a ceiling either side of it and both are gone, which is
+/// what makes this number the whole of the answer rather than a knob switched
+/// off across most of its range. The floor was 300, which at 0.01 was the
+/// answer on every window under fifteen thousand cells, so on an ordinary
+/// terminal the density decided nothing at all. The ceiling was 20 000, and at
+/// 0.005 the density reproduced it exactly at the largest canvas `cli` allows
+/// — a coincidence worth noticing and not one to build on. At this value that
+/// canvas comes out at 80 000 instead.
+///
+/// What holds that end now is [`cli::MAX_STARS`], and it is not decoration —
 /// [`Flight::new`] is public and takes a size rather than measuring one, so a
 /// caller outside the binary can hand it a canvas no command line would have
 /// been allowed to ask for.
 ///
-/// An 80x24 terminal spawns 19 stars where it spawned 300, a 120x36 one 43,
-/// and a 300x90 one 270 where it spawned 540. `--stars` is unaffected.
-const AUTO_DENSITY: f32 = 0.005;
+/// An 80x24 terminal spawns 76 stars, a 120x36 one 172, a 200x60 one 480 and
+/// a 300x90 one 1080. `--stars` is unaffected.
+const AUTO_DENSITY: f32 = 0.02;
 /// The smallest pool the `-` key will leave behind.
 ///
 /// It was 64, and 64 was chosen against an automatic minimum of 300 that no
-/// longer exists. At this density an ordinary terminal opens well under it —
-/// 80x24 starts with nineteen stars — so a floor up there made `-` *add*
-/// forty-five of them and land both keys on the same number, which is a
-/// control doing the opposite of what it is labelled.
+/// longer exists. A floor up there sits over the count on any window the
+/// density opens thin — 40x12 starts with nineteen stars — so `-` *added*
+/// forty-five of them and landed both keys on the same number, which is a
+/// control doing the opposite of what it is labelled. That bit at 80x24 while
+/// the density was 0.005; quadrupling it moves which windows it bites on and
+/// not whether it does, which is why the floor stayed down here.
 ///
 /// Low enough now to sit under any pool worth pressing `-` on, and
 /// deliberately not lower: `+` multiplies by 1.25 and truncates, so at one,
@@ -1051,8 +1060,8 @@ mod tests {
         // this, and on every window below fifteen thousand cells the floor was
         // the answer and the density decided nothing. Asserted against the
         // density rather than as a ratio between the two counts: the small
-        // canvas wants 4.8 stars and gets 4, so the ratio carries a seventeen
-        // percent truncation the areas know nothing about.
+        // canvas wants 19.2 stars and gets 19, and a ratio would carry that
+        // truncation as an error the two areas know nothing about.
         for r in [&small, &large] {
             let (w, h) = r.canvas_dims();
             let want = (w * h) as f32 * AUTO_DENSITY;
@@ -1083,37 +1092,51 @@ mod tests {
         );
         assert_eq!(auto_stars(1, 2), 1, "a 1x1 terminal is a canvas of two");
 
-        // The ceiling that used to be written down beside the density, arrived
-        // at by the density instead: `cli` holds a canvas to two million
-        // cells, and a cell is two subpixels.
-        assert_eq!(auto_stars(4_000_000, 1), 20_000);
+        // The largest canvas `cli` will allow, that being the one boundary
+        // here which is neither zero nor saturation: two million cells, and a
+        // cell is two subpixels. While the density was 0.005 this came out at
+        // exactly the 20 000 the old ceiling had been written down as, which
+        // was worth noticing and was never the reason to check it.
+        assert_eq!(auto_stars(4_000_000, 1), 80_000);
     }
 
     #[test]
     fn the_star_keys_move_the_pool_the_way_they_point() {
         // Regression, and it arrived with the density rather than before it.
         // The keys clamped up to a floor of 64, which was chosen under an
-        // automatic minimum of 300 and sits over the count on any ordinary
-        // terminal: 80x24 opens with nineteen stars, so `-` added forty-five
-        // of them and both keys landed on the same number. The other half is
-        // the fixed point — `(n as f32 * 1.25) as usize` is `n` again below
-        // four — so the floor could not simply go to one either.
-        let args = args_for(&["--size", "80x24"]);
-        let mut paused = false;
+        // automatic minimum of 300 and sits over the count on any window the
+        // density opens thin: `-` added stars rather than taking them away,
+        // and both keys landed on the same number. The other half is the fixed
+        // point — `(n as f32 * 1.25) as usize` is `n` again below four — so
+        // the floor could not simply go to one either.
+        //
+        // Two windows, because *which* of them is thin moved when the density
+        // did. At 0.005 an 80x24 terminal opened with nineteen stars and a
+        // floor of 64 added forty-five to them; at 0.02 that window opens with
+        // seventy-six and would sail past the floor coming back, while 40x12
+        // opens with nineteen and still catches it.
+        for (cols, rows) in [(80usize, 24usize), (40, 12)] {
+            let size = format!("{cols}x{rows}");
+            let args = args_for(&["--size", &size]);
+            let mut paused = false;
 
-        let mut flight = Flight::new(&args, 80, 24);
-        let opened = flight.field.len();
-        handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
-        assert!(
-            flight.field.len() < opened,
-            "`-` took a pool of {opened} to {}",
-            flight.field.len()
-        );
+            let mut flight = Flight::new(&args, cols, rows);
+            let opened = flight.field.len();
+            handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
+            assert!(
+                flight.field.len() < opened,
+                "`-` took a {cols}x{rows} pool of {opened} to {}",
+                flight.field.len()
+            );
 
-        let mut flight = Flight::new(&args, 80, 24);
-        let opened = flight.field.len();
-        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
-        assert!(flight.field.len() > opened, "`+` left the pool at {opened}");
+            let mut flight = Flight::new(&args, cols, rows);
+            let opened = flight.field.len();
+            handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+            assert!(
+                flight.field.len() > opened,
+                "`+` left a {cols}x{rows} pool at {opened}"
+            );
+        }
 
         // And the floor stands clear of the fixed point, so `+` still has
         // somewhere to go from the smallest pool it can be pressed on. Through
