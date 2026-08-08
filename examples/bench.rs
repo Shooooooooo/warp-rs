@@ -16,6 +16,14 @@
 //! two machines are not comparable. It made a real difference — the same case
 //! came out at 6.87, 7.31 and 6.66 ms of drawing in ascii, 256 and truecolor —
 //! so the mode is a column here rather than an assumption.
+//!
+//! A `0` in the stars column leaves the flag off, so the case measures whatever
+//! a default run draws. That used to be a number derived from the canvas and is
+//! a fixed count now, which changes how those rows *read* rather than what they
+//! measure: they are one pool at three canvases, so what stands between them is
+//! the cost of the canvas with the sky held still. The rows naming a number are
+//! the ones that vary the pool, and they are the ones a figure written down in
+//! `CLAUDE.md` can be compared against across this change.
 
 use clap::Parser;
 use std::time::Instant;

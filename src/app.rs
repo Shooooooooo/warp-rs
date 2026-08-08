@@ -39,58 +39,23 @@ const MAX_FRAME_DT: f32 = 0.25;
 /// would grind through a hundred and twenty simulation steps for every second
 /// of it.
 const MAX_STEP_DT: f32 = 1.0;
-/// Stars per subpixel when the count is chosen automatically.
-///
-/// Pulled hard both ways, and it has now been all the way down and part of the
-/// way back. It was thinned three times — 0.05 to 0.02 to 0.01 to 0.005 —
-/// every time on the same argument: a field that looks right held still is too
-/// dense to fly. Every star is drawn as the segment it swept, so lighting the
-/// drive turns each one into a streak several times its own length, and what
-/// was a scattering of points becomes a wash with no individual star left in
-/// it — the depth parallax that is most of what the view is for goes with
-/// them. Larger terminals feel that first, because the count follows the area
-/// while the streaks lengthen with the frame as well.
-///
-/// Pulling the other way: parallax needs something to be read against, and at
-/// 0.005 an ordinary window opened with a sky that could be counted off by eye
-/// — nineteen stars at 80x24, forty-three at 120x36. This is back at 0.02, the
-/// value the second thinning reached, which is four times that sky and still
-/// well under where it started.
-///
-/// It had a floor and a ceiling either side of it and both are gone, which is
-/// what makes this number the whole of the answer rather than a knob switched
-/// off across most of its range. The floor was 300, which at 0.01 was the
-/// answer on every window under fifteen thousand cells, so on an ordinary
-/// terminal the density decided nothing at all. The ceiling was 20 000, and at
-/// 0.005 the density reproduced it exactly at the largest canvas `cli` allows
-/// — a coincidence worth noticing and not one to build on. At this value that
-/// canvas comes out at 80 000 instead.
-///
-/// What holds that end now is [`cli::MAX_STARS`], and it is not decoration —
-/// [`Flight::new`] is public and takes a size rather than measuring one, so a
-/// caller outside the binary can hand it a canvas no command line would have
-/// been allowed to ask for.
-///
-/// An 80x24 terminal spawns 76 stars, a 120x36 one 172, a 200x60 one 480 and
-/// a 300x90 one 1080. `--stars` is unaffected.
-const AUTO_DENSITY: f32 = 0.02;
 /// The smallest pool the `-` key will leave behind.
 ///
-/// It was 64, and 64 was chosen against an automatic minimum of 300 that no
-/// longer exists. A floor up there sits over the count on any window the
-/// density opens thin — 40x12 starts with nineteen stars — so `-` *added*
-/// forty-five of them and landed both keys on the same number, which is a
-/// control doing the opposite of what it is labelled. That bit at 80x24 while
-/// the density was 0.005; quadrupling it moves which windows it bites on and
-/// not whether it does, which is why the floor stayed down here.
+/// Low enough to sit under any pool worth pressing `-` on, and deliberately not
+/// lower: `+` multiplies by 1.25 and truncates, so at one, two and three stars
+/// the answer is the same number back and the key swallows the press without
+/// moving anything. Four is where growth starts; this stands clear of it.
+/// Making `+` grow by at least one star instead would let this go to one, and
+/// it rewrites the growth arithmetic to fix a floor that is easier to move.
 ///
-/// Low enough now to sit under any pool worth pressing `-` on, and
-/// deliberately not lower: `+` multiplies by 1.25 and truncates, so at one,
-/// two and three stars the answer is the same number back and the key swallows
-/// the press without moving anything. Four is where growth starts; this stands
-/// clear of it. Making `+` grow by at least one star instead would let this go
-/// to one, and it rewrites the growth arithmetic to fix a floor that is easier
-/// to move.
+/// It was 64 once, chosen against an automatic minimum of 300 that is as gone
+/// as the density that replaced it. A floor up there sat *over* the count on
+/// any window the old density opened thin — 40x12 started with nineteen stars —
+/// so `-` added forty-five of them and landed both keys on the same number,
+/// which is a control doing the opposite of what it is labelled. Nothing opens
+/// under this one now that [`cli::DEFAULT_STARS`] is a fixed 256, but it is not
+/// thereby unreachable: `-` walks that pool down to nine and then onto this,
+/// where it stops, and `+` climbs back off it to ten.
 const POOL_FLOOR: usize = 8;
 /// So the clamp in [`Flight::resize_pool`] cannot be made to panic by a later
 /// edit to either end of it: `Ord::clamp` requires its minimum below its
@@ -175,7 +140,7 @@ impl Flight {
             .with_hull_samples(args.aa);
         let cam = renderer.camera(&ship, 0.0);
         let seed = seed(args);
-        let field = StarField::new(star_count(args, &renderer), seed, &cam);
+        let field = StarField::new(args.stars, seed, &cam);
 
         let mut flight = Self {
             ship,
@@ -297,7 +262,7 @@ impl Flight {
             // stream is untouched whenever this happens — and so the two skies
             // are not the same pattern seen twice.
             self.exterior = Some(ExteriorField::new(
-                star_count(args, &self.renderer),
+                args.stars,
                 self.seed ^ EXTERIOR_SEED,
                 &cam,
                 self.orbit,
@@ -469,7 +434,23 @@ impl Flight {
     /// keys walk to can never be one the command line would have refused. It
     /// used to be a separate 20 000 that sat *under* what `--stars` allowed,
     /// which made `+` shrink a pool the flag had asked for.
+    ///
+    /// An empty sky is the one pool the floor may not lift, and answering that
+    /// takes an early return rather than a smaller number. `--stars 0` is a
+    /// thing to ask for rather than a mistake to correct, and taken through the
+    /// clamp below it comes out at [`POOL_FLOOR`] for *both* keys — so `-` would
+    /// put eight stars into a sky somebody emptied on purpose, which is the
+    /// exact fault this floor came down from 64 to stop, arriving by the other
+    /// door. There is also no count that could be passed down instead: both
+    /// fields hold whatever they are handed at one star or more, and that guard
+    /// is theirs to keep. `+` is deliberately *not* caught by it and climbs to
+    /// the floor, because zero is a fixed point of a multiply and a key that
+    /// swallows the press for the rest of the flight is worse than one plainly
+    /// not connected.
     fn resize_pool(&mut self, scale: f32) {
+        if scale < 1.0 && self.stars() == 0 {
+            return;
+        }
         let wanted = |len: usize| ((len as f32 * scale) as usize).clamp(POOL_FLOOR, cli::MAX_STARS);
         match (self.view, &mut self.exterior) {
             (ViewMode::Side, Some(field)) => {
@@ -509,47 +490,14 @@ impl Flight {
         if let Some(field) = &mut self.exterior {
             field.retarget(&side);
         }
-        if args.stars == 0 {
-            let count = star_count(args, &self.renderer);
-            self.field.resize_pool(count);
-            if let Some(field) = &mut self.exterior {
-                field.resize_pool(count);
-            }
-        }
+        // And the pool is not touched. It used to be re-derived from the new
+        // canvas whenever `--stars` was 0, which was the density's whole
+        // mechanism seen from here: a window dragged wider grew the sky under a
+        // flight already under way. `--stars` is a plain count now, so a resize
+        // is a question about geometry only — which is what the two `retarget`
+        // calls above answer, and they answer all of it.
         true
     }
-}
-
-fn star_count(args: &Args, renderer: &Renderer) -> usize {
-    if args.stars > 0 {
-        return args.stars;
-    }
-    let (w, h) = renderer.canvas_dims();
-    auto_stars(w, h)
-}
-
-/// The automatic count for a canvas of `w` by `h` subpixels.
-///
-/// Split out from [`star_count`] so it can be asked what a canvas cannot be
-/// built to ask. Neither guard on it is reachable through the binary: the
-/// canvas these dimensions came from was allocated from the same product
-/// before this is called, so their multiply is a number that fitted in memory,
-/// and the density cannot lift the answer past the ceiling on any size the
-/// command line accepts. What they buy is a function that is *total* —
-/// `an_impossible_canvas_saturates_rather_than_wrapping` hands it `usize::MAX`
-/// without allocating anything, and a later caller taking its size from
-/// somewhere other than a `Renderer` cannot wrap the multiply into a thin sky
-/// that reads as taste rather than as a bug.
-///
-/// The floor of one is the part a real terminal does reach, and it is not the
-/// old automatic minimum coming back. Under two hundred subpixels the density
-/// answers zero, and `StarField::new` and `ExteriorField::new` build a
-/// genuinely empty pool where their `resize_pool` would have kept a star back
-/// — both say as much in their own `is_empty`, and a 1x1 terminal is what tmux
-/// hands a `lock-command`.
-fn auto_stars(w: usize, h: usize) -> usize {
-    let subpixels = w.saturating_mul(h);
-    ((subpixels as f32 * AUTO_DENSITY) as usize).clamp(1, cli::MAX_STARS)
 }
 
 fn seed(args: &Args) -> u64 {
@@ -923,7 +871,6 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::cli::args_for;
-    use crate::term::ColorMode;
 
     /// A key going down, with nothing held. Written out nine times before this
     /// existed, which is nine places to miss if the modifier ever matters.
@@ -1044,106 +991,128 @@ mod tests {
     }
 
     #[test]
-    fn the_automatic_star_count_scales_with_the_canvas() {
-        let args = args_for(&[]);
-        let small = Renderer::new(40, 12, ColorMode::Truecolor, 1.0);
-        let large = Renderer::new(300, 90, ColorMode::Truecolor, 1.0);
-        let (a, b) = (star_count(&args, &small), star_count(&args, &large));
-        assert!(a >= 1, "even the smallest window keeps a star in the sky");
-        assert!(
-            b <= cli::MAX_STARS,
-            "the pool is bounded whatever the window"
-        );
-        assert!(b > a, "a bigger window should hold more stars: {a} vs {b}");
-
-        // The density is the whole of it now. There was a floor of 300 under
-        // this, and on every window below fifteen thousand cells the floor was
-        // the answer and the density decided nothing. Asserted against the
-        // density rather than as a ratio between the two counts: the small
-        // canvas wants 19.2 stars and gets 19, and a ratio would carry that
-        // truncation as an error the two areas know nothing about.
-        for r in [&small, &large] {
-            let (w, h) = r.canvas_dims();
-            let want = (w * h) as f32 * AUTO_DENSITY;
-            let got = star_count(&args, r) as f32;
-            assert!(
-                (want - got).abs() <= 1.0,
-                "{w}x{h} subpixels wanted {want:.1} stars and got {got}"
+    fn the_sky_a_flight_opens_with_does_not_depend_on_the_window() {
+        // The point of the fixed count, stated as the property it is for. The
+        // pool used to be the canvas area times a density, so these two windows
+        // opened on 19 stars and 1080 and no two terminals flew the same sky.
+        // Asked of the real pool rather than of `args.stars`, since what the
+        // flag says and what gets spawned were two different numbers for as
+        // long as the sentinel existed.
+        for (cols, rows) in [(40usize, 12usize), (300, 90)] {
+            let size = format!("{cols}x{rows}");
+            let args = args_for(&["--size", &size]);
+            let flight = Flight::new(&args, cols, rows);
+            assert_eq!(
+                flight.field.len(),
+                cli::DEFAULT_STARS,
+                "a {cols}x{rows} window opened on its own count"
             );
         }
 
+        // And the band outside is built from the same number, which matters
+        // because it is a second call site that used to carry its own copy of
+        // the density — and read it at whatever size the renderer happened to be
+        // when the view was first switched to, so a terminal resized before `C`
+        // was pressed left the two skies on different counts.
+        let args = args_for(&["--size", "40x12"]);
+        let mut outside = Flight::new(&args, 40, 12);
+        outside.set_view(ViewMode::Side, &args);
+        assert_eq!(outside.stars(), outside.field.len(), "the two skies differ");
+
         let explicit = args_for(&["--stars", "1234"]);
-        assert_eq!(star_count(&explicit, &large), 1234);
+        assert_eq!(Flight::new(&explicit, 300, 90).field.len(), 1234);
     }
 
     #[test]
-    fn an_impossible_canvas_saturates_rather_than_wrapping() {
-        // Nothing in the tree can reach these — a canvas is allocated from the
-        // same product before its dimensions arrive here — which is exactly
-        // why they are asserted rather than left to the type. A wrapped
-        // multiply answers a small number for an enormous window, and a thin
-        // sky is indistinguishable from a decision about density.
-        assert_eq!(auto_stars(usize::MAX, usize::MAX), cli::MAX_STARS);
-        assert_eq!(auto_stars(usize::MAX, 2), cli::MAX_STARS);
-        assert_eq!(
-            auto_stars(0, 0),
-            1,
-            "a canvas of nothing still keeps a star"
-        );
-        assert_eq!(auto_stars(1, 2), 1, "a 1x1 terminal is a canvas of two");
+    fn an_empty_sky_is_a_count_like_any_other() {
+        // `--stars 0` was the sentinel that asked for a count off the canvas
+        // and now means what it says, which puts a genuinely empty pool through
+        // `StarField::new` and `ExteriorField::new` for the first time — the
+        // old floor of one in the automatic count meant nothing could reach
+        // them empty. Flown in both views because the band and the cone are
+        // separate pools reached by separate paths.
+        let args = args_for(&["--stars", "0", "--size", "60x20"]);
+        let mut paused = false;
+        let mut flight = Flight::new(&args, 60, 20);
 
-        // The largest canvas `cli` will allow, that being the one boundary
-        // here which is neither zero nor saturation: two million cells, and a
-        // cell is two subpixels. While the density was 0.005 this came out at
-        // exactly the 20 000 the old ceiling had been written down as, which
-        // was worth noticing and was never the reason to check it.
-        assert_eq!(auto_stars(4_000_000, 1), 80_000);
+        for view in [ViewMode::Cockpit, ViewMode::Side] {
+            flight.set_view(view, &args);
+            for _ in 0..30 {
+                flight.advance(1.0 / 60.0);
+                flight.draw(60.0, false, true);
+            }
+            assert_eq!(flight.stars(), 0, "{view:?} spawned a sky from nowhere");
+            flight.renderer.present(&mut Vec::new()).unwrap();
+        }
+
+        // And the two keys answer it differently, which is the one place they
+        // are not each other's inverse. `+` has to lift it off zero or the
+        // multiply is a fixed point and the key is dead for the rest of the
+        // flight; `-` must not, because a key labelled *fewer* that hands back
+        // eight stars is the fault `POOL_FLOOR` came down from 64 to fix.
+        flight.set_view(ViewMode::Cockpit, &args);
+        handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
+        assert_eq!(flight.stars(), 0, "`-` put stars into an empty sky");
+        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+        assert_eq!(
+            flight.stars(),
+            POOL_FLOOR,
+            "`+` swallowed the press on an empty sky"
+        );
     }
 
     #[test]
     fn the_star_keys_move_the_pool_the_way_they_point() {
-        // Regression, and it arrived with the density rather than before it.
-        // The keys clamped up to a floor of 64, which was chosen under an
-        // automatic minimum of 300 and sits over the count on any window the
-        // density opens thin: `-` added stars rather than taking them away,
-        // and both keys landed on the same number. The other half is the fixed
-        // point — `(n as f32 * 1.25) as usize` is `n` again below four — so
-        // the floor could not simply go to one either.
+        // Regression. The keys clamped up to a floor of 64, chosen under an
+        // automatic minimum of 300 and sitting over the count on any window the
+        // density that replaced it opened thin: `-` added stars rather than
+        // taking them away, and both keys landed on the same number. The other
+        // half is the fixed point — `(n as f32 * 1.25) as usize` is `n` again
+        // below four — so the floor could not simply go to one either.
         //
-        // Two windows, because *which* of them is thin moved when the density
-        // did. At 0.005 an 80x24 terminal opened with nineteen stars and a
-        // floor of 64 added forty-five to them; at 0.02 that window opens with
-        // seventy-six and would sail past the floor coming back, while 40x12
-        // opens with nineteen and still catches it.
-        for (cols, rows) in [(80usize, 24usize), (40, 12)] {
-            let size = format!("{cols}x{rows}");
-            let args = args_for(&["--size", &size]);
-            let mut paused = false;
+        // One window now rather than two. It was flown at 80x24 and 40x12
+        // because *which* of them the density opened under the floor moved with
+        // the density itself; both open on the same fixed count today, so the
+        // second window was asking the first one's question twice.
+        let args = args_for(&["--size", "40x12"]);
+        let mut paused = false;
 
-            let mut flight = Flight::new(&args, cols, rows);
-            let opened = flight.field.len();
-            handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
-            assert!(
-                flight.field.len() < opened,
-                "`-` took a {cols}x{rows} pool of {opened} to {}",
-                flight.field.len()
-            );
-
-            let mut flight = Flight::new(&args, cols, rows);
-            let opened = flight.field.len();
-            handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
-            assert!(
-                flight.field.len() > opened,
-                "`+` left a {cols}x{rows} pool at {opened}"
-            );
-        }
-
-        // And the floor stands clear of the fixed point, so `+` still has
-        // somewhere to go from the smallest pool it can be pressed on. Through
-        // the real arithmetic rather than as a second constant: the step is
-        // written down once, above.
+        let mut flight = Flight::new(&args, 40, 12);
+        let opened = flight.field.len();
+        handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
         assert!(
-            (POOL_FLOOR as f32 * 1.25) as usize > POOL_FLOOR,
+            flight.field.len() < opened,
+            "`-` took a pool of {opened} to {}",
+            flight.field.len()
+        );
+
+        let mut flight = Flight::new(&args, 40, 12);
+        let opened = flight.field.len();
+        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+        assert!(flight.field.len() > opened, "`+` left the pool at {opened}");
+
+        // The floor is reached rather than approached, and with the automatic
+        // count's own floor of one gone this is the only thing left saying a
+        // pool cannot be walked to nothing. `-` multiplies by 0.8, which has
+        // nowhere to stop on its own: 0.8 of a pool is a pool, all the way down.
+        let mut flight = Flight::new(&args, 40, 12);
+        for _ in 0..40 {
+            handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
+        }
+        assert_eq!(
+            flight.field.len(),
+            POOL_FLOOR,
+            "`-` walked the pool to {}",
+            flight.field.len()
+        );
+
+        // And `+` climbs back off it, which is why the floor is not 1: the
+        // growth truncates, so below four stars the key gives the same number
+        // back and swallows the press. Asked through the key rather than of a
+        // second copy of the step.
+        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+        assert!(
+            flight.field.len() > POOL_FLOOR,
             "`+` cannot climb off its own floor of {POOL_FLOOR}"
         );
     }
@@ -1907,24 +1876,27 @@ mod tests {
     }
 
     #[test]
-    fn resizing_retunes_the_automatic_star_count_but_not_an_explicit_one() {
-        let args = args_for(&[]);
-        let mut flight = Flight::new(&args, 40, 12);
-        let small = flight.field.len();
-        flight.resize(&args, 300, 90);
-        assert!(
-            flight.field.len() > small,
-            "a bigger window should hold more stars"
-        );
-
-        let args = args_for(&["--stars", "777"]);
-        let mut flight = Flight::new(&args, 40, 12);
-        flight.resize(&args, 300, 90);
-        assert_eq!(
-            flight.field.len(),
-            777,
-            "an explicit count is not a suggestion"
-        );
+    fn a_resize_moves_the_canvas_and_leaves_the_pool_alone() {
+        // The inversion of what this used to hold. A resize re-derived the count
+        // from the new canvas whenever `--stars` was 0, so dragging a window
+        // edge respawned the sky a few hundred stars at a time and the panel's
+        // own count walked about while nothing had asked it to. A count a window
+        // can overrule is not one. Both skies, because the retune reached both.
+        for extra in [vec![], vec!["--stars", "777"]] {
+            let args = args_for(&extra);
+            let want = args.stars;
+            let mut flight = Flight::new(&args, 40, 12);
+            flight.set_view(ViewMode::Side, &args);
+            for (cols, rows) in [(300usize, 90usize), (1, 1), (80, 24)] {
+                flight.resize(&args, cols, rows);
+                assert_eq!(
+                    flight.field.len(),
+                    want,
+                    "{cols}x{rows} retuned the cockpit pool"
+                );
+                assert_eq!(flight.stars(), want, "{cols}x{rows} retuned the band");
+            }
+        }
     }
 
     #[test]

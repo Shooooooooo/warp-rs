@@ -129,7 +129,7 @@ prints the velocity it finished at, which at `--throttle 1.0` is 2000 c.
 seed produces byte-identical output. `tests/golden/frames.sha256` pins those
 bytes, and they are checked two ways from that one file: `cargo test --test
 golden` reproduces them in process through `app::render_headless`, and the
-`headless` CI job produces the same six files from a release binary and runs
+`headless` CI job produces the same seven files from a release binary and runs
 `sha256sum -c`. Between them the two also prove they agree — a library that
 renders one thing and a binary another would be a bug of its own.
 
@@ -200,7 +200,8 @@ common="--headless --frames 120 --seed 1 --size 120x36"
 ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
-sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt \
+./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
+sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt \
     > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
@@ -703,10 +704,12 @@ so a preposterous one costs a picture rather than an allocation, and
 
 `cli::MAX_STARS` is the one on that list that is *not* only a parse-time bound,
 and it is public for that reason. A pool is the one thing there that can still
-be resized after the command line has been read, so the automatic count in
-`app.rs` and the `+` key both clamp to the same constant rather than to numbers
-of their own. The `+` key used to have one of its own, and it sat *under* what
-`--stars` already allowed.
+be resized after the command line has been read, so the `+` key clamps to the
+same constant rather than to a number of its own. It used to have one, and it
+sat *under* what `--stars` already allowed. There was a third door once — an
+automatic count in `app.rs` that sized the pool from the canvas whenever
+`--stars` was 0 — and it is gone; the flag is a literal count now, `0` included,
+and `cli::DEFAULT_STARS` is what it is when nobody says.
 
 **`RawGuard::new` builds the guard value immediately after `enable_raw_mode`,
 before any other fallible call**, so an early `?` still restores. It installs a
@@ -998,22 +1001,53 @@ and acting on them counts a single press twice.
 
 **`--size` is a fixed size, not a starting point.** `Flight::resize` returns
 `false` immediately when it is set. Without that the flag held only until the
-first resize event. Relatedly, a resize only retunes the star pool when
-`--stars` is 0 — an explicit count is not a suggestion.
+first resize event. A resize no longer retunes the star pool at all — it moves
+the frustum the stars are laid out in, which is the two `retarget` calls, and
+leaves how many of them there are alone. It used to re-derive the count from the
+new canvas whenever `--stars` was 0, so dragging a window edge respawned the sky
+a few hundred stars at a time and the panel's own count walked about while
+nothing had asked it to. A count a window can overrule is not one.
+
+**The sky is a fixed size too**, `cli::DEFAULT_STARS`, 256 on every terminal.
+That replaced a density — stars per subpixel, 0.02 where it finished — which is
+worth knowing about because the numbers it gave are what this one has to be read
+against: 19 stars at 40x12, 76 at 80x24, 172 at 120x36, 480 at 200x60, 1080 at
+300x90. What the density bought was constant apparent density; what it cost was
+the same flight looking different on two machines, which is the one thing the
+rest of this tree is written to stop. It also pulled the wrong way while doing
+it — every star is drawn as the segment it swept, so a wider window got more
+stars *and* longer streaks at once, and the depth parallax that is most of what
+the view is for washed out precisely where there was most room for it. The
+constant was thinned three times chasing that and then partly walked back —
+0.05, 0.02, 0.01, 0.005, 0.02 — which is four moves of a knob answering the
+wrong question. `--stars 0` used to be the sentinel that asked for it and is a
+literal now: an empty sky, which the renderer draws quite happily and which is
+the only way to see the tunnel, the bubble and the hull with nothing streaming
+past them.
 
 **The `+`/`-` keys are held to the same ceiling `--stars` is**, `cli::MAX_STARS`,
 so they cannot walk the pool past what the command line would have accepted.
 They used to clamp to a separate 20 000 that sat *under* what `--stars` allowed,
 which meant `--stars 100000` and a single `+` shrank the pool by four fifths.
-Their *floor* moved with the density and is now `POOL_FLOOR`: 64 was chosen
-against an automatic minimum of 300, and a floor up there sits over the count on
-any window the density opens thin, so `-` *added* stars and landed both keys on
-the same number. Which windows those are moves with `AUTO_DENSITY` — at 0.005 it
-was an ordinary 80x24, at today's 0.02 it is 40x12 — so the test that holds it
-flies both. It is 8 rather than 1 because `+` multiplies by
-1.25 and truncates, so below four stars the key gives the same number back and
-swallows the press — `the_star_keys_move_the_pool_the_way_they_point` holds both
-halves of that.
+Their *floor* is `POOL_FLOOR`, and the argument for it lost half its subject when
+the density went: 64 was chosen against an automatic minimum of 300, and a floor
+up there sat over the count on any window the density opened thin, so `-` *added*
+stars and landed both keys on the same number. Every window opens on the same
+count now. What is left is 8 rather than 1, because `+` multiplies by 1.25 and
+truncates, so below four stars the key gives the same number back and swallows
+the press — `the_star_keys_move_the_pool_the_way_they_point` holds that, and
+also that `-` leaned on *reaches* the floor and stops there, which is the only
+thing left saying a pool cannot be walked to nothing.
+
+**The one pool the floor may not lift is the empty one.** `--stars 0` is a sky
+somebody asked for, so `Flight::resize_pool` returns early rather than letting
+`-` put eight stars into it — and the early return is the whole of the fix
+rather than a smaller number passed down, because `StarField::resize_pool` and
+`ExteriorField::resize_pool` each hold their argument at `count.max(1)` and that
+guard is theirs to keep. `+` is deliberately not caught by it: zero is a fixed
+point of a multiply, so a key that is not lifted to the floor swallows the press
+for the rest of the flight. That asymmetry is also what the two `is_empty` doc
+comments now say — a sky can be *started* empty and cannot be *emptied*.
 
 **The same six keys fly the ship inside and the camera outside, and the zoom is
 switched off inside.** `WASD` and `QE` are the stick from the pilot's seat and

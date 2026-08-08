@@ -91,6 +91,22 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+# All seven moved together when the star count stopped following the terminal.
+# `--stars` is a plain count now, defaulting to 256, where it used to default to
+# 0 for "suit the pool to the canvas" — stars per subpixel, 0.02 where it
+# finished. Not one of these seven passes the flag, so every one of them flew on
+# that density, and at 120x36 — 8 640 subpixels — that is 172 stars becoming
+# 256.
+#
+# Seven hashes, and this is the shape where the split between them carries
+# nothing whatever. Two things move in every frame of every flight for it, the
+# sky and the panel's STARS readout that names the number, so a hash standing
+# still would have been the thing wanting an explanation — it would mean some
+# flight was not sizing its pool from the default at all. This is the third time
+# this file has recorded that shape for the star count and it is the last: both
+# of the entries below it are the same constant being moved, and there is no
+# longer a constant there for a terminal to reach.
+#
 # `orbit.txt` and `astern.txt` moved together when the band stopped letting the
 # sky fall in on itself off the beam. A star's place in the frame is
 # `focal · pos / z`, so every change of range scales it, and the fold — which is
@@ -331,10 +347,10 @@
 # turns a one-ulp difference into a different sky. So this is checked on
 # ubuntu-latest only, and a runner image moving to a new glibc may need it
 # regenerated once.
-b0b11b243027c81eac96a641df34cf484920e626819d363a7171233e848eb2cd  truecolor.txt
-c745fb56071a4065ffe72cc6ce1da35bc06e1d49230df88f20c2049ac7f6f1bc  ascii.txt
-6aaef3142e7323ce74789c573d906e48b2b2fabd87601a2f0bb7709ee4445de1  ansi256.txt
-8e4d6fe37cf5ebbb63c6af30f858185ed2741ec63ea5771e4fd35e7daff3175a  warp.txt
-e00c1f3479261e40f2add1e1d812981d4d53b30e07c50402a675d1f8eb66a009  side.txt
-1e35a966aa36fdbfa0262c74cba389e579c17b61d6563fd27e47139a361e321b  orbit.txt
-42475df2bb313c88af52da7e505da07bbadcdcc7a34e1efc7230d2f7482fc26e  astern.txt
+ce12297f85f145f84212b4c73c9e557dbfa58aecc3ea5d9c19a71faf1e7b9b01  truecolor.txt
+9a78bbd3695bd0247e6f93f10181da8b704f3219d6e810501b093d534e42d1aa  ascii.txt
+5c17fa2725b66d20fc698752b331eea0d34bd13d373681cf41a606d6bc33195d  ansi256.txt
+55b132cff11acac57e83b1425d4e2e7a43fb37d6493e8c009ed00f4a44f74a90  warp.txt
+83f339cc95108c8ef4289ec28bb22d116ffc4031f7679c94dfabd11f73b192b9  side.txt
+cb37e5cde31db2d22cfb5c4aeb3c3c58be1012445eb3b404f7f315d3a8a8ac27  orbit.txt
+c1b8c95e2be60543a4143d79c3745ae061d7893a22d34f7a5c3e804a79c9e850  astern.txt
