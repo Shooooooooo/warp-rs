@@ -141,10 +141,20 @@ const COMMON: [&str; 7] = [
 /// `COLORTERM` — so the whole of `quantize_256` and the palette-index path
 /// under it could be repainted and these hashes would not have noticed.
 ///
+/// `astern.txt` is the newest and it arrived the way `ansi256.txt` did — with
+/// the fix for a fault the other six could not see. Every one of them puts the
+/// camera abeam or forward of it, and the point the *ship's own track*
+/// vanishes at is on the screen only from behind: half the range of a control
+/// that goes all the way round, and the only half where a trail can be
+/// stretched past somewhere it will never reach. Recorded at
+/// `--orbit -75,6,20`, which has all three angles off zero and puts that point
+/// on the canvas clear of the ship — the same two conditions
+/// `models::forward_quarter()` picks its angles for, and for the same reason.
+///
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
 /// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
-/// it to all three.
-const CASES: [(&str, &[&str]); 6] = [
+/// it to all three, and to `.gitignore`.
+const CASES: [(&str, &[&str]); 7] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
     ("ansi256.txt", &["--demo", "--color", "256"]),
@@ -174,6 +184,20 @@ const CASES: [(&str, &[&str]); 6] = [
             "side",
             "--orbit",
             "55,35,20",
+            "--color",
+            "truecolor",
+        ],
+    ),
+    (
+        "astern.txt",
+        &[
+            "--engage",
+            "--throttle",
+            "1.0",
+            "--view",
+            "side",
+            "--orbit",
+            "-75,6,20",
             "--color",
             "truecolor",
         ],
@@ -312,6 +336,18 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
     let outside = CASES.iter().any(|(_, case)| case.contains(&"side"));
     assert!(engaged, "no reference flight ever lights the drive");
     assert!(outside, "no reference flight ever leaves the cockpit");
+
+    // And some flight gets *behind* the ship, which is a third of the same
+    // kind and was found the same way. The camera goes all the way round, and
+    // the point the ship's own track vanishes at is on the screen from that
+    // half of the range and no other — so with every flight abeam or forward of
+    // it, a trail could be stretched clean through a point it never reaches and
+    // nothing here would say so. Asked of the parsed orbit rather than of the
+    // angle written above it, so it is the renderer's own arithmetic answering.
+    let astern = CASES
+        .iter()
+        .any(|(_, case)| reference_args(case).orbit.nose_in_camera()[2] > 0.0);
+    assert!(astern, "no reference flight ever gets behind the ship");
 
     // And the warp cases really are at warp rather than nominally engaged: a
     // flight that lit the drive and never spooled up would pin the same

@@ -59,8 +59,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 272 unit + 7 flight + 3 golden, ~11s
-cargo test --locked --all-features      # 273 unit — adds the snapshot-gated one
+cargo test                              # 276 unit + 7 flight + 3 golden, ~11s
+cargo test --locked --all-features      # 277 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -137,14 +137,15 @@ The in-process half is the reason `render_headless` is public and separate from
 `run_headless`. It costs about four seconds — most of `cargo test`'s wall clock
 after the unit tests — and is **Linux-gated**, for the reason below.
 
-**Six flights, and the case list lives in three places** — the comment block in
-`frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job. Adding
-one means adding it to all three, and `.gitignore` needs the file's name too,
-which is a list that has fallen behind that recipe twice. They share
+**Seven flights, and the case list lives in three places** — the comment block
+in `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job.
+Adding one means adding it to all three, and `.gitignore` needs the file's name
+too, which is a list that has fallen behind that recipe twice. They share
 `--headless --frames 120 --seed 1 --size 120x36` and differ in what they make
 the renderer do: three `--demo` runs in truecolor, ascii and 256, one
-`--engage --throttle 1.0`, one of those from `--view side`, and the same again
-with the camera swung off the beam by `--orbit 55,35,20`.
+`--engage --throttle 1.0`, one of those from `--view side`, the same again with
+the camera swung off the beam by `--orbit 55,35,20`, and one more from *behind*
+the ship at `--orbit -75,6,20`.
 
 `ansi256.txt` is the odd one and the only case here recorded to be read against
 another rather than against itself. It is `truecolor.txt`'s flight in the other
@@ -173,6 +174,17 @@ every angle except that one would have left the reference untouched.
 configuration that turns the bubble's outline off the horizontal and puts the
 star band's depth travel, its vertical fold and its wall recycle on the path
 as well.
+
+`astern.txt` is the newest and it closes a hole the other six could not see
+past: every one of them watches from abeam or from in front. The camera goes
+all the way round, and the point the ship's own *track* vanishes at is on the
+screen from behind and from nowhere else — so half the range of a control had no
+reference at all, and it was the half where a trail stretched in screen space
+can be drawn clean through a place the track only ever approaches.
+`--orbit -75,6,20` has all three angles off zero, the nose receding, and that
+point landing 24 subpixels from the ship and 20 from the nearest edge of a
+120x72 canvas; both were checked by shooting the frame, since a point inside the
+bubble or half off the top asks nothing.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -227,6 +239,20 @@ moved not one hash here, because the enterprise's outline does not happen to
 expose it. When that happens, say so, and put the guard at the level the change
 actually lives at: that one is a property test in `canvas.rs`, not a sixth
 flight.
+
+The other answer is a new flight, and the test of which one you want is whether
+the hole is a *variant* or a *region*. One ship out of six is a variant, and a
+sixth flight would have pinned one more of them while leaving four unlooked at;
+a property test over `models()` covers all of them at once. But when the six
+flights covered no camera aft of the beam, what was missing was half the range
+of a control — the only half where the sky has a vanishing point at all, and so
+the only half a trail can be stretched through one. A trail running past the
+point its track vanishes at moved no hash for exactly that reason, and it got
+both: `a_trail_never_runs_past_the_point_the_track_vanishes_at` at the level the
+fault lives at, and `astern.txt` so the region stops being unwatched. The
+matching clause went into the case list's own coverage test beside the two
+already there, asked of the parsed `--orbit` rather than of the angle written
+above it.
 
 Say in the commit message what moved and why. Regenerating without explanation
 throws away the only thing that file is for.
@@ -504,6 +530,27 @@ grows a lattice of long faint streaks lying across the flow.
 guard, and it is a property over the whole pool rather than a reference frame —
 `orbit.txt` had the fault recorded *in* it, which is what a pinned frame does
 with anything nobody has looked at.
+
+And **a trail is stretched in screen space, so it has to be held back from the
+point its own track vanishes at.** This is `models::draw_trail`'s problem
+arriving from the other end, and it wears the same fix. `streaks` multiplies the
+one step a star swept by six at full warp — but a straight ray running away from
+the eye does not project onto a screen-space ray. It projects onto the segment
+between the star and the point its direction vanishes at, *approaching* that
+point and never arriving, so the multiply drew trail past a place it had already
+gone: 77 of 800 came out the far side, the worst half again as far as the point,
+and every star at the one depth where the stretch comes to exactly the whole
+distance laid its trailing end precisely on it. `trail_head` answers both with
+one division and no depth — `k` steps cover `k·u / (1 + (k−1)·u)` of the way,
+which is under one for every `u` under one.
+
+**It is switched off in three cases and every one of them is exact.**
+`cam.vanishing_point(self.nose)` answers `None` abeam, where the nose lies flat
+in the image plane; `None` from anywhere forward of the beam, where the track
+runs toward the eye and its projection diverges rather than converging; and the
+gate is `stretch > 1.0`, which is a hard identity at sublight. That is why not
+one reference hash moved for it — and why the reference grew `astern.txt`, since
+the case those three exclusions leave is exactly what nothing was watching.
 
 The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
 `Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with
