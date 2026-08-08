@@ -98,6 +98,31 @@ cargo run --release --features snapshot -- \
 The PNG is the **starfield only**. The instrument panel and the ship picker
 live in the character grid, not in the pixel buffer, so they are not in it.
 
+The two images on the README's front page are that command with a seed on it,
+and they are written down here because they were not: both recipes lived only
+in the commit messages that shot them, which is how the hero came to advertise
+twice the sky a default run draws for the whole life of the renderer before
+anyone thought to check it.
+
+```sh
+common="--engage --throttle 1.0 --warmup 600 --scale 2"
+warp --snapshot docs/warp.png   $common --seed 6
+warp --snapshot docs/astern.png $common --view side --orbit 245,30,0 --seed 8
+```
+
+**Neither passes `--size`**, and that is the whole of what keeps the pair tidy.
+`run_snapshot` falls back to 240x68 and a cell is two subpixels tall, so both
+come out 480x272 and stack with their edges in line. The hero used to ask for
+`--size 220x60` and came out 440x240, which put a forty-pixel step down the
+right of the page for no reason anyone had written down. A reshoot that reaches
+for `--size` puts it back.
+
+Nothing pins these bytes — `tests/golden/frames.sha256` is the *text* frames and
+knows nothing about the PNGs — so a reshoot is checked by looking at it. What
+the flags guarantee is only that the drive is lit and fully spooled: 600 warmup
+frames at the default `--fps 60` is ten simulated seconds, and `run_snapshot`
+prints the velocity it finished at, which at `--throttle 1.0` is 2000 c.
+
 ## The golden frames — read this before touching the renderer
 
 `--headless` renders on a fixed timestep with no terminal control, so a fixed
