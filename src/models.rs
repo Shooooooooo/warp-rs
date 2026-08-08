@@ -429,8 +429,9 @@ impl Builder {
     }
 
     /// A hoop standing across the ship, drawn as a square-section tube. The
-    /// only shape here a shell cannot make, and the whole silhouette of one of
-    /// the ships.
+    /// only shape here a *loft* cannot make — it closes on itself in the plane
+    /// across the track, where a loft runs along it — and the whole silhouette
+    /// of one of the ships.
     fn hoop(&mut self, centre: [f32; 3], major: f32, minor: f32, arcs: usize) {
         const SIDES: usize = 4;
         let base = self.verts.len() as u16;

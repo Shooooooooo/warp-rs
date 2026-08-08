@@ -208,8 +208,10 @@ sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern
 
 Diff the old hashes against the new ones before committing and say which moved.
 The split is usually the sharpest thing you have: a change aimed at the hull
-moves `side.txt` and `orbit.txt` and must leave the three cockpit flights alone,
-and one aimed at the tunnel glare moves `warp.txt` and only `warp.txt`, since
+moves `side.txt`, `orbit.txt` and `astern.txt` and must leave all four cockpit
+flights alone — `warp.txt` is one of them, since it never asks for `--view
+side`, and rebuilding the enterprise is the worked example — and one aimed at
+the tunnel glare moves `warp.txt` and only `warp.txt`, since
 the two `--demo` flights never leave sublight and the outside view goes through
 `add_glow_oval` instead. There is a third shape, and it is the sharpest of the
 lot: a change to something the outside view only does *off* the beam moves
