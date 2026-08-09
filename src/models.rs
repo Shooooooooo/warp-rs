@@ -94,10 +94,10 @@ const WARP_FLAME: [f32; 3] = [0.82, 0.92, 1.00];
 /// radius, at the top of the sublight range.
 ///
 /// Measured off the bell rather than off the ship so a bigger drive throws a
-/// longer flame, which hands the fleet its variety for nothing: the Beetle's
-/// 0.17 bells trail the furthest, the Enterprise's 0.07 impulse engine leaves a
-/// stub above two nacelle lances. At 12.0 a nacelle plume is 1.3 hull units at
-/// full impulse — a little under the hull's own length, which is enough to read
+/// longer flame, which hands the fleet its variety for nothing: the Normandy's
+/// single 0.15 bell trails the furthest, the Enterprise's 0.07 impulse engine
+/// leaves a stub above two nacelle lances. At 12.0 a nacelle plume is 1.3 hull
+/// units at full impulse — a little under the hull's own length, enough to read
 /// as something being left behind and not so much that a ship at cruise looks
 /// like a ship at warp. Shorter than about 8.0 it stops being a trail and
 /// becomes a brick on the tail: the fan is as wide as the bell, so a plume that
@@ -210,9 +210,9 @@ const FLICKER_AT_WARP: f32 = 0.10;
 /// camera shake uses, and for the same reason.
 const FLICKER_RATE: f64 = 11.0;
 const FLICKER_BEAT: f64 = 0.61;
-/// Phase offsets, per bell and per lane of the fan. The first stops a four-bell
-/// freighter pulsing in lockstep; the second is small on purpose, because a fan
-/// whose lanes disagree strongly reads as static rather than as fire.
+/// Phase offsets, per bell and per lane of the fan. The first stops a hull with
+/// several bells pulsing in lockstep; the second is small on purpose, because a
+/// fan whose lanes disagree strongly reads as static rather than as fire.
 const FLICKER_PER_BELL: f64 = 2.1;
 const FLICKER_PER_LANE: f64 = 0.37;
 /// How far the drive catching throws the plume, on top of `Ship::flash`: how
@@ -335,9 +335,9 @@ impl Section {
     ///
     /// At four this *is* [`Self::corners`], handed back untouched rather than
     /// recomputed. That is not an optimisation: the general form below would
-    /// return a right angle a fraction of an ulp off square, and five of the
-    /// six ships in the hangar are lofted through this — moving any of them by
-    /// an ulp repaints a sky nothing asked to have repainted.
+    /// return a right angle a fraction of an ulp off square, and both ships in
+    /// the hangar are lofted through this — moving either by an ulp repaints a
+    /// sky nothing asked to have repainted.
     ///
     /// Past four, the outline is the polygon that *circumscribes* the ellipse
     /// the rectangle encloses: vertex `k` at `π + π/n + k·2π/n`, pushed out by
@@ -411,7 +411,18 @@ impl Builder {
             .iter()
             .map(|s| self.push_ring(s.ring(sides)))
             .collect();
+        self.skin(&rings, sides);
+    }
 
+    /// The faces of a run of rings already pushed: a band of quads between each
+    /// neighbouring pair, and a cap at each end.
+    ///
+    /// Split out of [`Self::loft`] so [`Self::leaned_shell`] can lay its own
+    /// points down and still be wired up by the one piece of code that knows
+    /// which way round a ring goes. Nothing here is arithmetic — every value in
+    /// it is a vertex index — so the split cannot move a hull by a bit, which
+    /// matters because the enterprise is lofted through it.
+    fn skin(&mut self, rings: &[u16], sides: usize) {
         let n = sides as u16;
         for pair in rings.windows(2) {
             let (aft, fore) = (pair[0], pair[1]);
@@ -428,48 +439,55 @@ impl Builder {
         self.faces.push((0..n).rev().map(|i| aft + i).collect());
     }
 
-    /// A hoop standing across the ship, drawn as a square-section tube. The
-    /// only shape here a *loft* cannot make — it closes on itself in the plane
-    /// across the track, where a loft runs along it — and the whole silhouette
-    /// of one of the ships.
-    fn hoop(&mut self, centre: [f32; 3], major: f32, minor: f32, arcs: usize) {
-        const SIDES: usize = 4;
-        let base = self.verts.len() as u16;
-        for a in 0..arcs {
-            let theta = a as f32 / arcs as f32 * std::f32::consts::TAU;
-            // The hoop stands in the plane across the ship's track, so its
-            // radius sweeps through `y` and `z` and its tube reaches out
-            // in `x`.
-            let radial = [0.0, theta.sin(), theta.cos()];
-            for s in 0..SIDES {
-                let phi = s as f32 / SIDES as f32 * std::f32::consts::TAU;
-                let out = major + minor * phi.sin();
-                self.verts.push([
-                    centre[0] + minor * phi.cos(),
-                    centre[1] + out * radial[1],
-                    centre[2] + out * radial[2],
-                ]);
-            }
-        }
-        for a in 0..arcs {
-            let next_a = (a + 1) % arcs;
-            for s in 0..SIDES {
-                let next_s = (s + 1) % SIDES;
-                let at = |ai: usize, si: usize| base + (ai * SIDES + si) as u16;
-                self.faces.push(vec![
-                    at(a, s),
-                    at(a, next_s),
-                    at(next_a, next_s),
-                    at(next_a, s),
-                ]);
-            }
-        }
-    }
-
     /// A thin box, for a wing or a fin: the same solid a plate would be if a
     /// plate had an outside.
     fn plate(&mut self, aft: Section, fore: Section) {
         self.shell(&[aft, fore]);
+    }
+
+    /// A shell leaned about the ship's own axis, pivoted on a point in the
+    /// plane across the track.
+    ///
+    /// [`Section`]'s rectangle is axis-aligned in `x` and `y`, so one `cy`
+    /// covers a whole span and the only lean a run of them can describe is a
+    /// lean toward the *rear* — each section dropping a little as the sections
+    /// walk aft. A wing that hangs down toward its tip while staying level fore
+    /// and aft is the other rotation entirely, and no arrangement of `cy` will
+    /// spell it.
+    ///
+    /// This is that rotation and nothing else: the same [`Section::ring`]
+    /// points, turned about `z` around `pivot` before they are pushed, then
+    /// handed to the same [`Self::skin`] every other solid here goes through.
+    /// The winding still comes out right *by construction*, which is the whole
+    /// reason this is a primitive rather than a wing stepped outboard in three
+    /// separate plates: a turn about the axis a ring lies across is a turn
+    /// within the ring's own plane and of determinant one, so it moves the four
+    /// points and cannot reverse the order they go round in.
+    ///
+    /// The pivot is the wing's own root rather than the ship's centreline, so
+    /// the lean swings the tip down and leaves the root where it was put.
+    /// Turning about the centreline would drag the root out of the flank it is
+    /// meant to be buried in, and the wing would hang off the hull instead of
+    /// out of it.
+    fn leaned_shell(&mut self, sections: &[Section], lean: f32, pivot: (f32, f32)) {
+        assert!(sections.len() >= 2, "a shell needs two sections to loft");
+        const SIDES: usize = 4;
+        let (sin, cos) = lean.sin_cos();
+        let rings: Vec<u16> = sections
+            .iter()
+            .map(|s| {
+                let turned = s.ring(SIDES).into_iter().map(|p| {
+                    let (dx, dy) = (p[0] - pivot.0, p[1] - pivot.1);
+                    [
+                        pivot.0 + dx * cos - dy * sin,
+                        pivot.1 + dx * sin + dy * cos,
+                        p[2],
+                    ]
+                });
+                self.push_ring(turned)
+            })
+            .collect();
+        self.skin(&rings, SIDES);
     }
 
     fn finish(
@@ -497,16 +515,7 @@ fn engine(at: [f32; 3], radius: f32) -> Engine {
 /// Every ship, in the order the picker lists them.
 pub fn models() -> &'static [ShipModel] {
     static MODELS: OnceLock<Vec<ShipModel>> = OnceLock::new();
-    MODELS.get_or_init(|| {
-        vec![
-            enterprise(),
-            dart(),
-            hauler(),
-            needle(),
-            beetle(),
-            trident(),
-        ]
-    })
+    MODELS.get_or_init(|| vec![enterprise(), normandy()])
 }
 
 /// The one flown when nothing has said otherwise: the first in the list.
@@ -770,166 +779,245 @@ fn enterprise() -> ShipModel {
     )
 }
 
-/// A knife with a fin: all nose and engine, nothing spare.
-fn dart() -> ShipModel {
+/// The Normandy's reference units into hull units.
+///
+/// Unlike the enterprise there is no one length here worth measuring the rest of
+/// the ship against — no saucer, no radius everything else is a multiple of — so
+/// the numbers below stay in the reference mesh's own units and these three do
+/// the whole conversion. The effect is the enterprise's: what is on the page is
+/// the measurement, and a later reader can hold a station against the mesh
+/// without redoing anybody's division.
+///
+/// **The reference's axes are not this crate's.** There `+x` runs out the nose,
+/// `+y` is up and `+z` is to starboard; here `+z` is the nose, `+x` starboard
+/// and `+y` *down*. So `z_of` below takes a reference `x`, `x_of` takes a
+/// reference `z`, and `y_of` takes a reference `y` and turns it over.
+///
+/// The hull is 461.61 reference units from the tail cap to the tip of the nose,
+/// and it is mapped onto 1.96 rather than the whole 2.0 the box allows. That
+/// margin is not timidity: `every_model_fits_in_the_unit_box` asks for
+/// `|c| <= 1.0`, and a scale that lands the nose exactly on the wall is one ulp
+/// of rounding away from a red test for nothing gained. The enterprise's nose
+/// sits at 0.9876 for the same reason.
+const NORMANDY_SCALE: f32 = 1.96 / 461.61;
+/// The station along the reference that lands on `z = 0`: halfway between the
+/// tail cap at `-121.58` and the nose at `+340.03`.
+const NORMANDY_MID: f32 = 109.225;
+/// The height that lands on `y = 0`, and it is the *tail cap's own centre*
+/// rather than the mesh's mid-height or the hull's.
+///
+/// That is a choice and it earns itself twice: it is what the hull rolls about,
+/// and it is where the one bell sits — which is why
+/// `the_plume_keeps_its_width_when_the_ship_rolls` is flown on this ship. A
+/// plume on the axis lands in the same place at every roll, so the only thing
+/// left that can move is the width of the fan around it.
+const NORMANDY_DATUM: f32 = 55.91;
+
+/// How much taller than scale this hull is drawn. [`STOUT`], told about the same
+/// axis and for very nearly the same reason.
+///
+/// The Normandy is a flat ship: 40 reference units from its spine to its belly
+/// against 462 along the track, where the enterprise is a quarter as long again
+/// in proportion. At true depth the fuselage comes out under three subpixels
+/// deep at the framing the shot opens on, and
+/// `the_drive_does_not_shine_through_the_hull` wants a hundred subpixels the
+/// hull covers *whole* from angles that foreshorten its length to a quarter.
+///
+/// Only the depth is flattered — lengths along the track and spans across it are
+/// the mesh's, so the plan view is the ship's. What it costs is that the wings
+/// swing a little further from the roll axis, which is what
+/// `every_hull_stays_inside_its_own_bubble` is about; at this value the worst
+/// vertex sits at 0.62 of the bubble's across-track reach.
+const NORMANDY_STOUT: f32 = 1.3;
+
+/// How far the wings hang, in radians, measured down from level at the tip.
+///
+/// The reference hangs four drive arms under the hull on struts, which is more
+/// structure than a ship twenty subpixels long can show — two wings say the same
+/// thing and say it at any size. What has to survive the simplification is the
+/// Λ the ship makes head-on, and that is this angle and nothing else: flat, and
+/// the pair reads as one plank; much past a third of a turn and the ship reads
+/// as a dart rather than a frigate.
+const WING_LEAN: f32 = 0.42;
+
+/// A frigate: a long flat back, a nose drawn out to a blade, and two wings hung
+/// low and leaning down to their tips.
+///
+/// Measured off a reference mesh the way the enterprise is, in that mesh's own
+/// units — see [`NORMANDY_SCALE`] for the conversion and for the axis swap,
+/// which is the one thing about the numbers below that cannot be guessed. Eight
+/// of the mesh's twenty-one measured frames are kept; the fuselage's outline
+/// between them is close enough to linear that the rest were paying for nothing.
+///
+/// **The two dorsal tail fins are deliberately not here.** The reference carries
+/// them — a pair of swept blades over the tail, splaying outboard as they rise
+/// to 90.9 against a spine of 78.1 beneath them, each capped by a thin rod, and
+/// 2,077 faces of a 691,310-face hull. They are left off and the back is closed
+/// as though they never were. That is what makes this the only hull in the
+/// hangar with nothing at all standing above its spine, which is most of what
+/// separates it from the enterprise's stack at the size either is drawn.
+/// Nothing tests it, because nothing honest can — a bound on how high a vertex
+/// may go restates the station table, and a rule about the tallest point passes
+/// just as well with the blades put back, since the wings hang further below the
+/// axis than the fins ever stood above it. So this paragraph is the guard: they
+/// are absent by decision, not by oversight, and putting them back is a change
+/// rather than a fix.
+///
+/// What is measured and what is drawn in, since "measured" is worth nothing
+/// without the other half: the eight stations, the two shoulder plates and how
+/// far out and how far down the wings reach are the mesh's. The wings'
+/// planform, the lean, the nose cap and the bell are not.
+///
+/// One correction the mesh will not volunteer. Its widest frames amidships read
+/// 38 units out, and that is the *shoulder plates* — two thin panels standing
+/// proud of the flank between stations `-32` and `+62` — not the fuselage, which
+/// is 26 there and is measured with them cut away. Anyone re-measuring off the
+/// bounding box will "fix" the fuselage back out to 38 and lose the panels'
+/// shadow line with it.
+fn normandy() -> ShipModel {
     let mut b = Builder::default();
-    b.shell(&[
-        Section::at(-0.74, 0.16, 0.14),
-        Section::at(-0.30, 0.20, 0.17),
-        Section::at(0.22, 0.17, 0.13),
-        Section::at(0.74, 0.08, 0.06),
-        Section::at(1.00, 0.02, 0.02),
-    ]);
-    // Wings, swept back and down from the flanks.
-    for side in [-1.0f32, 1.0] {
-        b.plate(
-            Section::offset(-0.66, side * 0.55, 0.03, 0.36, 0.02),
-            Section::offset(-0.14, side * 0.28, 0.02, 0.10, 0.03),
-        );
-    }
-    // A fin standing up over the tail.
-    b.plate(
-        Section::offset(-0.72, 0.0, -0.44, 0.03, 0.26),
-        Section::offset(-0.16, 0.0, -0.20, 0.03, 0.06),
+
+    // Reference units into hull units. Along and across the track the ship is
+    // drawn at scale; up and down it is drawn `NORMANDY_STOUT` times deeper,
+    // and so is every girth, which is the same lie told about the same axis
+    // twice.
+    let z_of = |along: f32| (along - NORMANDY_MID) * NORMANDY_SCALE;
+    let x_of = |across: f32| across * NORMANDY_SCALE;
+    let y_of = |up: f32| (NORMANDY_DATUM - up) * NORMANDY_SCALE * NORMANDY_STOUT;
+    let girth = |g: f32| g * NORMANDY_SCALE * NORMANDY_STOUT;
+    // One frame of the fuselage, from the four numbers a frame is actually
+    // measured in: how far along, how far out, and where its spine and its
+    // belly sit. Section::offset wants a centre and two half-extents, which is
+    // the same frame after two subtractions nobody should have to check.
+    let station = |along: f32, half: f32, top: f32, bottom: f32| {
+        Section::offset(
+            z_of(along),
+            0.0,
+            y_of((top + bottom) * 0.5),
+            x_of(half),
+            girth((top - bottom) * 0.5),
+        )
+    };
+
+    // The fuselage. Eight sides rather than four because the camera goes over
+    // the top and round the front out here, and a four-sided loft would show a
+    // rectangle head-on and a slab from above; this ship is a rounded lens in
+    // section for its whole length.
+    b.loft(
+        &[
+            // The tail cap, and the only frame written out rather than passed
+            // through `station`: `y = 0` is this cap's own centre, so through
+            // `station` it would come back a hundred-millionth off zero — a
+            // subtraction pretending to be a fact about where the drive sits.
+            Section::at(z_of(-121.6), x_of(16.5), girth(5.2)),
+            station(-95.0, 19.3, 69.7, 43.2),
+            station(-65.0, 22.2, 73.2, 40.0),
+            station(-35.0, 23.0, 75.7, 38.5),
+            station(-5.0, 24.3, 77.6, 38.5),
+            station(40.0, 26.0, 78.1, 38.7),
+            station(90.0, 26.2, 77.6, 44.9),
+            station(160.0, 23.5, 74.8, 50.9),
+            station(235.0, 18.5, 68.4, 43.5),
+            station(300.0, 14.0, 58.0, 43.4),
+            station(340.0, 12.0, 47.1, 42.4),
+        ],
+        8,
     );
-    b.finish(
-        "dart",
-        "Interceptor. All nose and engine.",
-        [0.19, 0.22, 0.28],
-        vec![
-            engine([-0.24, 0.0, -0.78], 0.13),
-            engine([0.24, 0.0, -0.78], 0.13),
-        ],
-    )
-}
 
-/// A brick with a bridge on it, and containers slung underneath.
-fn hauler() -> ShipModel {
-    let mut b = Builder::default();
-    b.shell(&[
-        Section::at(-0.84, 0.30, 0.24),
-        Section::at(0.58, 0.34, 0.27),
-        Section::offset(0.94, 0.0, -0.04, 0.16, 0.14),
-    ]);
-    // The bridge, stepped up out of the spine.
-    b.shell(&[
-        Section::offset(0.06, 0.0, -0.38, 0.16, 0.14),
-        Section::offset(0.42, 0.0, -0.36, 0.14, 0.12),
-    ]);
-    // Two slung containers, which is what makes it read as cargo.
     for side in [-1.0f32, 1.0] {
-        b.shell(&[
-            Section::offset(-0.60, side * 0.40, 0.42, 0.14, 0.18),
-            Section::offset(0.34, side * 0.40, 0.42, 0.14, 0.18),
-        ]);
-    }
-    // The engine housing, wider than the tail it hangs off.
-    b.shell(&[
-        Section::offset(-1.00, 0.0, 0.02, 0.30, 0.20),
-        Section::offset(-0.84, 0.0, 0.0, 0.26, 0.18),
-    ]);
-    b.finish(
-        "hauler",
-        "Bulk freighter. Slow, and does not care.",
-        [0.24, 0.21, 0.17],
-        vec![
-            engine([-0.17, -0.06, -1.02], 0.11),
-            engine([0.17, -0.06, -1.02], 0.11),
-            engine([-0.17, 0.10, -1.02], 0.11),
-            engine([0.17, 0.10, -1.02], 0.11),
-        ],
-    )
-}
-
-/// A pin through a hoop: the survey ship, and the one the sky bends through.
-fn needle() -> ShipModel {
-    let mut b = Builder::default();
-    b.shell(&[
-        Section::at(-0.92, 0.05, 0.05),
-        Section::at(-0.60, 0.07, 0.07),
-        Section::at(0.62, 0.06, 0.06),
-        Section::at(0.78, 0.14, 0.14),
-        Section::at(1.00, 0.04, 0.04),
-    ]);
-    b.hoop([0.0, 0.0, 0.04], 0.52, 0.05, 12);
-    // Struts holding the hoop off the spine.
-    for side in [-1.0f32, 1.0] {
+        // The shoulder panel down the flank: a thin plate standing proud of the
+        // skin over the middle third of the ship. It is what the mesh's widest
+        // frames are, and it is a `plate` because that is what it is — a slab
+        // at one stretch of the track, which a loft *along* the track cannot
+        // make thin.
         b.plate(
-            Section::offset(0.0, 0.0, side * 0.30, 0.03, 0.24),
-            Section::offset(0.08, 0.0, side * 0.30, 0.03, 0.24),
+            Section::offset(
+                z_of(-32.0),
+                side * x_of(31.5),
+                y_of(52.6),
+                x_of(7.0),
+                girth(3.4),
+            ),
+            Section::offset(
+                z_of(61.0),
+                side * x_of(30.5),
+                y_of(52.4),
+                x_of(7.5),
+                girth(4.9),
+            ),
+        );
+
+        // The wing. Four frames, and each one is doing a job that shows.
+        //
+        // Every frame carries the same `cy`, so the wing has no pitch at all —
+        // the whole of its droop is `WING_LEAN`, turned about the ship's own
+        // axis on the root. A wing leaned by walking `cy` aft instead comes out
+        // drooping toward the *tail*, which reads as a broken plank rather than
+        // as anhedral, and makes no Λ at all from head-on.
+        //
+        // Aft to fore: the trailing tip pulled back inboard so the tip rakes
+        // rather than ending square on a full chord; the widest frame, which is
+        // the tip proper; the root; and a narrow frame tucked *inside* the
+        // skin, which is what draws the leading edge out to a point and runs
+        // the wing into the flank instead of stopping it against one.
+        b.leaned_shell(
+            &[
+                Section::offset(
+                    z_of(-112.0),
+                    side * x_of(45.0),
+                    y_of(44.0),
+                    x_of(33.0),
+                    girth(3.5),
+                ),
+                Section::offset(
+                    z_of(-45.0),
+                    side * x_of(62.0),
+                    y_of(44.0),
+                    x_of(50.0),
+                    girth(4.5),
+                ),
+                Section::offset(
+                    z_of(30.0),
+                    side * x_of(40.0),
+                    y_of(44.0),
+                    x_of(30.0),
+                    girth(5.5),
+                ),
+                Section::offset(
+                    z_of(170.0),
+                    side * x_of(11.0),
+                    y_of(44.0),
+                    x_of(8.0),
+                    girth(4.5),
+                ),
+            ],
+            side * WING_LEAN,
+            (side * x_of(14.0), y_of(44.0)),
         );
     }
-    b.finish(
-        "needle",
-        "Survey probe. Mostly sensor.",
-        [0.18, 0.21, 0.25],
-        vec![engine([0.0, 0.0, -0.96], 0.15)],
-    )
-}
 
-/// Short, tall and round-shouldered — the opposite read from the Dart.
-fn beetle() -> ShipModel {
-    let mut b = Builder::default();
-    b.shell(&[
-        Section::offset(-0.78, 0.0, 0.06, 0.20, 0.14),
-        Section::offset(-0.42, 0.0, 0.0, 0.42, 0.34),
-        Section::offset(0.06, 0.0, -0.04, 0.52, 0.44),
-        Section::offset(0.52, 0.0, 0.02, 0.36, 0.30),
-        Section::offset(0.86, 0.0, 0.06, 0.12, 0.10),
-    ]);
-    // A blister under the chin, where the guns would be.
-    b.shell(&[
-        Section::offset(0.08, 0.0, 0.46, 0.18, 0.12),
-        Section::offset(0.54, 0.0, 0.42, 0.12, 0.09),
-    ]);
-    // Canards, low and forward.
-    for side in [-1.0f32, 1.0] {
-        b.plate(
-            Section::offset(0.10, side * 0.62, -0.02, 0.22, 0.02),
-            Section::offset(0.34, side * 0.40, -0.06, 0.12, 0.03),
-        );
-    }
     b.finish(
-        "beetle",
-        "Gunship. Built round its own armour.",
-        [0.25, 0.20, 0.20],
+        "normandy",
+        "Frigate. Flat back, wings hung low.",
+        // Near-neutral and the palest hull in the hangar, against the
+        // enterprise's blue-grey. There is a ceiling on this and it is not
+        // obvious: `light_at` sums the three channels, and
+        // `a_hull_turned_by_less_than_a_subpixel_moves_by_less_than_a_subpixel`
+        // holds a subpixel's step under 0.3 — at three samples a coverage step
+        // is a ninth of a plate's light, so the sum wants to stay under about
+        // one. This comes to 0.93.
+        [0.30, 0.30, 0.33],
         vec![
-            engine([-0.16, 0.06, -0.82], 0.17),
-            engine([0.16, 0.06, -0.82], 0.17),
-        ],
-    )
-}
-
-/// Three prongs stacked so all of them show from the beam.
-fn trident() -> ShipModel {
-    let mut b = Builder::default();
-    b.shell(&[
-        Section::at(-0.88, 0.12, 0.16),
-        Section::at(-0.20, 0.15, 0.20),
-        Section::at(0.24, 0.12, 0.15),
-    ]);
-    for tine in [-0.46f32, 0.0, 0.46] {
-        b.shell(&[
-            Section::offset(0.18, 0.0, tine * 0.55, 0.06, 0.07),
-            Section::offset(0.70, 0.0, tine, 0.05, 0.06),
-            Section::offset(0.98, 0.0, tine, 0.02, 0.02),
-        ]);
-    }
-    // Swept tail vanes, above and below.
-    for side in [-1.0f32, 1.0] {
-        b.plate(
-            Section::offset(-0.86, 0.0, side * 0.52, 0.04, 0.22),
-            Section::offset(-0.42, 0.0, side * 0.24, 0.04, 0.10),
-        );
-    }
-    b.finish(
-        "trident",
-        "Line warship. Three drives, one spine.",
-        [0.20, 0.21, 0.27],
-        vec![
-            engine([0.0, -0.30, -0.90], 0.12),
-            engine([0.0, 0.0, -0.92], 0.13),
-            engine([0.0, 0.30, -0.90], 0.12),
+            // One bell, on the ship's own axis, out of the middle of the tail
+            // cap. The reference puts its drive there and nowhere else, and it
+            // is the only hull here with a single bell — which is what makes it
+            // the ship the roll test can ask its question of.
+            //
+            // 0.15 because this one bell carries the whole drive, and because
+            // below about 0.10 the plume's lane count starts stepping between
+            // terminal sizes and `the_lance_burns_as_brightly_on_any_terminal`
+            // catches the jump.
+            engine([0.0, 0.0, -1.0], 0.15),
         ],
     )
 }
@@ -1384,8 +1472,8 @@ struct Flame<'a> {
 /// with a roll, and the screen perpendicular cannot.
 fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
     // Two incommensurate rates, beaten together, so the flame never gutters on
-    // a clean sine — and staggered per bell so a four-bell freighter does not
-    // pulse in lockstep. Evaluated in `f64`, like the camera shake: there are
+    // a clean sine — and staggered per bell so a hull with several of them does
+    // not pulse in lockstep. Evaluated in `f64`, like the camera shake: there are
     // only a handful of these a frame, and it keeps the argument reduction
     // exact however long the process has been up.
     let phase = flame.time * FLICKER_RATE + flame.index as f64 * FLICKER_PER_BELL;
@@ -1995,9 +2083,9 @@ mod tests {
     #[test]
     fn four_sided_a_loft_is_the_shell_it_replaced() {
         // `shell` is `loft` at four and has to *be* it rather than agree with
-        // it: five of the six ships are built through this, and a ring rebuilt
-        // from sines and cosines would come back a fraction of an ulp off
-        // square. That would move four hulls nothing had asked to move, and
+        // it: every ship in the hangar is built through this, and a ring
+        // rebuilt from sines and cosines would come back a fraction of an ulp
+        // off square. That would move hulls nothing had asked to move, and
         // through them the reference frames. `Section::ring` hands the corners
         // back untouched at four, and this is what says so.
         //
@@ -2114,7 +2202,7 @@ mod tests {
         // and that is what the rim being legible depends on.
         //
         // Swept over the whole zoom range, a full turn of roll, every camera
-        // angle in `orbits()`, and over `models()`, so a seventh ship is
+        // angle in `orbits()`, and over `models()`, so the next ship is
         // covered the day it is added.
         for model in models() {
             for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
@@ -2428,8 +2516,9 @@ mod tests {
 
     #[test]
     fn the_sky_never_shows_through_the_seams_of_a_hull() {
-        // Why the whole hull goes to the canvas in one call, asked of six real
-        // assemblies of solids rather than of two synthetic quads.
+        // Why the whole hull goes to the canvas in one call, asked of the real
+        // assemblies of solids in the hangar rather than of two synthetic
+        // quads.
         //
         // Composed a plate at a time — which is what a painter's algorithm
         // suggests, and what this used to do — every edge two plates share
@@ -2439,8 +2528,9 @@ mod tests {
         // colour for every face so that a subpixel the hull fully covers is the
         // hull colour and nothing else.
         //
-        // Enclosed sky is deliberately *not* what is measured. The needle flies
-        // a hoop and you are meant to see stars through the middle of it.
+        // Enclosed sky is deliberately *not* what is measured: a hull with a
+        // hole through it is still a hull, and you are meant to see stars
+        // through the middle of one.
         let sky = 0.9f32;
         let paint = [0.2, 0.24, 0.31];
         let ship = Ship::new(); // cold, so the drive lays nothing over this
@@ -3109,7 +3199,7 @@ mod tests {
         // every lance went clean through and out the far side, where a
         // symmetric pair of bells swap over and cross. It measured 612,286
         // units of drive light on the wrong side of the point, reaching 231
-        // pixels past it, on the hauler at `--orbit 75,12,0`.
+        // pixels past it, at `--orbit 75,12,0`.
         //
         // Stated as a half-plane rather than as a length, because that is what
         // the property is: the vanishing point is where a plume ends, whatever
@@ -3128,7 +3218,7 @@ mod tests {
         // half of the same arithmetic — a flame narrows toward the point it is
         // receding to exactly as a lance does, off the one division, and that
         // branch has nothing else flying through it.
-        let mut asked = 0usize;
+        let mut asked = vec![0usize; models().len()];
         for ship in [at_warp(), at_impulse()] {
             // Neither of these turns on the model, the orbit or the zoom, and a
             // fresh `Renderer` inside all three is a canvas the size of the
@@ -3136,7 +3226,7 @@ mod tests {
             let (renderer, cam) = cam(200, 60, &ship);
             let (w, h) = renderer.canvas_dims();
             let pose = attitude(&ship);
-            for model in models() {
+            for (index, model) in models().iter().enumerate() {
                 for orbit in orbits().into_iter().chain(forward_quarter()) {
                     for zoom in [ZOOM_MIN, ZOOM_DEFAULT, ZOOM_MAX] {
                         let eye = eye_at(orbit, zoom);
@@ -3193,7 +3283,7 @@ mod tests {
                         let onscreen = (0.0..w as f32).contains(&vanish.0)
                             && (0.0..h as f32).contains(&vanish.1);
                         if onscreen {
-                            asked += 1;
+                            asked[index] += 1;
                         }
 
                         let mut canvas = Canvas::new(w, h);
@@ -3215,15 +3305,25 @@ mod tests {
                 }
             }
         }
-        // 154 of them qualify today. The floor is well under that so an
-        // ordinary change to a hull or to the framing does not have to move it,
-        // and well over the handful that would mean the sweep had stopped
-        // asking the question in any but a corner of the range.
-        assert!(
-            asked >= 100,
-            "only {asked} frames put a vanishing point on the canvas with the ship clear \
-             of it, which is too few to be sure of noticing a lance running through one"
-        );
+        // Counted per ship rather than in total, and that is the fix for the
+        // way this number last moved. A total is a floor on the *hangar's size*
+        // as much as on the coverage, and the hangar is what changed under it:
+        // six hulls became two, which took the count from 154 to 56 without a
+        // word about the sweep having got any narrower. Per ship it is the same
+        // question at any hangar size.
+        //
+        // 28 and 30 today. The floor is well under both so an ordinary change
+        // to a hull or to the framing does not have to move it, and well over
+        // the handful that would mean the sweep had stopped asking the question
+        // in any but a corner of the range.
+        for (index, count) in asked.iter().enumerate() {
+            assert!(
+                *count >= 16,
+                "only {count} frames put a vanishing point on the canvas with {} clear \
+                 of it, which is too few to be sure of noticing a lance running through one",
+                models()[index].name
+            );
+        }
     }
 
     #[test]
@@ -3234,10 +3334,14 @@ mod tests {
         // the ship rolled ninety degrees — an axisymmetric plume must not
         // narrow with a roll.
         //
-        // Flown on the Needle, whose one bell sits on the ship's own axis: its
-        // plume lands in the same place at every roll, so the only thing left
-        // that can move is the width of the fan around it.
-        let model = &models()[index_of("needle")];
+        // Flown on the Normandy, whose one bell sits on the ship's own axis:
+        // its plume lands in the same place at every roll, so the only thing
+        // left that can move is the width of the fan around it. It inherits the
+        // question from the Needle, which was the ship with that property until
+        // the hangar was emptied — and it is not a coincidence that there was
+        // another. A hull is built with its drive on the axis or it is not, and
+        // this test needs one that is.
+        let model = &models()[index_of("normandy")];
         let (mut narrowest, mut widest) = (usize::MAX, 0usize);
         for step in 0..8 {
             let mut ship = at_warp();

@@ -66,7 +66,7 @@ fn the_view_from_outside_can_be_flown_from_the_library_alone() {
     // nothing but the surface any other program would have to use.
     let out = fly(
         &[
-            "--seed", "5", "--stars", "600", "--view", "side", "--ship", "hauler",
+            "--seed", "5", "--stars", "600", "--view", "side", "--ship", "normandy",
         ],
         60,
         20,
@@ -80,7 +80,7 @@ fn the_view_from_outside_can_be_flown_from_the_library_alone() {
     assert!(glyphs.contains('\u{2580}'), "no half blocks came out");
     assert!(glyphs.contains("VELOCITY"), "the panel never drew");
     assert!(
-        glyphs.contains("HAULER"),
+        glyphs.contains("NORMANDY"),
         "the panel does not say what it is"
     );
 }
@@ -104,10 +104,11 @@ fn every_ship_can_be_flown_from_the_command_line() {
     // A ship the picker offers but the command line will not take is a ship
     // that cannot be screenshotted, which is most of what these flags are for.
     //
-    // Read off `models()` rather than written out. The list here was five names
-    // long against a hangar of six — `enterprise`, the default and the one
-    // every run flies unless told otherwise, was the one missing — and a
-    // seventh hull would have gone uncovered the same silent way.
+    // Read off `models()` rather than written out. The list here was written
+    // out once and came up a name short of the hangar — `enterprise`, the
+    // default and the one every run flies unless told otherwise, was the one
+    // missing — and the next hull added would have gone uncovered the same
+    // silent way.
     for ship in warp_rs::models::models().iter().map(|m| m.name) {
         let out = fly(
             &[

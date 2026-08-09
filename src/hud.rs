@@ -408,7 +408,7 @@ mod tests {
             paused: false,
             hints: true,
             view: ViewMode::Cockpit,
-            model: "dart",
+            model: "normandy",
         }
     }
 
@@ -717,7 +717,7 @@ mod tests {
                             paused,
                             hints: true,
                             view,
-                            model: "dart",
+                            model: "normandy",
                         },
                     );
                     for row in 0..rows {
@@ -772,7 +772,7 @@ mod tests {
             paused: false,
             hints: false,
             view: ViewMode::Cockpit,
-            model: "dart",
+            model: "normandy",
         };
         // Which cells the panel stamped over the composed frame. The two modes
         // compose different backdrops — half blocks against a brightness ramp —
@@ -923,7 +923,7 @@ mod tests {
                     paused: false,
                     hints,
                     view: ViewMode::Cockpit,
-                    model: "dart",
+                    model: "normandy",
                 },
             );
             let mut out = Vec::new();
@@ -955,7 +955,7 @@ mod tests {
                     paused,
                     hints: true,
                     view: ViewMode::Cockpit,
-                    model: "dart",
+                    model: "normandy",
                 },
             );
             let mut out = Vec::new();

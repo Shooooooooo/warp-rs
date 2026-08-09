@@ -59,8 +59,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 278 unit + 7 flight + 3 golden, ~14s
-cargo test --locked --all-features      # 279 unit — adds the snapshot-gated one
+cargo test                              # 280 unit + 7 flight + 3 golden, ~16s
+cargo test --locked --all-features      # 281 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -236,18 +236,17 @@ change to how a span is measured stayed inside the view it was aimed at. Taking
 either** — it has found a hole, and the hole is worth more than the green tick.
 The reference is one ship deep: not one of the three flights with a hull in it
 passes `--ship`, so all three fly the enterprise. Clearing the hull band over the span it is
-read over rather than written to changed real frames for the dart, the needle,
-the hauler and the trident — three of five camera angles for two of them — and
-moved not one hash here, because the enterprise's outline does not happen to
-expose it. When that happens, say so, and put the guard at the level the change
-actually lives at: that one is a property test in `canvas.rs`, not a sixth
-flight.
+read over rather than written to changed real frames for four of the ships then
+in the hangar — three of five camera angles for two of them — and moved not one
+hash here, because the enterprise's outline does not happen to expose it. When
+that happens, say so, and put the guard at the level the change actually lives
+at: that one is a property test in `canvas.rs`, not an eighth flight.
 
 The other answer is a new flight, and the test of which one you want is whether
-the hole is a *variant* or a *region*. One ship out of six is a variant, and a
-sixth flight would have pinned one more of them while leaving four unlooked at;
-a property test over `models()` covers all of them at once. But when the six
-flights covered no camera aft of the beam, what was missing was half the range
+the hole is a *variant* or a *region*. One ship out of the hangar is a variant,
+and another flight would have pinned one more of them while leaving the rest
+unlooked at; a property test over `models()` covers all of them at once. But
+when the flights covered no camera aft of the beam, what was missing was half the range
 of a control — the only half where the sky has a vanishing point at all, and so
 the only half a trail can be stretched through one. A trail running past the
 point its track vanishes at moved no hash for exactly that reason, and it got
@@ -341,7 +340,7 @@ src/ship.rs       flight model: throttle, warp, steering, transients
 src/starfield.rs  the cockpit's sky — a cone opening forward, plus Camera
 src/exterior.rs   the side view's sky — a band the ship flies through
 src/lens.rs       the warp bubble: a point-mass lens in an elliptical metric
-src/models.rs     the six hulls, and how to draw one
+src/models.rs     the hulls, and how to draw one
 src/menu.rs       the ship picker
 src/canvas.rs     f32 RGB accumulation buffer, rasterisers, tonemap
 src/render.rs     assembling a frame: sky, then what is lit, then the glass
@@ -829,9 +828,9 @@ hard zero abeam — `place` puts the standoff on both sides of the subtraction a
 it cancels bit for bit, which is what left `side.txt` untouched.
 
 Square to the track and behind it the plume genuinely is the nearer of the two,
-and saying so costs something. Five of the six ships put every bell a hair aft
-of the hull, so their plumes stream into clear sky and the order could not
-matter less; the enterprise's impulse bell is mid-ship, and its exhaust runs
+and saying so costs something. The Normandy puts its one bell a hair aft of the
+hull, so its plume streams into clear sky and the order could not matter less;
+the enterprise's impulse bell is mid-ship, and its exhaust runs
 *between* the nacelles — 0.19 hull units inboard of the nearer flank, 0.009
 under their lower edge, in a fan 0.11 wide. So it misses them in the round and
 lies straight across them from the beam, where hull `x` is nearly pure camera
@@ -895,8 +894,8 @@ which a point at infinity cannot see — so a lance ending *on* it put a third o
 full brightness from every lane of every bell on one subpixel: a bead hanging in
 the sky precisely where the exhaust was meant to have gone. The fading variant
 takes the floor away, so the sample landing on the point carries a ramp of
-exactly zero and the margin has nothing left to buy. Measured star-free on the
-hauler at `--orbit 75,12,0`, peak light within a dozen subpixels of the point:
+exactly zero and the margin has nothing left to buy. Measured star-free at
+`--orbit 75,12,0`, peak light within a dozen subpixels of the point:
 0.83 stopping short with the floor, 1.02 running the whole way with it, 0.45 as
 it is now — further and dimmer at once, against a plume peaking at 2.65.
 
@@ -1378,14 +1377,25 @@ picker both read `models::models()`, and the tests iterate it, so nothing else
 needs touching. The cockpit draws neither the hull nor its name — the panel's
 `SHIP` row is gated on `ViewMode::Side` — so the golden hashes do not move.
 
+That "nothing else needs touching" is very nearly true and was not: four tests
+had a ship's *name* written out in quotes, and every one of them went stale the
+day that ship left. They are all driven off `models()` now. Two more traps for
+whoever next takes a ship *out*. Removing one can take a primitive with it —
+deleting the needle left `Builder::hoop` with no caller, and a `#[cfg(test)]`
+use does not silence `dead_code` in the lib build that `--all-targets` also
+compiles, where clippy is `-D warnings`. And any test counting frames *in total*
+over `models()` is a floor on the hangar's size as much as on whatever it meant
+to measure: `a_plume_stops_at_the_point_it_vanishes_at` counted 154 over six
+hulls and 56 over two, and it counts per ship now.
+
 `shell` is `loft` at four sides and the count is per *solid*, so a blade or a
 strut goes on costing four points while a tube or a disc pays for being round.
 Keep it a multiple of four: `hx` and `hy` are half-extents at 4, 8 and 12
 because a vertex lands on each axis exactly, and at ten the ring overshoots
 `hy` by five percent. `Section::ring` hands the corners straight back at four
 rather than recomputing them, and
-`four_sided_a_loft_is_the_shell_it_replaced` holds that bit for bit — five of
-the six ships are built through it, and an ulp there repaints two reference
+`four_sided_a_loft_is_the_shell_it_replaced` holds that bit for bit — every
+ship in the hangar is built through it, and an ulp there repaints two reference
 frames. Face count is cheap but not free: the enterprise went from 100 faces to
 242 for about 3.7% of the drawing time on the exterior frame where the hull is
 the largest share, and nothing measurable on the one at twenty thousand stars.
@@ -1393,17 +1403,29 @@ the largest share, and nothing measurable on the one at twenty thousand stars.
 An `Engine`'s `radius` is doing more work than it looks like. It sets the bell's
 glow, and it also sets how long and how bright a trail that bell throws — a
 bigger drive throws a longer flame, which is what hands the fleet its variety
-without a per-ship table. The fleet spans 0.07 to 0.17 and `NOMINAL_BELL` is the
-middle of that; a new ship far outside the range will trail unlike anything else
-in the hangar, which may well be the point, but it is a decision rather than a
-detail.
+without a per-ship table. `NOMINAL_BELL` is 0.12, and it is a fixed reference
+rather than a mean of whatever happens to be in the hangar — the surviving bells
+run 0.07 to 0.15, so it no longer sits in the middle of them, and recentring it
+would rescale every plume's brightness and repaint `side.txt`, `orbit.txt` and
+`astern.txt` to say nothing. A new ship far outside that range will trail unlike
+anything else in the hangar, which may well be the point, but it is a decision
+rather than a detail.
 
 The picker mostly takes care of itself now. It reserves `CHROME_ROWS` (6) for
 its frame, title, rule, blank and footer, gives what is left to the list, and
-windows that on the cursor — so a seventh ship costs nothing on a terminal with
+windows that on the cursor — so another ship costs nothing on a terminal with
 the room and scrolls on one without. It used to lay the list out at full height
 and clip, which at six ships already overflowed `MIN_ROWS` and dropped the
 footer and the closing rule; that is what the box-always-closes test is for.
+
+Note what that leaves at a hangar of two: `MIN_ROWS` has room for three, so
+**no terminal the box will draw itself in can window the list at all**, and
+`a_short_box_windows_the_list_and_says_that_it_did` asks `title()` directly
+rather than going through `draw`. It went through `draw` once, and when the
+hangar shrank under it the test did not turn red — both of its framings fell
+below `MIN_ROWS`, took the one-line fallback, and passed on a picker that was
+never drawn. A third ship does not fix that; a fourth would quietly make the
+old shape satisfiable again.
 
 Two things a new ship still moves. The box's *width* is derived from the longest
 blurb, so a long one widens the dialogue on every terminal that can afford it —

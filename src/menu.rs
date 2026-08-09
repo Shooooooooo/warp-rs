@@ -223,9 +223,9 @@ fn label_cols() -> usize {
 /// for the longest blurb there is.
 ///
 /// Derived rather than pinned at a number. Pinned at 44 it was narrower than
-/// the sentences it was framing, so five of the six blurbs were cut mid-word at
-/// *every* terminal size, the widest included — which reads as a fault in the
-/// renderer rather than as a box deciding what it has room for.
+/// the sentences it was framing, so the blurbs came out cut mid-word at *every*
+/// terminal size, the widest included — which reads as a fault in the renderer
+/// rather than as a box deciding what it has room for.
 fn wanted_cols() -> usize {
     let blurb = models::models()
         .iter()
@@ -240,8 +240,8 @@ fn wanted_cols() -> usize {
 ///
 /// Shedding a blurb is a detail going quietly, and the rest of this module does
 /// that without comment. Hiding whole ships is not the same thing: there would
-/// otherwise be nothing at all to tell a six-ship hangar shortened to three
-/// from a hangar that only has three ships in it.
+/// otherwise be nothing at all to tell a hangar shortened to what fits from a
+/// hangar that is only that big.
 fn title(menu: &Menu, total: usize, shown: usize, inner: usize) -> String {
     if shown >= total {
         return pad("SELECT SHIP", inner);
@@ -430,19 +430,37 @@ mod tests {
 
     #[test]
     fn a_narrow_box_sheds_the_blurbs_rather_than_the_names() {
-        let mut wide = lit(120, 34, ColorMode::Truecolor);
-        draw(&mut wide, &Menu::new(0));
-        let wide_text: String = (0..34).map(|r| wide.row_text(r)).collect();
-        assert!(wide_text.contains("Interceptor"), "the blurbs are missing");
+        // Regression, twice over. This named one ship's blurb and one ship's
+        // name in quotes, and both went stale the day that ship left the
+        // hangar — so it is asked of the hangar now, and cannot. The head of
+        // the blurb rather than the whole of it, since the wide box is entitled
+        // to cut a long one and this is not the test that says it does not.
+        // Through `rendered` rather than off the screen directly, because in
+        // colour a dialogue leaves the half block standing where it writes a
+        // space — so a blurb read raw comes back with every gap in it spelled
+        // `▀`, and the only thing that could be looked for was a single word.
+        // Which is exactly why the one this used to look for was `Interceptor`.
+        let wide_text = rendered(120, 34, 0).concat();
+        let narrow_text = rendered(32, 16, 0).concat();
 
-        let mut narrow = lit(32, 16, ColorMode::Truecolor);
-        draw(&mut narrow, &Menu::new(0));
-        let narrow_text: String = (0..16).map(|r| narrow.row_text(r)).collect();
-        assert!(
-            !narrow_text.contains("Interceptor"),
-            "the blurb did not fit"
-        );
-        assert!(narrow_text.contains("DART"), "the name has to survive");
+        for ship in models::models() {
+            let head: String = ship.blurb.chars().take(MIN_BLURB).collect();
+            assert!(
+                wide_text.contains(&head),
+                "{}'s blurb is missing from a box with the room for it",
+                ship.name
+            );
+            assert!(
+                !narrow_text.contains(&head),
+                "{}'s blurb did not have to go",
+                ship.name
+            );
+            assert!(
+                narrow_text.contains(&ship.name.to_uppercase()),
+                "{}'s name has to survive",
+                ship.name
+            );
+        }
     }
 
     /// The picker as text, a string per row of the terminal.
@@ -487,20 +505,40 @@ mod tests {
     #[test]
     fn a_short_box_windows_the_list_and_says_that_it_did() {
         // Shedding a blurb can go quietly. Dropping whole ships cannot: without
-        // the counter there is nothing to tell a hangar of six shortened to
-        // three from a hangar that only has three in it.
-        let all = models::models().len();
-        let counter = format!("1/{all}");
-
-        let short = rendered(80, MIN_ROWS, 0).concat();
+        // the counter there is nothing to tell a hangar shortened to what fits
+        // from a hangar that is only that big.
+        //
+        // Asked of `title` rather than through `draw`, and that narrowing is
+        // forced by arithmetic rather than chosen for convenience. `MIN_ROWS`
+        // leaves room for three ships, so with two in the hangar there is no
+        // terminal the box will draw itself in that can shorten the list at
+        // all — and the version of this that went through `draw` did not turn
+        // red when that became true, it went *quiet*: both of its framings fell
+        // below `MIN_ROWS`, took the one-line fallback, and passed on a picker
+        // that was never drawn. A rule about the counter is not a fact about
+        // how many ships happen to be in the hangar, so it is not asked as one.
+        let menu = Menu::new(0);
+        let windowed = title(&menu, 6, 3, 40);
         assert!(
-            short.contains(&counter),
-            "ships went missing without a word: {short:?}"
+            windowed.contains("1/6"),
+            "ships went missing without a word: {windowed:?}"
+        );
+        assert!(
+            windowed.contains("SELECT SHIP"),
+            "the counter ate the title: {windowed:?}"
+        );
+        let whole = title(&menu, 3, 3, 40);
+        assert!(
+            !whole.contains('/'),
+            "the counter showed up with the whole list on screen: {whole:?}"
         );
 
-        let tall = rendered(80, all + CHROME_ROWS, 0).concat();
+        // And the half `draw` still owns: on a terminal with the room it has to
+        // hand `title` a `shown` that says the list really is all there.
+        let all = models::models().len();
+        let tall = rendered(80, all + CHROME_ROWS + 4, 0).concat();
         assert!(
-            !tall.contains(&counter),
+            !tall.contains(&format!("1/{all}")),
             "the counter showed up with the whole list on screen"
         );
     }
@@ -563,9 +601,9 @@ mod tests {
     #[test]
     fn a_box_with_the_room_finishes_every_sentence_in_it() {
         // Regression: the width was pinned at 44, which is narrower than the
-        // blurbs it was framing — so five of the six were cut mid-word at
-        // *every* terminal size, the widest included. The width is derived from
-        // the blurbs now, so a terminal with the room shows them whole.
+        // blurbs it was framing — so they came out cut mid-word at *every*
+        // terminal size, the widest included. The width is derived from the
+        // blurbs now, so a terminal with the room shows them whole.
         let text = rendered(120, 34, 0).concat();
         for ship in models::models() {
             assert!(
