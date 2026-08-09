@@ -411,7 +411,18 @@ impl Builder {
             .iter()
             .map(|s| self.push_ring(s.ring(sides)))
             .collect();
+        self.skin(&rings, sides);
+    }
 
+    /// The faces of a run of rings already pushed: a band of quads between each
+    /// neighbouring pair, and a cap at each end.
+    ///
+    /// Split out of [`Self::loft`] so [`Self::leaned_shell`] can lay its own
+    /// points down and still be wired up by the one piece of code that knows
+    /// which way round a ring goes. Nothing here is arithmetic — every value in
+    /// it is a vertex index — so the split cannot move a hull by a bit, which
+    /// matters because the enterprise is lofted through it.
+    fn skin(&mut self, rings: &[u16], sides: usize) {
         let n = sides as u16;
         for pair in rings.windows(2) {
             let (aft, fore) = (pair[0], pair[1]);
@@ -472,6 +483,51 @@ impl Builder {
         self.shell(&[aft, fore]);
     }
 
+    /// A shell leaned about the ship's own axis, pivoted on a point in the
+    /// plane across the track.
+    ///
+    /// [`Section`]'s rectangle is axis-aligned in `x` and `y`, so one `cy`
+    /// covers a whole span and the only lean a run of them can describe is a
+    /// lean toward the *rear* — each section dropping a little as the sections
+    /// walk aft. A wing that hangs down toward its tip while staying level fore
+    /// and aft is the other rotation entirely, and no arrangement of `cy` will
+    /// spell it.
+    ///
+    /// This is that rotation and nothing else: the same [`Section::ring`]
+    /// points, turned about `z` around `pivot` before they are pushed, then
+    /// handed to the same [`Self::skin`] every other solid here goes through.
+    /// The winding still comes out right *by construction*, which is the whole
+    /// reason this is a primitive rather than a wing stepped outboard in three
+    /// separate plates: a turn about the axis a ring lies across is a turn
+    /// within the ring's own plane and of determinant one, so it moves the four
+    /// points and cannot reverse the order they go round in.
+    ///
+    /// The pivot is the wing's own root rather than the ship's centreline, so
+    /// the lean swings the tip down and leaves the root where it was put.
+    /// Turning about the centreline would drag the root out of the flank it is
+    /// meant to be buried in, and the wing would hang off the hull instead of
+    /// out of it.
+    fn leaned_shell(&mut self, sections: &[Section], lean: f32, pivot: (f32, f32)) {
+        assert!(sections.len() >= 2, "a shell needs two sections to loft");
+        const SIDES: usize = 4;
+        let (sin, cos) = lean.sin_cos();
+        let rings: Vec<u16> = sections
+            .iter()
+            .map(|s| {
+                let turned = s.ring(SIDES).into_iter().map(|p| {
+                    let (dx, dy) = (p[0] - pivot.0, p[1] - pivot.1);
+                    [
+                        pivot.0 + dx * cos - dy * sin,
+                        pivot.1 + dx * sin + dy * cos,
+                        p[2],
+                    ]
+                });
+                self.push_ring(turned)
+            })
+            .collect();
+        self.skin(&rings, SIDES);
+    }
+
     fn finish(
         self,
         name: &'static str,
@@ -505,6 +561,7 @@ pub fn models() -> &'static [ShipModel] {
             needle(),
             beetle(),
             trident(),
+            normandy(),
         ]
     })
 }
@@ -766,6 +823,249 @@ fn enterprise() -> ShipModel {
             // fires between the nacelles rather than under them now, and washes
             // their inboard flanks on the way past.
             engine([0.0, y_of(-0.023), z_of(-1.05)], 0.07),
+        ],
+    )
+}
+
+/// The Normandy's reference units into hull units.
+///
+/// Unlike the enterprise there is no one length here worth measuring the rest of
+/// the ship against — no saucer, no radius everything else is a multiple of — so
+/// the numbers below stay in the reference mesh's own units and these three do
+/// the whole conversion. The effect is the enterprise's: what is on the page is
+/// the measurement, and a later reader can hold a station against the mesh
+/// without redoing anybody's division.
+///
+/// **The reference's axes are not this crate's.** There `+x` runs out the nose,
+/// `+y` is up and `+z` is to starboard; here `+z` is the nose, `+x` starboard
+/// and `+y` *down*. So `z_of` below takes a reference `x`, `x_of` takes a
+/// reference `z`, and `y_of` takes a reference `y` and turns it over.
+///
+/// The hull is 461.61 reference units from the tail cap to the tip of the nose,
+/// and it is mapped onto 1.96 rather than the whole 2.0 the box allows. That
+/// margin is not timidity: `every_model_fits_in_the_unit_box` asks for
+/// `|c| <= 1.0`, and a scale that lands the nose exactly on the wall is one ulp
+/// of rounding away from a red test for nothing gained. The enterprise's nose
+/// sits at 0.9876 for the same reason.
+const NORMANDY_SCALE: f32 = 1.96 / 461.61;
+/// The station along the reference that lands on `z = 0`: halfway between the
+/// tail cap at `-121.58` and the nose at `+340.03`.
+const NORMANDY_MID: f32 = 109.225;
+/// The height that lands on `y = 0`, and it is the *tail cap's own centre*
+/// rather than the mesh's mid-height or the hull's.
+///
+/// That is a choice and it earns itself twice: it is what the hull rolls about,
+/// and it is where the one bell sits — which is why
+/// `the_plume_keeps_its_width_when_the_ship_rolls` is flown on this ship. A
+/// plume on the axis lands in the same place at every roll, so the only thing
+/// left that can move is the width of the fan around it.
+const NORMANDY_DATUM: f32 = 55.91;
+
+/// How much taller than scale this hull is drawn. [`STOUT`], told about the same
+/// axis and for very nearly the same reason.
+///
+/// The Normandy is a flat ship: 40 reference units from its spine to its belly
+/// against 462 along the track, where the enterprise is a quarter as long again
+/// in proportion. At true depth the fuselage comes out under three subpixels
+/// deep at the framing the shot opens on, and
+/// `the_drive_does_not_shine_through_the_hull` wants a hundred subpixels the
+/// hull covers *whole* from angles that foreshorten its length to a quarter.
+///
+/// Only the depth is flattered — lengths along the track and spans across it are
+/// the mesh's, so the plan view is the ship's. What it costs is that the wings
+/// swing a little further from the roll axis, which is what
+/// `every_hull_stays_inside_its_own_bubble` is about; at this value the worst
+/// vertex sits at 0.62 of the bubble's across-track reach.
+const NORMANDY_STOUT: f32 = 1.3;
+
+/// How far the wings hang, in radians, measured down from level at the tip.
+///
+/// The reference hangs four drive arms under the hull on struts, which is more
+/// structure than a ship twenty subpixels long can show — two wings say the same
+/// thing and say it at any size. What has to survive the simplification is the
+/// Λ the ship makes head-on, and that is this angle and nothing else: flat, and
+/// the pair reads as one plank; much past a third of a turn and the ship reads
+/// as a dart rather than a frigate.
+const WING_LEAN: f32 = 0.42;
+
+/// A frigate: a long flat back, a nose drawn out to a blade, and two wings hung
+/// low and leaning down to their tips.
+///
+/// Measured off a reference mesh the way the enterprise is, in that mesh's own
+/// units — see [`NORMANDY_SCALE`] for the conversion and for the axis swap,
+/// which is the one thing about the numbers below that cannot be guessed. Eight
+/// of the mesh's twenty-one measured frames are kept; the fuselage's outline
+/// between them is close enough to linear that the rest were paying for nothing.
+///
+/// **The two dorsal tail fins are deliberately not here.** The reference carries
+/// them — a pair of swept blades over the tail, splaying outboard as they rise
+/// to 90.9 against a spine of 78.1 beneath them, each capped by a thin rod, and
+/// 2,077 faces of a 691,310-face hull. They are left off and the back is closed
+/// as though they never were. That is what makes this the only hull in the
+/// hangar with nothing at all standing above its spine, which is most of what
+/// separates it from the enterprise's stack at the size either is drawn.
+/// Nothing tests it, because nothing honest can — a bound on how high a vertex
+/// may go restates the station table, and a rule about the tallest point passes
+/// just as well with the blades put back, since the wings hang further below the
+/// axis than the fins ever stood above it. So this paragraph is the guard: they
+/// are absent by decision, not by oversight, and putting them back is a change
+/// rather than a fix.
+///
+/// What is measured and what is drawn in, since "measured" is worth nothing
+/// without the other half: the eight stations, the two shoulder plates and how
+/// far out and how far down the wings reach are the mesh's. The wings'
+/// planform, the lean, the nose cap and the bell are not.
+///
+/// One correction the mesh will not volunteer. Its widest frames amidships read
+/// 38 units out, and that is the *shoulder plates* — two thin panels standing
+/// proud of the flank between stations `-32` and `+62` — not the fuselage, which
+/// is 26 there and is measured with them cut away. Anyone re-measuring off the
+/// bounding box will "fix" the fuselage back out to 38 and lose the panels'
+/// shadow line with it.
+fn normandy() -> ShipModel {
+    let mut b = Builder::default();
+
+    // Reference units into hull units. Along and across the track the ship is
+    // drawn at scale; up and down it is drawn `NORMANDY_STOUT` times deeper,
+    // and so is every girth, which is the same lie told about the same axis
+    // twice.
+    let z_of = |along: f32| (along - NORMANDY_MID) * NORMANDY_SCALE;
+    let x_of = |across: f32| across * NORMANDY_SCALE;
+    let y_of = |up: f32| (NORMANDY_DATUM - up) * NORMANDY_SCALE * NORMANDY_STOUT;
+    let girth = |g: f32| g * NORMANDY_SCALE * NORMANDY_STOUT;
+    // One frame of the fuselage, from the four numbers a frame is actually
+    // measured in: how far along, how far out, and where its spine and its
+    // belly sit. Section::offset wants a centre and two half-extents, which is
+    // the same frame after two subtractions nobody should have to check.
+    let station = |along: f32, half: f32, top: f32, bottom: f32| {
+        Section::offset(
+            z_of(along),
+            0.0,
+            y_of((top + bottom) * 0.5),
+            x_of(half),
+            girth((top - bottom) * 0.5),
+        )
+    };
+
+    // The fuselage. Eight sides rather than four because the camera goes over
+    // the top and round the front out here, and a four-sided loft would show a
+    // rectangle head-on and a slab from above; this ship is a rounded lens in
+    // section for its whole length.
+    b.loft(
+        &[
+            // The tail cap, and the only frame written out rather than passed
+            // through `station`: `y = 0` is this cap's own centre, so through
+            // `station` it would come back a hundred-millionth off zero — a
+            // subtraction pretending to be a fact about where the drive sits.
+            Section::at(z_of(-121.6), x_of(16.5), girth(5.2)),
+            station(-95.0, 19.3, 69.7, 43.2),
+            station(-65.0, 22.2, 73.2, 40.0),
+            station(-35.0, 23.0, 75.7, 38.5),
+            station(-5.0, 24.3, 77.6, 38.5),
+            station(40.0, 26.0, 78.1, 38.7),
+            station(90.0, 26.2, 77.6, 44.9),
+            station(160.0, 23.5, 74.8, 50.9),
+            station(235.0, 18.5, 68.4, 43.5),
+            station(300.0, 14.0, 58.0, 43.4),
+            station(340.0, 12.0, 47.1, 42.4),
+        ],
+        8,
+    );
+
+    for side in [-1.0f32, 1.0] {
+        // The shoulder panel down the flank: a thin plate standing proud of the
+        // skin over the middle third of the ship. It is what the mesh's widest
+        // frames are, and it is a `plate` because that is what it is — a slab
+        // at one stretch of the track, which a loft *along* the track cannot
+        // make thin.
+        b.plate(
+            Section::offset(
+                z_of(-32.0),
+                side * x_of(31.5),
+                y_of(52.6),
+                x_of(7.0),
+                girth(3.4),
+            ),
+            Section::offset(
+                z_of(61.0),
+                side * x_of(30.5),
+                y_of(52.4),
+                x_of(7.5),
+                girth(4.9),
+            ),
+        );
+
+        // The wing. Four frames, and each one is doing a job that shows.
+        //
+        // Every frame carries the same `cy`, so the wing has no pitch at all —
+        // the whole of its droop is `WING_LEAN`, turned about the ship's own
+        // axis on the root. A wing leaned by walking `cy` aft instead comes out
+        // drooping toward the *tail*, which reads as a broken plank rather than
+        // as anhedral, and makes no Λ at all from head-on.
+        //
+        // Aft to fore: the trailing tip pulled back inboard so the tip rakes
+        // rather than ending square on a full chord; the widest frame, which is
+        // the tip proper; the root; and a narrow frame tucked *inside* the
+        // skin, which is what draws the leading edge out to a point and runs
+        // the wing into the flank instead of stopping it against one.
+        b.leaned_shell(
+            &[
+                Section::offset(
+                    z_of(-112.0),
+                    side * x_of(45.0),
+                    y_of(44.0),
+                    x_of(33.0),
+                    girth(3.5),
+                ),
+                Section::offset(
+                    z_of(-45.0),
+                    side * x_of(62.0),
+                    y_of(44.0),
+                    x_of(50.0),
+                    girth(4.5),
+                ),
+                Section::offset(
+                    z_of(30.0),
+                    side * x_of(40.0),
+                    y_of(44.0),
+                    x_of(30.0),
+                    girth(5.5),
+                ),
+                Section::offset(
+                    z_of(170.0),
+                    side * x_of(11.0),
+                    y_of(44.0),
+                    x_of(8.0),
+                    girth(4.5),
+                ),
+            ],
+            side * WING_LEAN,
+            (side * x_of(14.0), y_of(44.0)),
+        );
+    }
+
+    b.finish(
+        "normandy",
+        "Frigate. Flat back, wings hung low.",
+        // Near-neutral and the palest hull in the hangar, against the
+        // enterprise's blue-grey. There is a ceiling on this and it is not
+        // obvious: `light_at` sums the three channels, and
+        // `a_hull_turned_by_less_than_a_subpixel_moves_by_less_than_a_subpixel`
+        // holds a subpixel's step under 0.3 — at three samples a coverage step
+        // is a ninth of a plate's light, so the sum wants to stay under about
+        // one. This comes to 0.93.
+        [0.30, 0.30, 0.33],
+        vec![
+            // One bell, on the ship's own axis, out of the middle of the tail
+            // cap. The reference puts its drive there and nowhere else, and it
+            // is the only hull here with a single bell — which is what makes it
+            // the ship the roll test can ask its question of.
+            //
+            // 0.15 because this one bell carries the whole drive, and because
+            // below about 0.10 the plume's lane count starts stepping between
+            // terminal sizes and `the_lance_burns_as_brightly_on_any_terminal`
+            // catches the jump.
+            engine([0.0, 0.0, -1.0], 0.15),
         ],
     )
 }
