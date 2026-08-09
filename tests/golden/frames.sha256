@@ -25,7 +25,7 @@
 #     orbit.txt       the same, --orbit 55,35,20
 #     astern.txt      the same, --orbit -75,6,20
 #
-# The last one is the camera swung off the beam, and it is here for the reason
+# `orbit.txt` is the camera swung off the beam, and it is here for the reason
 # the two before it are: the outside view's whole geometry is written to reduce
 # *exactly* to the old arithmetic when the camera is abeam, which is where
 # `side.txt` has it. So a change that repainted every angle except that one
@@ -55,9 +55,9 @@
 # lens, the arcs and the hulls. A change to any of those could repaint the sky
 # and this file would not have noticed.
 #
-# What the five still do not cover, and it took a fix to find out: the fleet is
-# one ship deep. Neither of the two flights with a ship in it passes `--ship`,
-# so both fly the enterprise. Clearing the hull band over the span it is read
+# What none of them covers, and it took a fix to find out: the fleet is one ship
+# deep. Not one of the flights with a hull in it passes `--ship`, so every one
+# of them flies the enterprise. Clearing the hull band over the span it is read
 # over rather than the span it is written to changed real frames for four of
 # the ships then in the hangar — three of five camera angles for two of them —
 # and left every hash below bit-identical, because the enterprise's
