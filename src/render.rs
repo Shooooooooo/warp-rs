@@ -314,7 +314,7 @@ mod tests {
             paused: false,
             hints: true,
             view: crate::view::ViewMode::Cockpit,
-            model: "dart",
+            model: "normandy",
         }
     }
 

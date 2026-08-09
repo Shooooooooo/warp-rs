@@ -1669,10 +1669,10 @@ mod tests {
 
     #[test]
     fn the_outside_view_flies_and_resizes_like_the_inside_one() {
-        let args = args_for(&["--seed", "2", "--view", "side", "--ship", "trident"]);
+        let args = args_for(&["--seed", "2", "--view", "side", "--ship", "normandy"]);
         let mut flight = Flight::new(&args, 80, 24);
         assert_eq!(flight.view(), ViewMode::Side, "--view side did not take");
-        assert_eq!(flight.drawn_model().name, "trident");
+        assert_eq!(flight.drawn_model().name, "normandy");
 
         flight.ship.throttle = 1.0;
         flight.ship.toggle_warp();

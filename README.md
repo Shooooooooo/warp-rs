@@ -33,7 +33,7 @@ cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 | `--engage` | Start with the drive already lit. |
 | `--view cockpit\|side` | Which camera to start behind. `C` cycles them. |
 | `--orbit AZ,EL[,ROLL]` | Where to park the outside camera, in degrees. |
-| `--ship NAME` | Which ship to fly, and only visible from outside: `enterprise` (the default), `dart`, `hauler`, `needle`, `beetle`, `trident`. |
+| `--ship NAME` | Which ship to fly, and only visible from outside: `enterprise` (the default) or `normandy`. |
 | `--throttle 0..1` | Starting throttle. |
 | `--exposure N` | Tonemap exposure. Higher is brighter. |
 | `--aa N` | Samples per subpixel, per axis, for the hull's outline. Default 3; `1` is a hard edge. |

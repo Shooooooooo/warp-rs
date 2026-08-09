@@ -58,9 +58,9 @@
 # What the five still do not cover, and it took a fix to find out: the fleet is
 # one ship deep. Neither of the two flights with a ship in it passes `--ship`,
 # so both fly the enterprise. Clearing the hull band over the span it is read
-# over rather than the span it is written to changed real frames for the dart,
-# the needle, the hauler and the trident — three of five camera angles for two
-# of them — and left every hash below bit-identical, because the enterprise's
+# over rather than the span it is written to changed real frames for four of
+# the ships then in the hangar — three of five camera angles for two of them —
+# and left every hash below bit-identical, because the enterprise's
 # projected outline does not happen to expose it at any angle tried. So a
 # change to `Canvas::fill_hull` or `models::plates` that this file passes is
 # not thereby a change that draws every hull the way it drew it before, and the
