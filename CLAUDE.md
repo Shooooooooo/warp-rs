@@ -59,8 +59,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 282 unit + 7 flight + 3 golden, ~16s
-cargo test --locked --all-features      # 283 unit — adds the snapshot-gated one
+cargo test                              # 283 unit + 7 flight + 3 golden, ~16s
+cargo test --locked --all-features      # 284 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -967,6 +967,19 @@ colour as given punched four dark notches into the brightest part of the view.
 front of the scene rather than painted on the glass — and its dimming is
 applied per stamp, not per frame, so two panel overlays on one cell dim it
 twice. The other two are idempotent, which the shadow was not.
+
+**A stamp takes one colour for a whole run**, so anything drawn in more than one
+colour on a line is more than one call, at its own column. The panel's nav rows
+have always done that — `hud::draw_nav_panel` stamps its rule, its label and its
+value separately — and the picker had not: it fused a `│` onto each end of the
+row's text and handed the pair over in one call, so the sides of the box came
+out in whatever the text beside them was written in, and it changed colour four
+times down an edge whose corners were cyan the whole time. `menu::draw`'s
+`framed` is the fix, and it is where the two rules meet: three runs laid *end to
+end*, because a fourth colour would be free but a cell covered twice would be
+dimmed twice. That is also why the spaces inside the frame characters travel
+with the frame — under a dialogue a space takes no colour at all, so which run
+carries one settles nothing except how often it is dimmed.
 
 **There is no depth buffer and none is needed.** Four things stand in for one,
 and all four have to keep holding:
