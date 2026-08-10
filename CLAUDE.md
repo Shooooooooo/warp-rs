@@ -59,8 +59,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 280 unit + 7 flight + 3 golden, ~16s
-cargo test --locked --all-features      # 281 unit — adds the snapshot-gated one
+cargo test                              # 282 unit + 7 flight + 3 golden, ~16s
+cargo test --locked --all-features      # 283 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -80,10 +80,12 @@ cargo run --release --example bench 200 60 20000 side truecolor
 `bench` prints sim / draw / write milliseconds per case against the 60 fps
 budget. Its arguments are `[cols] [rows] [stars] [view] [color]`, and the
 colour mode is a *column* rather than an assumption for the reason
-`tests/flight.rs` pins its own: `--color auto` reads `TERM`, so an unpinned
-sweep measures whatever the shell exports and two machines are not comparable.
-It is worth real time — the same case came out at 6.87, 7.31 and 6.66 ms of
-drawing in ascii, 256 and truecolor. The expensive frame in the program is the
+`tests/flight.rs` pins its own: a sweep that rides the flag's default measures
+something else the day that default moves, and the figures below are compared
+across exactly such changes. It is worth real time — the same case came out at
+6.87, 7.31 and 6.66 ms of drawing in ascii, 256 and truecolor. The pin used to
+be against detection reading `TERM`; that reason went with detection and the
+weaker-sounding one that replaced it is the load-bearing half. The expensive frame in the program is the
 outside view at warp — every streak near the ship is chopped into arcs and
 drawn twice, once per lens image — and the default sweep includes it
 deliberately.
@@ -154,8 +156,10 @@ colour is spelled — meaning a change that moves one and not the other has land
 in the writer rather than in the renderer. It went in with the fix that made
 that mode send `38;5;N` instead of palette values wrapped in a 24-bit sequence
 the terminals it exists for cannot read, and the mode had no reference at all
-until then while being the one `ColorMode::detect` hands to any terminal with a
-`TERM` entry and no `COLORTERM`.
+until then while being the one detection handed to any terminal with a `TERM`
+entry and no `COLORTERM`. Detection is gone and nothing is handed that mode now
+— which makes this the *only* guard on `quantize_256` and the palette-index
+path, since the other six flights are truecolor or ascii throughout.
 
 The last three are not decoration. With only the `--demo` pair, the reference
 covered two seconds of flight that never leaves sublight — `--demo` spends its
@@ -1214,10 +1218,29 @@ modes: the hand-spelled bytes and crossterm's `AnsiValue` have to agree, or a
 Windows console without virtual terminal processing draws a different picture
 from the one every test here checks.
 
+**Which spelling is used is a command-line answer and nothing else.** `--color`
+defaults to `truecolor` and there is no `auto`. There was one, and
+`ColorMode::detect` behind it read `COLORTERM` and then `TERM` — so a terminal
+exporting no `COLORTERM` was handed `Ansi256` whatever it could really do,
+which is most terminals, and the mode this whole canvas is designed for was the
+one the program least often opened in. Keeping `auto` as a non-default value
+was considered and rejected: with the default at truecolor it is a second
+answer to a question already answered, and it is the answer that guesses.
+`--color auto` is now a parse error naming the three that remain, which is
+`the_narrow_colour_modes_are_asked_for_by_name` in `cli.rs`, and the default
+itself is pinned in `defaults_are_sane` beside the frame rate and the star
+count. **Nothing in the tree reads an environment variable** — those two
+`env::var` calls were the only ones, so `grep -rn 'env::var' src/` finding
+anything at all means a door has been reopened. Note what did *not* move: not
+one golden hash, because all seven flights in `tests/golden.rs` pass an
+explicit `--color` and none of them ever exercised the default.
+
 **`--color ascii` emits no escape codes beyond cursor moves, and no byte
 outside printable ASCII.** Not even a reset — on a `TERM=dumb` terminal even
 `\x1b[39m` arrives as visible garbage, and there is a regression test for it.
-CI greps for both properties.
+CI greps for both properties. Note what that does *not* say: nothing puts a
+terminal into this mode, `TERM=dumb` included. The flag is the whole of the
+contract, and the paragraph above is why.
 
 Three consequences for anything drawn in that mode. `stamp` discards the colour
 outright, so `LABEL`, `VALUE`, `ACCENT` and the rest do nothing and the choice

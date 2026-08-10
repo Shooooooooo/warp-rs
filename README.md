@@ -29,7 +29,7 @@ cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 | `--screensaver` | Fly on autopilot forever; any key quits. For tmux's `lock-command`. |
 | `--stars N` | Star count. Default 256; `0` for an empty sky. |
 | `--fps N` | Frame rate cap, while nothing is being typed. Default 60. |
-| `--color auto\|truecolor\|256\|ascii` | Colour depth. Auto-detected by default. |
+| `--color truecolor\|256\|ascii` | Colour depth. 24-bit by default. |
 | `--engage` | Start with the drive already lit. |
 | `--view cockpit\|side` | Which camera to start behind. `C` cycles them. |
 | `--orbit AZ,EL[,ROLL]` | Where to park the outside camera, in degrees. |
@@ -44,11 +44,13 @@ cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 ## Terminals
 
 The renderer targets 24-bit colour and draws with the upper half block, `▀`, so
-each cell is two roughly square pixels. Where truecolor is not available it
-degrades — to the xterm 256-colour palette, and past that to a plain ASCII
-brightness ramp; `--color` forces the choice if detection guesses wrong.
-`--color ascii` sends no escape codes beyond the cursor moves the grid is
-painted with, so piped rather than displayed it is plain text and nothing else.
+each cell is two roughly square pixels. It opens in 24-bit everywhere and does
+not inspect `COLORTERM` or `TERM` to decide: the narrower modes are asked for
+rather than fallen into. `--color 256` snaps the frame to the xterm palette for
+a terminal that cannot read a 24-bit sequence, and `--color ascii` drops colour
+altogether for a brightness ramp. `--color ascii` sends no escape codes beyond
+the cursor moves the grid is painted with, so piped rather than displayed it is
+plain text and nothing else.
 
 ## License
 

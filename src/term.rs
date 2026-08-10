@@ -30,31 +30,22 @@ const HALF_BLOCK_UTF8: &[u8] = "\u{2580}".as_bytes();
 pub(crate) const ASCII_RAMP: &[u8] = b" .,:;-=+*oO#%@";
 
 /// How much colour the terminal can be trusted with.
+///
+/// Chosen at the command line and nowhere else. There was a `detect` here once
+/// that read `COLORTERM` and then `TERM`, and it is worth knowing what it did
+/// rather than only that it went: a terminal exporting no `COLORTERM` was
+/// handed [`ColorMode::Ansi256`] whatever it could actually do, and one with no
+/// `TERM` at all was handed [`ColorMode::Ascii`] — so the mode this whole
+/// canvas is designed for was the one the program least often chose for itself.
+/// The narrower two are still here and are asked for by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
-    /// 24-bit colour. What the renderer is designed for.
+    /// 24-bit colour. What the renderer is designed for, and what it opens in.
     Truecolor,
     /// The xterm 256-colour palette; noticeably banded but recognisable.
     Ansi256,
     /// No colour: a brightness ramp of ASCII characters.
     Ascii,
-}
-
-impl ColorMode {
-    /// Work out what the terminal can do from the environment.
-    pub fn detect() -> Self {
-        if let Ok(v) = std::env::var("COLORTERM") {
-            if v.contains("truecolor") || v.contains("24bit") {
-                return ColorMode::Truecolor;
-            }
-        }
-        match std::env::var("TERM") {
-            Err(_) => ColorMode::Ascii,
-            Ok(term) if term.is_empty() || term == "dumb" => ColorMode::Ascii,
-            // Anything else modern enough to have a TERM entry does 256.
-            Ok(_) => ColorMode::Ansi256,
-        }
-    }
 }
 
 /// A cell's foreground and background, either of which may be the terminal's
@@ -709,9 +700,15 @@ const fn gap(level: u8, value: usize) -> u8 {
 /// This replaces a linear scan over six entries that depended on a single byte,
 /// run twice per cell per frame. Composing a frame at 300x90 cost 2.35 ms in
 /// this mode against 1.10 ms in truecolor, and the scan was most of the
-/// difference — about 7% of a 60 fps budget, in the mode `ColorMode::detect`
-/// hands to any terminal with a `TERM` entry and no `COLORTERM`, which is most
-/// of them. Built at compile time, so it costs nothing at startup either.
+/// difference — about 7% of a 60 fps budget. Built at compile time, so it costs
+/// nothing at startup either.
+///
+/// That measurement used to be sold on how many terminals fell into this mode,
+/// which was the whole of the argument while `--color` defaulted to detecting
+/// one. Nothing falls into it now; it is asked for by name. The table stays
+/// because the measurement stands on its own — a mode somebody chose
+/// deliberately is a mode they want drawn at frame rate — and because the scan
+/// it replaced was the last `unwrap` anywhere in the tree.
 ///
 /// Ties break downward, the way `min_by_key` broke them by keeping the first
 /// minimum. 115, 155, 195 and 235 all sit exactly between two levels, and a
@@ -1488,9 +1485,10 @@ mod tests {
     fn the_256_colour_mode_sends_palette_indices_rather_than_24_bit_colour() {
         // Regression: the mode snapped every colour to the palette and then
         // wrote the result as `38;2;r;g;b`, so the one terminal it exists for —
-        // the one that cannot read a 24-bit sequence — was sent nothing but. It
-        // is not a corner either: `ColorMode::detect` hands this mode to every
-        // terminal with a `TERM` entry and no `COLORTERM`.
+        // the one that cannot read a 24-bit sequence — was sent nothing but.
+        // The spelling matters more since detection went, not less: this mode
+        // is now reached only by asking for it, so the terminal on the other
+        // end of it is one that has already been told 24-bit will not do.
         let mut screen = Screen::new(8, 2, ColorMode::Ansi256);
         screen.compose(&pixels(8, 2, [90, 140, 200]));
         let mut out = Vec::new();

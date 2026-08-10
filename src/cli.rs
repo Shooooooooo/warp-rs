@@ -152,8 +152,18 @@ pub struct Args {
     )]
     pub frames: u32,
 
-    /// Colour depth. Auto-detected from COLORTERM and TERM by default.
-    #[arg(long, value_enum, default_value_t = ColorArg::Auto)]
+    /// Colour depth. 24-bit unless one of the narrower modes is named.
+    ///
+    /// The environment is not consulted. There was an `auto` here that read
+    /// `COLORTERM` and then `TERM`, and it guessed against the renderer: a
+    /// terminal exporting no `COLORTERM` got the 256-colour palette whatever it
+    /// could really do, which is most terminals, so the mode the canvas is
+    /// designed for was the one it least often opened in. With the default at
+    /// 24-bit an `auto` would be a second answer to a question already
+    /// answered, and it is the answer that guesses — so it went rather than
+    /// being demoted. A terminal that cannot read the sequences is the user's
+    /// own call now, the way `--stars` is a count no window may overrule.
+    #[arg(long, value_enum, default_value_t = ColorArg::Truecolor)]
     pub color: ColorArg,
 
     /// Seed for the sky. Omit for a different one every run.
@@ -247,9 +257,16 @@ pub struct Args {
     pub scale: usize,
 }
 
+/// How much colour to spell a cell in, as the command line names it.
+///
+/// A bare rename of [`ColorMode`] since `Auto` went, and kept anyway for the
+/// two reasons [`ViewArg`] below is kept: `256` is not a Rust identifier, so
+/// the wire name has to hang off a variant somewhere, and the alternative is
+/// deriving `ValueEnum` on [`ColorMode`] itself, which puts clap inside
+/// `crate::term`. The dependency rule this crate is written to is about the
+/// tree rather than the manifest, and that would widen it for a rename.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ColorArg {
-    Auto,
     Truecolor,
     #[value(name = "256")]
     Ansi256,
@@ -259,7 +276,6 @@ pub enum ColorArg {
 impl ColorArg {
     pub fn resolve(self) -> ColorMode {
         match self {
-            ColorArg::Auto => ColorMode::detect(),
             ColorArg::Truecolor => ColorMode::Truecolor,
             ColorArg::Ansi256 => ColorMode::Ansi256,
             ColorArg::Ascii => ColorMode::Ascii,
@@ -427,6 +443,10 @@ mod tests {
         // asserting a constant against itself pins nothing.
         assert_eq!(args.stars, 256);
         assert!(args.demo.is_none() && !args.headless && !args.engage);
+        // Pinned here as the flag's own default, beside the frame rate and the
+        // star count. That it survives to the writer is a separate question and
+        // has its own test below.
+        assert_eq!(args.color, ColorArg::Truecolor);
     }
 
     #[test]
@@ -696,7 +716,48 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_colour_mode_is_refused_and_the_message_says_what_there_is() {
+        // `auto` is the value worth naming, because it is the one that used to
+        // work: a script or a shell history carrying it from before deserves
+        // the modes that are left rather than a silent fall back to one of
+        // them. Asked of the variants rather than of three strings, for the
+        // reason the ship test above walks the hangar — a mode written out in
+        // quotes goes stale the day the list changes under it.
+        let err = Args::try_parse_from(["warp", "--color", "auto"])
+            .expect_err("the terminal is not asked what it can do any more")
+            .to_string();
+        for mode in ColorArg::value_variants() {
+            let name = mode
+                .to_possible_value()
+                .expect("every colour mode is reachable by name");
+            assert!(
+                err.contains(name.get_name()),
+                "the error does not offer `{}`: {err}",
+                name.get_name()
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_is_24_bit_colour_whatever_the_terminal_says() {
+        // This used to answer a question about the shell that started the test
+        // rather than about the program. `--color` defaulted to `auto`, so a
+        // runner with no `TERM` got ascii, anything with a `TERM` entry and no
+        // `COLORTERM` got 256, and only a terminal announcing itself got
+        // truecolor — three answers depending on where the suite ran, which
+        // the forty-odd tests in `app.rs` that build their `Args` without
+        // `--color` inherited whole. Nothing reads the environment now. Asked
+        // of the resolved mode rather than of the flag, because the flag being
+        // `Truecolor` is a fact about clap and this is the one about the
+        // renderer; the ambient environment is the fixture, and under the old
+        // code it would have been red both here and on CI.
+        assert_eq!(args_for(&[]).color.resolve(), ColorMode::Truecolor);
+    }
+
+    #[test]
     fn colour_modes_resolve() {
+        // Exhaustive now that `auto` is gone: three names, three modes, and
+        // nothing between the flag and the writer that can choose a fourth.
         assert_eq!(
             args_for(&["--color", "256"]).color.resolve(),
             ColorMode::Ansi256

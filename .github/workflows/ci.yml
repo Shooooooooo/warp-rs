@@ -127,6 +127,14 @@ jobs:
 
       - run: cargo build --release --locked --all-features
 
+      # The one invocation in this file that does not pass `--color`, and it is
+      # left off deliberately rather than forgotten: every step below spells the
+      # mode out, so without this nothing anywhere runs the binary the way a
+      # person does. The checks are comparative — one seed twice, then another —
+      # so whatever the default is cannot turn it red. It used to hash the ascii
+      # writer here, since a runner sets no `TERM` and `--color` detected one;
+      # it hashes the truecolor writer now, which is the path almost everyone
+      # is actually on.
       - name: the same seed produces the same flight
         run: |
           fly() {
