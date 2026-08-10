@@ -10,12 +10,16 @@
 //! it out. The interesting number is the sum against the frame budget — 16.7 ms
 //! at the default 60 fps — and how it moves when the renderer is changed.
 //!
-//! The colour mode is **pinned** rather than detected, for the reason
-//! `tests/flight.rs` pins its own: `--color auto` reads `TERM`, so an
-//! unpinned sweep measures whatever the shell happens to export and two runs on
-//! two machines are not comparable. It made a real difference — the same case
-//! came out at 6.87, 7.31 and 6.66 ms of drawing in ascii, 256 and truecolor —
-//! so the mode is a column here rather than an assumption.
+//! The colour mode is **pinned** rather than left to the default, for the
+//! reason `tests/flight.rs` pins its own: a sweep that takes whatever the flag
+//! happens to default to measures a different thing the day that default
+//! changes, and the numbers written down in `CLAUDE.md` are compared across
+//! exactly such changes. It made a real difference — the same case came out at
+//! 6.87, 7.31 and 6.66 ms of drawing in ascii, 256 and truecolor — so the mode
+//! is a column here rather than an assumption. The pin used to be against
+//! detection reading `TERM`, which was a stronger-sounding reason for a weaker
+//! property: two machines disagreeing is easier to notice than one machine
+//! quietly measuring something else than it did last week.
 //!
 //! A `0` in the stars column leaves the flag off, so the case measures whatever
 //! a default run draws. That used to be a number derived from the canvas and is
@@ -61,10 +65,16 @@ fn main() {
             // once for each image the lens forms of it.
             (200, 60, 0, true, "side", "truecolor"),
             (200, 60, 20_000, true, "side", "truecolor"),
-            // And the same frame in the mode most terminals actually get, since
-            // `ColorMode::detect` answers 256 for anything with a `TERM` entry
-            // and no `COLORTERM`. It composes a cell differently from the two
-            // above, so it is the one case here that is not truecolor.
+            // And the cockpit at the same size and pool in the palette
+            // spelling — the fourth row's flight, not the two `side` ones
+            // directly above, which is what this comment claimed for as long as
+            // it said "the same frame". It composes a cell differently from
+            // every row above it, an index per colour change against three
+            // spelled-out decimals, so it is the one case here that is not
+            // truecolor. It earned the row when this was the mode most
+            // terminals fell into and keeps it now that none do: the quantiser
+            // is still on the frame path of everyone who asks for it, and a
+            // column nobody times is a column nobody notices regressing.
             (200, 60, 20_000, true, "cockpit", "256"),
         ]
     };

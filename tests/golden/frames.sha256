@@ -72,9 +72,13 @@
 # spelled, so a change that moves one and not the other has landed in the writer
 # and not in the renderer. It arrived with the fix that made the mode send
 # `38;5;N` — before that it sent palette values inside a 24-bit sequence, which
-# the terminals the mode exists for cannot read — and it is recorded because the
-# mode had no reference at all while being the one `ColorMode::detect` hands to
-# any terminal with a `TERM` entry and no `COLORTERM`, which is most of them.
+# the terminals the mode exists for cannot read — and it was recorded because
+# the mode had no reference at all while being the one detection handed to any
+# terminal with a `TERM` entry and no `COLORTERM`, which was most of them.
+# Detection is gone and `--color` opens at truecolor now, so nothing is handed
+# this mode; it is asked for. That makes this file the only guard left on
+# `quantize_256` and the palette-index path, since the other six flights are
+# truecolor or ascii and would not notice either of them repainted.
 #
 # Regenerate deliberately, with the diff in hand to say what moved:
 #

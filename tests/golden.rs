@@ -136,10 +136,12 @@ const COMMON: [&str; 7] = [
 /// mode, which is the sharpest form that comparison takes: the two differ in
 /// how a cell's colour is spelled and in nothing else, so a change that moves
 /// one and not the other has landed in the writer rather than in the sky. It
-/// is here because the mode had no reference at all while being the one
-/// `ColorMode::detect` hands to any terminal with a `TERM` entry and no
-/// `COLORTERM` — so the whole of `quantize_256` and the palette-index path
-/// under it could be repainted and these hashes would not have noticed.
+/// arrived because the mode had no reference at all, back when it was the one
+/// most terminals were handed by detection; it matters more now that detection
+/// is gone and nothing is handed it. Reachable only by name means reachable
+/// only by someone who needed it, and it means this file is the only thing
+/// watching `quantize_256` and the palette-index path under it — every other
+/// flight here is truecolor or ascii and would not notice them repainted.
 ///
 /// `astern.txt` is the newest and it arrived the way `ansi256.txt` did — with
 /// the fix for a fault the other six could not see. Every one of them puts the
