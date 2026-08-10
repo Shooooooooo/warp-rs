@@ -33,12 +33,22 @@
 //! very edge it was carried over and the next step carries it over again, so
 //! the pool piles into the off-screen margin and the middle drains. Two seconds
 //! of holding the camera round was enough to empty the top and bottom of the
-//! frame and leave a bar of stars across the middle. So `update` puts the
-//! scale's own share of the pool back by hand — on the rim a contraction
-//! vacates, scattered over the band when an expansion carries one out — and
-//! seats a wall crossing just inside the wall the flow is entering through
-//! rather than anywhere in the band. All of it is switched off, not reduced to
-//! an identity, wherever the range is still.
+//! frame and leave a bar of stars across the middle.
+//!
+//! What answers that is the *profile*, not a correction applied to it, and it is
+//! the one thing to understand here. Holding a flat count per unit range against
+//! a flow that magnifies costs a relocation per star per step, and a relocation
+//! is a star appearing or disappearing where somebody is looking: it was doing
+//! twenty of a 256-star pool a step. Advection through a frustum leaves exactly
+//! one profile alone — `n ∝ z²`, an even sky seen through a cone — so the band
+//! stopped being held at any particular one, and everything that leaves now comes
+//! back in through a boundary the flow is *entering* by and nowhere else, which
+//! is the rule [`crate::starfield`] has always used. Both ends of every move are
+//! then off the screen or already faded to nothing. The near wall gets the ramp
+//! the far wall has always had for the same reason: it is the one boundary that
+//! can take a star out of the middle of the frame, because it is flat in `z`
+//! where the band is a rectangle on the screen. All of it is switched off, not
+//! reduced to an identity, wherever the range is still.
 
 use crate::canvas::Canvas;
 use crate::lens::{Image, Lens};
@@ -81,6 +91,38 @@ const DEPTH_FALLOFF: f32 = 1.3;
 /// handful of standouts. Cubing a uniform sample gives that shape.
 const MAGNITUDE_FLOOR: f32 = 0.14;
 
+/// How much warning a star gets before the near wall takes it, as a multiple of
+/// the range the flow covers in one step.
+///
+/// The near wall is the one boundary of the band that can take a star out of the
+/// middle of the frame at full brightness. Every other seam is hidden by the
+/// geometry: the far wall is where `depth` has already faded a star to nothing,
+/// and a star the magnification carries out through the rim is off the screen by
+/// the time it goes. The near wall is a flat plane in `z` while the band is a
+/// fixed rectangle on the *screen*, so a star arriving at it can be anywhere at
+/// all — including dead centre, where the flow is slowest and the eye follows it
+/// best. Measured astern at full warp it was taking four stars a step out of a
+/// pool of 256, at a mean brightness of 0.36 against a sky whose stars average
+/// half that; at sublight it was twenty-six a second. That it went so long
+/// without a ramp is because abeam `travel[2]` is a hard zero and nothing has
+/// ever crossed it.
+///
+/// Sixteen because that is where the two ends of it stop pulling. A star's last
+/// drawn frame is up to one whole step short of the wall, so what it still
+/// carries when it goes is about `1 / steps` of what it would have — measured
+/// astern at full warp, the brightest star taken went from 0.65 of the mean sky
+/// at eight steps to 0.29 at twelve and 0.28 at sixteen, where it stops falling
+/// because the ramp is no longer what is limiting it. Pushing on to
+/// twenty-four bought nothing and cost a tenth of the sky's brightness, since a
+/// ramp this deep is half the band at full warp.
+///
+/// That it is affordable at all is a consequence of the recycle: a flow leaves
+/// the band at `z²`, so the range this dims holds five percent of the pool
+/// rather than the third it would have held under a flat one. The cost measured
+/// on the sky's mean brightness is five percent, and sixteen steps is an eighth
+/// of a second of fading at any speed — a fade rather than a blink.
+const NEAR_FADE_STEPS: f32 = 16.0;
+
 /// Subpixels of arc per piece when a streak is chopped up to be bent. A curve
 /// drawn as one straight segment between its bent ends cuts across the very
 /// region doing the bending.
@@ -105,28 +147,40 @@ const THINNEST_SLIVER: f32 = 0.001;
 
 /// Where a star put back into the band comes in.
 ///
-/// [`Reentry::Wall`] is the flow's own answer: a star that crossed a wall
-/// overshot it by somewhere in the distance the flow covers in a step, so
-/// putting it back that far inside the *opposite* wall is the fold in `z`,
-/// spelled out in distribution rather than in arithmetic. It keeps the count
-/// per unit range flat, where seeding through the whole band turns a one-way
-/// flow into a linear ramp — measured at seven to one with the camera forty
-/// five degrees off the beam, against 1.04 abeam.
+/// One rule decides all of this, and it is the rule
+/// [`crate::starfield::StarField`] has always used: **a star that leaves comes
+/// back in through a boundary the flow is entering by, and nowhere else.** Every
+/// star that is moved has to leave somewhere and arrive somewhere, so matching
+/// the two up is free — and what it buys is that both ends of the move are
+/// either off the screen or already faded to nothing, which is the whole
+/// difference between a sky that streams and a sky that fizzes.
 ///
-/// [`crate::starfield::StarField`] answers the same question with the far
-/// plane alone and is right to: the cockpit has one flow regime for the life of
-/// the program, so a steady state weighted toward the far wall is simply what
-/// its sky looks like. Out here the regime is a *camera control* — swing one
-/// way and the sky recedes, the other and it closes — so a rule that seeds one
-/// end would make the sky's whole character a function of where the eye is
-/// parked, and panning would repaint it. Do not unify the two.
+/// The band has three boundaries and the flow's direction says which of them are
+/// exits. Running *toward* the camera, ranges shrink: stars leave by the near
+/// wall and, magnified past the edge of the frame, by the rim, and the only way
+/// in is the far wall — [`Reentry::Wall`], where `depth` is zero anyway.
+/// Running *away*, ranges grow: the only exit is the far wall and the way back
+/// in is everything else, which is [`Reentry::Entering`].
+///
+/// What this replaced was a pair of relocations that held the pool at a fixed
+/// count per unit range by moving stars about wherever they happened to be —
+/// right about the density and wrong about the picture. Astern at full warp it
+/// was scattering twenty of a 256-star pool back onto the screen every step out
+/// of nowhere; from ahead of the beam it was taking fourteen a step *off* the
+/// screen to fill the rim. Both are gone. The band is no longer held at any
+/// particular count per unit range: it settles at the one profile a flow leaves
+/// alone, which is `z²` — see [`ExteriorField::update`].
 #[derive(Debug, Clone, Copy)]
 enum Reentry {
     /// Anywhere in the band. What a fresh pool is laid out with, and what a
-    /// wall crossing gets when nothing is carrying the star through it.
+    /// star swung through a wall gets, having no flow to come back along.
     Anywhere,
     /// Just inside the wall the flow is coming from.
     Wall(f32, f32),
+    /// Somewhere on the whole surface the flow is entering through — the near
+    /// cap and the rim together — carrying the range one step covers and how
+    /// far it slides the band sideways while it does.
+    Entering { sliver: f32, drift: [f32; 2] },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,16 +210,16 @@ pub struct ExteriorField {
     /// because [`Self::streaks`] takes `&self` and the Doppler is measured
     /// against the direction of travel rather than against the frame.
     nose: [f32; 3],
-    /// How much of the rim a contracting step has vacated and not yet had a
-    /// star put back into, in stars.
+    /// How far into the band the near wall's warning reaches, in range, and
+    /// exactly zero when the near wall is not a boundary anything crosses.
     ///
-    /// Carried across steps so the relocation rate over the pool is exactly the
-    /// `1 - lambda^2` the arithmetic asks for, rather than a coin flipped per
-    /// star: the decision then costs no random number at all and only the
-    /// destination draws one. Which body it falls to does not matter — a
-    /// relocation moves a star and changes nothing else about it, and they are
-    /// interchangeable — so a fixed starting phase is enough.
-    rim_owed: f32,
+    /// Kept here because [`Self::streaks`] takes `&self` and has no travel to
+    /// read, and scaled by the travel rather than fixed for two reasons. A fixed
+    /// width gated on a flag would dim a tenth of the pool in the single frame
+    /// the camera stopped being abeam, where this goes to zero smoothly as the
+    /// flow flattens. And a star then gets the same number of *frames* of warning
+    /// whatever the ship is doing, which is what the ramp is for.
+    near_fade: f32,
     /// Scratch for bending a streak, reused across every star of every frame.
     source: Vec<(f32, f32)>,
     bent: Vec<(f32, f32)>,
@@ -184,7 +238,7 @@ impl ExteriorField {
             focal: cam.focal.max(f32::MIN_POSITIVE),
             orbit: orbit.held(),
             nose: orbit.held().nose_in_camera(),
-            rim_owed: 1.0,
+            near_fade: 0.0,
             source: Vec::with_capacity(MAX_ARCS + 1),
             bent: Vec::with_capacity(MAX_ARCS + 1),
         };
@@ -241,15 +295,14 @@ impl ExteriorField {
     /// density even at every distance: sampling a world-space volume instead
     /// would crowd the far wall and starve the near one.
     fn spawn(&mut self, reentry: Reentry) -> Star {
-        let z = match reentry {
-            Reentry::Anywhere => self.rng.random_range(Z_NEAR..Z_FAR),
-            Reentry::Wall(lo, hi) => self.rng.random_range(lo..hi),
-        };
         let (hw, hh) = self.bound;
-        let (sx, sy) = (
-            self.rng.random_range(-hw..hw),
-            self.rng.random_range(-hh..hh),
-        );
+        let (z, sx, sy) = match reentry {
+            Reentry::Anywhere => self.across_the_band(Z_NEAR, Z_FAR, hw, hh),
+            Reentry::Wall(lo, hi) => self.across_the_band(lo, hi, hw, hh),
+            Reentry::Entering { sliver, drift } => {
+                self.on_the_entering_surface(sliver, drift, hw, hh)
+            }
+        };
 
         let scale = z / self.focal;
         let u: f32 = self.rng.random_range(0.0..1.0);
@@ -262,28 +315,83 @@ impl ExteriorField {
         }
     }
 
-    /// Somewhere uniform across the whole band at the range `z`, in the world
-    /// units the pool is kept in. `spawn`'s two screen draws and its
-    /// back-projection, without touching anything else about the star.
-    fn relocate_uniform(&mut self, z: f32) -> (f32, f32) {
-        let (hw, hh) = self.bound;
-        let (sx, sy) = (
+    /// A range from `lo..hi` and a place uniform across the band at it, in
+    /// screen units.
+    ///
+    /// The draw order is load-bearing rather than incidental: `--seed`
+    /// reproducibility is a property of the sequence, and this is what lays out
+    /// the pool every side-view flight opens with. Range, then across, then
+    /// down, and the caller draws the magnitude, the class and the phase after.
+    fn across_the_band(&mut self, lo: f32, hi: f32, hw: f32, hh: f32) -> (f32, f32, f32) {
+        let z = self.rng.random_range(lo..hi);
+        (
+            z,
             self.rng.random_range(-hw..hw),
             self.rng.random_range(-hh..hh),
-        );
-        let scale = z / self.focal;
-        (sx * scale, sy * scale)
+        )
     }
 
-    /// Somewhere uniform *by area* on the rim a contraction has just vacated:
-    /// the frame between `lambda` of the band and the band itself, at the range
-    /// the star ends the step at.
+    /// Somewhere on the surface the flow is entering through when ranges are
+    /// growing, drawn uniformly by the area of it.
+    ///
+    /// That surface is two things at once and the arithmetic joins them. A step
+    /// of `sliver` contracts the band about the middle of the frame by
+    /// `(z - sliver) / z`, so at range `z` it vacates everything outside that
+    /// fraction — a rim wanting `z² - (z - sliver)²` stars — while the near cap,
+    /// which the flow has simply moved off, wants `Z_NEAR²` of them. Summed over
+    /// the band those come to exactly `Z_FAR²`, which is why one draw across
+    /// that picks the boundary and the range together, and why the far wall's
+    /// outflow of `Z_FAR²` a step is precisely the supply. The two sides meeting
+    /// is the whole reason nothing has to be counted.
+    ///
+    /// The cap is a five-hundredth of the surface and could not be dropped for
+    /// it: it is the only way back into the ranges nearest the camera, and
+    /// without it that end of the band would drain and stay drained.
+    ///
+    /// `drift` is what makes this more than a rim. A step does not only shrink
+    /// the band about the middle of the frame, it slides it sideways as well,
+    /// and the gap the two leave together is the rim *of the slid band* — an
+    /// even frame about the place the flow has moved the middle to, not about
+    /// the middle. Off by a whole rim width or more whenever there is any
+    /// sideways flow at all, since the ratio of the two is `travel[0] / travel[2]`
+    /// scaled by the band's own shape and does not fall off with range: at 45
+    /// degrees off the beam the gap misses the frame it was being filled into
+    /// entirely, which put a third of the pool in the margin and left the frame
+    /// 2.2 to 1 across, against 1.3 abeam.
+    fn on_the_entering_surface(
+        &mut self,
+        sliver: f32,
+        drift: [f32; 2],
+        hw: f32,
+        hh: f32,
+    ) -> (f32, f32, f32) {
+        let across: f32 = self.rng.random_range(0.0..Z_FAR * Z_FAR);
+        if across < Z_NEAR * Z_NEAR {
+            return self.across_the_band(Z_NEAR, Z_NEAR + sliver, hw, hh);
+        }
+        // The square root is the draw: a rim whose share of the surface grows
+        // as `2z` is a range whose distribution is the root of a uniform one.
+        let z = across.sqrt();
+        let lambda = ((z - sliver) / z).clamp(0.0, 1.0);
+        let (sx, sy) = self.on_the_rim(hw, hh, lambda);
+        // The band wraps, so the rim about a moved centre is the moved rim, and
+        // the fold is all it takes to say so.
+        let slide = self.focal / z;
+        (
+            z,
+            fold(sx + drift[0] * slide, hw).0,
+            fold(sy + drift[1] * slide, hh).0,
+        )
+    }
+
+    /// Somewhere uniform *by area* on the rim a step of contraction has just
+    /// vacated: the frame between `lambda` of the band and the band itself.
     ///
     /// Split into the two kinds of slab and picked by the share of the rim each
     /// pair covers rather than by rejection, so the cost is three draws and no
     /// loop however thin the rim gets. The left and right slabs are the band's
     /// full height and so hold `1 / (1 + lambda)` of it between them.
-    fn relocate_rim(&mut self, bx: f32, by: f32, lambda: f32) -> (f32, f32) {
+    fn on_the_rim(&mut self, bx: f32, by: f32, lambda: f32) -> (f32, f32) {
         let pick: f32 = self.rng.random_range(0.0..1.0);
         let along: f32 = self.rng.random_range(-1.0..1.0);
         let out: f32 = self.rng.random_range(-1.0..1.0);
@@ -363,14 +471,29 @@ impl ExteriorField {
         let turns_z = swing.is_some() || travel[2] != 0.0;
         let turns_y = turns_z || travel[1] != 0.0;
 
-        // Where a star crossing a wall comes back in. A step that moves no
-        // range cannot put one through a wall in the first place, so the
-        // `Anywhere` arm is only ever reached by a swing that turned one out —
-        // which has no direction of flow to come back along.
+        // How much warning the near wall gives, in range. Exactly zero abeam,
+        // where `travel[2]` is a hard zero, and exactly zero at rest — switched
+        // off rather than reduced to an identity, so the shot the reference
+        // frames are recorded from goes on being drawn from the bytes it always
+        // was.
+        self.near_fade = NEAR_FADE_STEPS * (travel[2] * step).abs();
+
+        // Where a star that has left comes back in. A step that moves no range
+        // cannot put one out in the first place, so the `Anywhere` arm is only
+        // ever reached by a swing that turned one out — which has no direction
+        // of flow to come back along.
         let reentry = if travel[2] > 0.0 {
-            let sliver = (travel[2] * step).max((Z_FAR - Z_NEAR) * THINNEST_SLIVER);
-            Reentry::Wall(Z_NEAR, Z_NEAR + sliver)
+            // Ranges growing. The far wall is the only exit and everything else
+            // is the way in, so a leaver goes back onto the surface the flow is
+            // entering through — mostly the rim the contraction has vacated,
+            // once in five hundred the near cap.
+            Reentry::Entering {
+                sliver: (travel[2] * step).max((Z_FAR - Z_NEAR) * THINNEST_SLIVER),
+                drift: [travel[0] * step, travel[1] * step],
+            }
         } else if travel[2] < 0.0 {
+            // Ranges shrinking. The far wall is the only way in, and it is the
+            // one place a star can be put back without anyone seeing it arrive.
             let sliver = (-travel[2] * step).max((Z_FAR - Z_NEAR) * THINNEST_SLIVER);
             Reentry::Wall(Z_FAR - sliver, Z_FAR)
         } else {
@@ -405,13 +528,47 @@ impl ExteriorField {
             if travel[2] != 0.0 {
                 star.pos[2] += travel[2] * step;
             }
-            // The one recycle that cannot carry its trail: a star crossing a
-            // wall of the band is nowhere near where it came back, so it comes
-            // back as a fresh star drawing a bare point for one frame. That is
-            // affordable because it is rare — the band is three hundred units
-            // deep against a fold width of a few tens, so a star crosses it in
-            // seconds where it wraps round in `x` several times a second.
-            if turns_z && !(Z_NEAR..Z_FAR).contains(&star.pos[2]) {
+            let z = star.pos[2];
+
+            // Everything that has left the band, by whichever boundary. Two
+            // quite different departures, and they are one case because they
+            // have one answer.
+            //
+            // A wall crossing is the plain one. The other is the frame itself:
+            // a star's place in it is `focal * pos / z`, so a step that shortens
+            // the range magnifies the whole band about the middle of the picture
+            // and carries the outermost of it past the edge. Asked of where the
+            // star *started* rather than where it now is, which is the same
+            // question while only the range is moving and a different one under
+            // a swing — a star panned over the edge has not been magnified past
+            // anything and belongs to the fold below.
+            //
+            // Measured against the band at the range the star *came from*, and
+            // that is a step's grace rather than an off-by-one. One step of the
+            // magnification can be worth more than the margin the band carries —
+            // at full warp `z_prev / z` reaches 1.5 against a margin of 1.15 —
+            // so a star can go from inside the frame to outside the band without
+            // ever being drawn in between, and taking it there is the reported
+            // fault in miniature: it vanishes a couple of cells short of the
+            // edge instead of sweeping through it. Left alone for the one frame
+            // it spends outside, it draws the streak that carries it off the
+            // edge, the canvas clips it, and it is taken next step from a place
+            // nobody can see. That is why the fold below has to let it past too.
+            //
+            // What used to happen here instead was a relocation, back across the
+            // band at the range the star had. That is the density restored
+            // exactly and a star conjured into the middle of the picture: twenty
+            // of a 256-star pool a step, astern at full warp. The band is not
+            // held at a fixed count per unit range any more. Left alone, a flow
+            // drives it to the only profile it does leave alone — `z²`, the
+            // profile of an even sky seen through a frustum, which is where the
+            // cockpit's has always sat because the cockpit has always recycled
+            // this way.
+            if turns_z
+                && (!(Z_NEAR..Z_FAR).contains(&z)
+                    || before[0].abs() >= band(half_width, focal, z_prev)
+                    || before[1].abs() >= band(half_height, focal, z_prev))
+            {
                 *star = self.spawn(reentry);
                 // Given the trail it would have had. Without this a recycled
                 // star draws a bare point on its first frame, and off the beam
@@ -429,72 +586,35 @@ impl ExteriorField {
                 continue;
             }
 
-            let z = star.pos[2];
-
-            // A star's place in the frame is `focal * pos / z`, so anything
-            // that moves its range scales that place. The fold below is the
-            // right answer for the *translation* that comes after it and no
-            // answer at all for a scale, which is the whole of the bug:
-            // contracting, the band widens away from a pool shrinking inside
-            // it and nothing refills the frame edges; expanding, the fold puts
-            // a star back on the very edge it was carried over and the next
-            // step carries it over again, which piles the sky into the margin
-            // and drains the middle. Neither can happen while the range is
-            // still, which is why this is `turns_z` and why the shot the
-            // reference frames are recorded from never reaches it.
-            let mut relocated = false;
-            if turns_z {
-                // Both bands, and deliberately not hoisted out to join the
-                // fold's: on the pinned path `turns_y` is false and the half
-                // height is never computed at all.
-                let bx = band(half_width, focal, z);
-                let by = band(half_height, focal, z);
-                let lambda = z_prev / z;
-                if lambda < 1.0 {
-                    // A uniform shell comes out uniform on `lambda` of the
-                    // band at `1 / lambda^2` of the density, so putting
-                    // `1 - lambda^2` of it back on the rim that leaves is not
-                    // an approximation of the right answer but the right
-                    // answer. Spent from a running total rather than rolled
-                    // for per star, so the rate over the pool is the
-                    // arithmetic itself and the decision costs no draw.
-                    self.rim_owed -= 1.0 - lambda * lambda;
-                    if self.rim_owed <= 0.0 {
-                        self.rim_owed += 1.0;
-                        (star.pos[0], star.pos[1]) = self.relocate_rim(bx, by, lambda);
-                        relocated = true;
-                    }
-                } else if before[0].abs() >= bx || before[1].abs() >= by {
-                    // Expanding, and the scale alone has carried this one out.
-                    // Asked of where the star started rather than where it now
-                    // is, which is the same question while only the range is
-                    // moving and a different one under a swing: a swing slides
-                    // the whole frame along as well, and a star carried over
-                    // the edge by *that* has been panned past rather than
-                    // magnified past, and belongs to the fold. Answering it
-                    // from the new position instead leaks stars off the
-                    // leading edge into a uniform scatter, which reads as the
-                    // sky thinning on the side the camera is turning toward.
-                    //
-                    // Comparing against the band at the range the star ends
-                    // at is what makes the two the same test when nothing
-                    // swung: the old band scaled by `lambda` is the new band.
-                    //
-                    // What is still inside is `1 / lambda^2` of the shell, so
-                    // scattering what went over across the whole
-                    // band — rather than wrapping it onto the edge it just
-                    // crossed, where the next step carries it over again —
-                    // comes back to the density it started with, exactly.
-                    (star.pos[0], star.pos[1]) = self.relocate_uniform(z);
-                    relocated = true;
-                }
+            // The star the magnification has just carried past the edge, on the
+            // one frame it is allowed before the recycle above takes it. It is
+            // put down exactly where the scale left it and nothing else is done
+            // to it: no travel, no fold.
+            //
+            // Neither half of that is fussiness. Folding it would wrap it in at
+            // the opposite edge, where the flow runs the wrong way to bring it
+            // home and the next step carries it straight out again — the sky
+            // piling into the margin, which is the failure this band already
+            // knows by name. And carrying it the sideways part of the step would
+            // leave the recycle above unable to be sure of it: the travel can
+            // pull it back inside the very band it just left, so it lingers at
+            // the edge for another step, and another. Measured at 45 degrees off
+            // the beam that alone took the share of the pool on screen from 0.76
+            // to 0.60. Held still, the test above is exact — the band at the
+            // range it came from is the band it went out through — and every
+            // star costs one frame and no more.
+            let half = band(half_width, focal, z);
+            let leaving = turns_z
+                && (before[0].abs() >= half || before[1].abs() >= band(half_height, focal, z));
+            if leaving {
+                continue;
             }
 
             // Range never changes when the camera is abeam — travel is along
             // the track — so the only way out of the band is off the trailing
             // edge, and the honest place for a star the ship has just overtaken
             // is back out in front at the range it already had.
-            let (folded, shift) = fold(star.pos[0] + travel[0] * step, band(half_width, focal, z));
+            let (folded, shift) = fold(star.pos[0] + travel[0] * step, half);
             star.pos[0] = folded;
 
             // The fold is an exact whole number of band widths, so the trail
@@ -534,20 +654,6 @@ impl ExteriorField {
                     }
                 }
             }
-
-            // A relocated star did not travel to where it is, so it is handed
-            // the trail it would have had — the same answer the wall recycle
-            // gives, for the same reason. Last rather than beside the move,
-            // because the fold above may have carried a shift into `prev` and
-            // that shift belongs to a star that folded, which this one did not.
-            if relocated {
-                let was = [
-                    star.pos[0] - travel[0] * step,
-                    star.pos[1] - travel[1] * step,
-                    star.pos[2] - travel[2] * step,
-                ];
-                star.prev = cam.project(was);
-            }
         }
         self.stars = stars;
     }
@@ -568,6 +674,9 @@ impl ExteriorField {
         // Folded once per frame in `f64` so the per-star `sin` can stay `f32`
         // without the phase going coarse after days aloft.
         let twinkle_phase = (time * 2.3).rem_euclid(std::f64::consts::TAU) as f32;
+        // Read out here rather than off `self` per star: it is fixed for the
+        // frame, and this is the innermost loop the band has.
+        let near_fade = self.near_fade;
 
         // Where a trail run backward along the track ends up, if it ends up
         // anywhere at all — see [`trail_head`] for what that is for. `None`
@@ -601,18 +710,7 @@ impl ExteriorField {
             };
 
             let class = &CLASSES[star.class];
-            let z = star.pos[2];
-            // Reaches zero exactly at the far wall, with zero slope, so stars
-            // fade up out of nothing instead of blinking into existence.
-            let depth = (1.0 - (z - Z_NEAR) / (Z_FAR - Z_NEAR)).clamp(0.0, 1.0);
-            // Exactly as in [`crate::starfield`], and for the same reason: the
-            // amount is a hard zero at warp, and `1 + 0·s` is one to the bit.
-            let twinkle = if twinkle_amt > 0.0 {
-                1.0 + twinkle_amt * (twinkle_phase + star.phase).sin()
-            } else {
-                1.0
-            };
-            let intensity = class.luminosity * star.magnitude * depth.powf(DEPTH_FALLOFF) * twinkle;
+            let intensity = lit(star, near_fade, twinkle_amt, twinkle_phase);
             if intensity <= 0.0 {
                 return None;
             }
@@ -752,6 +850,44 @@ fn trail_head(to: (f32, f32), prev: (f32, f32), point: (f32, f32), stretch: f32)
     }
     let frac = stretch * along / (span + (stretch - 1.0) * along);
     (to.0 + ax * frac, to.1 + ay * frac)
+}
+
+/// How brightly a star burns this frame, before the lens touches it and before
+/// [`Canvas::draw_streak`](crate::canvas::Canvas::draw_streak) divides its own
+/// length back out.
+///
+/// Its own function rather than four lines inside [`ExteriorField::streaks`],
+/// because what a test most wants to ask of this band is how bright a star was
+/// on the last frame before the band took it away — and once it has been taken
+/// there is no `Streak` left to ask. A copy of the arithmetic in the test module
+/// would answer a question about the copy.
+fn lit(star: &Star, near_fade: f32, twinkle_amt: f32, twinkle_phase: f32) -> f32 {
+    let z = star.pos[2];
+    // Reaches zero exactly at the far wall, with zero slope, so stars fade up
+    // out of nothing instead of blinking into existence.
+    let depth = (1.0 - (z - Z_NEAR) / (Z_FAR - Z_NEAR)).clamp(0.0, 1.0);
+    // And the same courtesy at the near wall, which needs it far more: the far
+    // wall is where a star is faint anyway, where this one is where it is
+    // brightest and can be anywhere at all on the screen. Folded in *before*
+    // the exponent below rather than applied after it, which costs nothing and
+    // is what gives the ramp its zero slope at the wall, exactly as the far one
+    // has. Branched rather than written as a width that runs off to infinity,
+    // because a flat flow gives a width of exactly zero and the division would
+    // hand the whole sky a NaN — and because a wall nothing crosses wants no
+    // ramp at all.
+    let depth = if near_fade > 0.0 {
+        depth * ((z - Z_NEAR) / near_fade).clamp(0.0, 1.0)
+    } else {
+        depth
+    };
+    // Exactly as in [`crate::starfield`], and for the same reason: the amount
+    // is a hard zero at warp, and `1 + 0·s` is one to the bit.
+    let twinkle = if twinkle_amt > 0.0 {
+        1.0 + twinkle_amt * (twinkle_phase + star.phase).sin()
+    } else {
+        1.0
+    };
+    CLASSES[star.class].luminosity * star.magnitude * depth.powf(DEPTH_FALLOFF) * twinkle
 }
 
 /// Fold a position back into `[-half, half)`, and say how far it was moved.
@@ -984,9 +1120,18 @@ mod tests {
     fn the_band_holds_together_from_every_angle() {
         // Off the beam the sky gains depth, which is the one thing this module
         // was written never to have to handle: stars cross the near and far
-        // walls and have to be put back. Every star has to stay inside all
-        // three bounds afterwards, or the depth sorting the hull relies on
-        // stops being true and the frame starts showing holes.
+        // walls and have to be put back. The range bound is the one that has to
+        // hold absolutely, because it is the whole of the depth sorting the hull
+        // relies on.
+        //
+        // Sideways the bound is deliberately weaker than it looks, and the
+        // weaker form is the sharper statement. A star the magnification has
+        // carried past the edge is left outside for the one frame that carries
+        // it off the screen, so "inside the band" is not true of every star on
+        // every step — but "outside the band means outside the picture" is, and
+        // that is what the band's margin is *for*. Asserting the strong form
+        // instead is what made a star vanish a couple of cells short of the edge
+        // rather than sweeping through it.
         //
         // Containment only. A pool collapsed onto the vanishing point passes
         // this trivially, which is how the sky came to fall in on itself off
@@ -1032,9 +1177,18 @@ mod tests {
                         band(field.bound.0, field.focal, star.pos[2]),
                         band(field.bound.1, field.focal, star.pos[2]),
                     );
+                    if star.pos[0].abs() <= bx && star.pos[1].abs() <= by {
+                        continue;
+                    }
+                    // Outside the band, which is allowed for exactly as long as
+                    // it takes to leave — and only ever outside the picture.
+                    let (x, y) = cam
+                        .project(star.pos)
+                        .expect("a star in the band is in front of the camera");
                     assert!(
-                        star.pos[0].abs() <= bx && star.pos[1].abs() <= by,
-                        "a star left the frame at {orbit:?} on step {step}: {:?}",
+                        x < 0.0 || x >= cam.width || y < 0.0 || y >= cam.height,
+                        "a star outside the band at {orbit:?} on step {step} is \
+                         still in the picture, at {x},{y}: {:?}",
                         star.pos
                     );
                 }
@@ -1096,6 +1250,13 @@ mod tests {
         // it folded, crossed a wall, or simply flew. Measured on `prev` rather
         // than on a `Streak` so it is one per star in order, and at the ranges
         // and angles that actually differ.
+        //
+        // With one exemption, and it is named rather than fudged. A star the
+        // magnification has carried out of the band is held still sideways for
+        // the single frame that carries it off the screen, so for that frame it
+        // has *not* travelled the whole step and its trail says so — honestly,
+        // since `prev` is where it really was. It is off the picture by then, and
+        // the containment test above is what says so.
         let cam = cam();
         let orbits = [
             Orbit::LEVEL,
@@ -1125,6 +1286,13 @@ mod tests {
                     field.update(1.0 / 120.0, speed, &cam, orbit);
                     for (i, star) in field.stars.iter().enumerate() {
                         let Some(prev) = star.prev else { continue };
+                        // On its way out, and exempt — see above.
+                        let z = star.pos[2];
+                        if star.pos[0].abs() >= band(field.bound.0, field.focal, z)
+                            || star.pos[1].abs() >= band(field.bound.1, field.focal, z)
+                        {
+                            continue;
+                        }
                         let was = [
                             star.pos[0] - travel[0] * step,
                             star.pos[1] - travel[1] * step,
@@ -1636,109 +1804,330 @@ mod tests {
         )
     }
 
-    /// A range change leaves a shell as evenly spread as it found it.
+    /// A range change takes exactly the stars the frame no longer holds, and
+    /// leaves what is left as evenly spread as it found it.
     ///
-    /// The sharp statement of what the relocation in `update` is for, where
+    /// The sharp statement of what the recycle in `update` is for, where
     /// `the_sky_is_as_even_off_the_beam_as_it_is_abeam` is the acceptance test
     /// over a whole flight. The whole pool is put on one range shell, spread
-    /// evenly across the frame, and stepped once with the camera dead ahead so
+    /// evenly across the frame, and stepped once with the camera dead astern so
     /// that travel is purely along the view axis: nothing translates, the fold
     /// cannot fire, and the only thing acting is the scale.
     ///
-    /// It pins the two rates, which are the part most easily got wrong — the
-    /// natural mistake is `1 - lambda` per axis, which double-counts the
-    /// corners and comes out nearly twice too large — and it pins the shape
-    /// they are put back in, by checking the spread afterwards rather than
-    /// only the count.
+    /// It pins the rate, which is the part most easily got wrong — the natural
+    /// mistake is `1 - 1/lambda` per axis, which double-counts the corners and
+    /// comes out nearly twice too large — and it pins the shape of what stayed,
+    /// by measuring the spread afterwards rather than only the count. And it
+    /// pins the thing that replaced a relocation: what went is not a share taken
+    /// from anywhere, it is precisely the stars whose own place in the frame has
+    /// gone past the edge of it.
     #[test]
-    fn a_range_change_leaves_the_shell_as_evenly_spread_as_it_found_it() {
+    fn a_range_change_takes_exactly_the_stars_the_frame_no_longer_holds() {
         const POOL: usize = 20_000;
         // A near shell and a fast step, so the scale is a fifth rather than a
-        // few percent: `1 - lambda` and `1 - lambda^2` are then far enough
+        // few percent: `1 - 1/lambda` and `1 - 1/lambda^2` are then far enough
         // apart that the tolerance below can tell them apart, which is the
         // whole reason this test exists.
         const AT: f32 = 40.0;
         const SPEED: f32 = 600.0;
         const DT: f32 = 1.0 / 120.0;
         let cam = cam();
-        let quarter = std::f32::consts::FRAC_PI_2;
+        // Dead astern: `sky_travel` is `(0, 0, -1)` to the bit, so `travel[0]`
+        // cannot move a star sideways and the range shrinks by the whole step.
+        let orbit = Orbit {
+            azimuth: -std::f32::consts::FRAC_PI_2,
+            elevation: 0.0,
+            roll: 0.0,
+        };
+        let mut field = ExteriorField::new(POOL, 4, &cam, orbit);
+        for star in &mut field.stars {
+            star.pos[2] = AT;
+        }
+        let (hw, hh) = field.bound;
+        let focal = field.focal;
+        // Spread evenly over the band, in screen units, which is the measure
+        // `spawn` lays a fresh pool out in, then back-projected the way `spawn`
+        // back-projects it.
+        let scale = AT / focal;
+        let placed: Vec<(f32, f32)> = (0..POOL)
+            .map(|_| {
+                (
+                    field.rng.random_range(-hw..hw) * scale,
+                    field.rng.random_range(-hh..hh) * scale,
+                )
+            })
+            .collect();
+        for (star, &(x, y)) in field.stars.iter_mut().zip(&placed) {
+            star.pos[0] = x;
+            star.pos[1] = y;
+        }
+        let born: Vec<(f32, f32)> = field.stars.iter().map(|s| (s.phase, s.magnitude)).collect();
 
-        // Dead ahead and dead astern: `sky_travel` is `(0, 0, ±1)` at both, to
-        // the bit, so `travel[0]` cannot move a star sideways.
-        for azimuth in [quarter, -quarter] {
-            let orbit = Orbit {
-                azimuth,
-                elevation: 0.0,
-                roll: 0.0,
-            };
-            let mut field = ExteriorField::new(POOL, 4, &cam, orbit);
-            for star in &mut field.stars {
-                star.pos[2] = AT;
-            }
-            let (hw, hh) = field.bound;
-            let focal = field.focal;
-            // Spread evenly over the band, in screen units, which is the
-            // measure `spawn` lays a fresh pool out in, then back-projected
-            // the way `spawn` back-projects it.
-            let scale = AT / focal;
-            let placed: Vec<(f32, f32)> = (0..POOL)
-                .map(|_| {
-                    (
-                        field.rng.random_range(-hw..hw) * scale,
-                        field.rng.random_range(-hh..hh) * scale,
-                    )
-                })
-                .collect();
-            for (star, &(x, y)) in field.stars.iter_mut().zip(&placed) {
-                star.pos[0] = x;
-                star.pos[1] = y;
-            }
+        field.update(DT, SPEED, &cam, orbit);
+        let lambda = AT / (AT - SPEED * DT);
+        let expected = 1.0 - 1.0 / (lambda * lambda);
 
-            field.update(DT, SPEED, &cam, orbit);
-            let moved = SPEED * DT * azimuth.sin().signum();
-            let lambda = AT / (AT + moved);
-            let expected = if lambda < 1.0 {
-                1.0 - lambda * lambda
-            } else {
-                1.0 - 1.0 / (lambda * lambda)
-            };
-
-            let mut relocated = 0usize;
-            let mut inside = [0usize; 3];
-            for (star, &(x, y)) in field.stars.iter().zip(&placed) {
-                // Nothing but a relocation moves a star across the band on
-                // this path: the range travel leaves both of these alone and
-                // the fold's own shift is a rounding.
-                if (star.pos[0] - x).abs() > 0.01 || (star.pos[1] - y).abs() > 0.01 {
-                    relocated += 1;
-                }
-                // How far out it sits, as a fraction of the band in the
-                // max norm — the coordinate a uniform square is uniform in.
-                let now = star.pos[2] / focal;
-                let out = (star.pos[0] / (now * hw))
+        // One step on, nothing has been taken yet: a star the magnification
+        // carries out is left outside for the frame that draws it leaving. So
+        // the ones on their way out are the ones outside the band, and this is
+        // where the arithmetic can be read off cleanly.
+        let z = AT - SPEED * DT;
+        let (bx, by) = (band(hw, focal, z), band(hh, focal, z));
+        let (mut going, mut kept, mut inside) = (0usize, 0usize, [0usize; 3]);
+        let mut leaving = vec![false; POOL];
+        for (i, star) in field.stars.iter().enumerate() {
+            let out = (star.pos[0] / bx).abs().max((star.pos[1] / by).abs());
+            if out >= 1.0 {
+                going += 1;
+                leaving[i] = true;
+                // And it is going because the frame stopped holding it: the
+                // band is a fixed rectangle on the screen, so the test is where
+                // it sat in the old one against the scale.
+                let (x, y) = placed[i];
+                let was = (x / (AT / focal * hw))
                     .abs()
-                    .max((star.pos[1] / (now * hh)).abs());
-                for (i, edge) in [0.25f32, 0.5, 0.75].iter().enumerate() {
-                    if out <= *edge {
-                        inside[i] += 1;
+                    .max((y / (AT / focal * hh)).abs());
+                assert!(
+                    was * lambda >= 1.0,
+                    "star {i} is leaving from {was:.3} of the band, which a \
+                     scale of {lambda:.4} leaves well inside the frame"
+                );
+                continue;
+            }
+            kept += 1;
+            // How far out it sits, as a fraction of the band in the max norm —
+            // the coordinate a uniform square is uniform in.
+            for (k, edge) in [0.25f32, 0.5, 0.75].iter().enumerate() {
+                if out <= *edge {
+                    inside[k] += 1;
+                }
+            }
+        }
+
+        let share = going as f32 / POOL as f32;
+        assert!(
+            (share - expected).abs() < 0.02,
+            "a step put {share:.3} of the shell on its way out where the scale \
+             of {lambda:.4} asks for {expected:.3}"
+        );
+        for (k, edge) in [0.25f32, 0.5, 0.75].iter().enumerate() {
+            let got = inside[k] as f32 / kept as f32;
+            let want = edge * edge;
+            assert!(
+                (got - want).abs() < 0.02,
+                "after a step the shell has {got:.3} of what it kept inside \
+                 {edge} of the band, where an even one has {want:.3} — the \
+                 magnification did not leave it evenly spread"
+            );
+        }
+
+        // And the step after that takes exactly those and nobody else. A star
+        // that was taken came back as a fresh one, and the two values it is
+        // given at birth and never again say so.
+        field.update(DT, SPEED, &cam, orbit);
+        for (i, star) in field.stars.iter().enumerate() {
+            let taken = (star.phase, star.magnitude) != born[i];
+            assert_eq!(
+                taken,
+                leaving[i],
+                "star {i} was {} on the step after it was {} out of the frame",
+                if taken { "taken" } else { "kept" },
+                if leaving[i] { "carried" } else { "not carried" }
+            );
+        }
+    }
+
+    /// Nothing lit is ever taken out of the middle of the frame.
+    ///
+    /// The regression test for the reported fault, and for the larger one
+    /// beside it. The band moves stars about for two reasons — one has crossed
+    /// a wall, or the magnification has carried it past the edge of the frame —
+    /// and neither of them used to care whether anyone was looking. Astern at
+    /// full warp it was taking four of a 256-star pool a step out of a visible
+    /// position at a mean brightness of 0.36, which is a bright star winking out
+    /// mid-frame eight times a second; from ahead of the beam it was fourteen a
+    /// step. Both are what a viewer reports as stars disappearing before they
+    /// reach the edge of the screen.
+    ///
+    /// Asked of the brightness the star had on its *last drawn frame*, because
+    /// that is what the eye saw go, and through `lit` rather than a copy of it.
+    /// The bound is a share of what the visible sky averages, so it cannot be
+    /// satisfied by dimming everything.
+    #[test]
+    fn nothing_lit_is_ever_taken_out_of_the_middle_of_the_frame() {
+        // Every angle that has a depth flow at all, both signs, and both a
+        // pure one and one with the sideways travel alongside it.
+        const ANGLES: [(f32, f32, f32); 6] = [
+            (-75.0, 6.0, 20.0),
+            (55.0, 35.0, 20.0),
+            (90.0, 0.0, 0.0),
+            (-90.0, 0.0, 0.0),
+            (45.0, 0.0, 0.0),
+            (-135.0, -20.0, 0.0),
+        ];
+        // A share of what the visible sky averages, and it has to be a share
+        // rather than nothing: a star inside the near wall's ramp is dimmed as
+        // it approaches, not blanked, and one step of the flow can be worth
+        // several units of range, so the last frame it is drawn on is a little
+        // way short of the wall and still carries a trace. Measured over all
+        // twelve flights below the worst is 0.28 of the mean; before any of this
+        // it was 6.5 times the mean, so the bound has sixteen times the margin
+        // it needs in the direction that matters.
+        const TRACE: f32 = 0.4;
+        let cam = Camera::new(120, 72);
+        let pool = crate::cli::DEFAULT_STARS;
+
+        for (az, el, roll) in ANGLES {
+            for speed in [crate::ship::WARP_MAX, 42.0] {
+                let orbit = Orbit {
+                    azimuth: az.to_radians(),
+                    elevation: el.to_radians(),
+                    roll: roll.to_radians(),
+                }
+                .held();
+                let mut field = ExteriorField::new(pool, 1, &cam, orbit);
+                // Settled first: the profile a flow leaves alone is not the one
+                // a fresh pool is laid out with, and the crossing from one to
+                // the other is not what this is asking about.
+                for _ in 0..600 {
+                    field.update(1.0 / 120.0, speed, &cam, orbit);
+                }
+
+                let (mut worst, mut seen, mut sky, mut lit_count) =
+                    (0.0f32, 0usize, 0.0f32, 0usize);
+                for _ in 0..400 {
+                    let fade = field.near_fade;
+                    let before: Vec<(f32, f32, f32)> = field
+                        .stars
+                        .iter()
+                        .map(|s| {
+                            let visible = cam.project(s.pos).is_some_and(|(x, y)| {
+                                (0.0..cam.width).contains(&x) && (0.0..cam.height).contains(&y)
+                            });
+                            let light = lit(s, fade, 0.0, 0.0);
+                            if visible {
+                                sky += light;
+                                lit_count += 1;
+                            }
+                            (s.phase, s.magnitude, if visible { light } else { 0.0 })
+                        })
+                        .collect();
+                    field.update(1.0 / 120.0, speed, &cam, orbit);
+                    for (star, &(phase, magnitude, light)) in field.stars.iter().zip(&before) {
+                        if (star.phase, star.magnitude) != (phase, magnitude) {
+                            seen += 1;
+                            worst = worst.max(light);
+                        }
                     }
                 }
+
+                let mean = sky / lit_count.max(1) as f32;
+                assert!(
+                    seen > 100,
+                    "only {seen} stars were taken at {az},{el},{roll} at speed \
+                     {speed} — too few to be sure of catching a bright one"
+                );
+                assert!(
+                    worst < TRACE * mean,
+                    "a star of brightness {worst:.3} was taken out of the frame \
+                     at {az},{el},{roll} at speed {speed}, against a visible sky \
+                     averaging {mean:.3} — that is a star winking out where \
+                     someone is looking at it"
+                );
+            }
+        }
+    }
+
+    /// The band settles at the one profile a flow leaves alone.
+    ///
+    /// What the recycle buys, stated as the thing that makes it free. Advection
+    /// through a frustum takes a count per unit range of `n(z + d)` to
+    /// `n(z + d)·(z/(z + d))²`, so the only profile a step returns unchanged is
+    /// `n ∝ z²` — an even sky, seen through a cone. Hold any other one and every
+    /// step owes a relocation per star, which is the fizz this replaced;
+    /// let it alone and the flow keeps it, whichever way the flow runs.
+    ///
+    /// The far end is where the stars are, and the near end is where they are
+    /// bright: that is the same bargain [`crate::starfield`] has always struck,
+    /// and it is why the cockpit reads as distance rather than as a curtain.
+    #[test]
+    fn the_band_settles_at_the_one_profile_a_flow_leaves_alone() {
+        const POOL: usize = 20_000;
+        const SLICES: usize = 5;
+        let cam = Camera::new(120, 72);
+        // Toward the camera and away from it. Both are the same statement, and
+        // the pool has to arrive at it from opposite directions.
+        for azimuth in [-90.0f32, 90.0] {
+            let orbit = Orbit {
+                azimuth: azimuth.to_radians(),
+                elevation: 0.0,
+                roll: 0.0,
+            }
+            .held();
+            let mut field = ExteriorField::new(POOL, 5, &cam, orbit);
+            // Two full crossings of the band at this speed, which is what it
+            // takes for the pool a flight opens with to have flown through.
+            for _ in 0..2000 {
+                field.update(1.0 / 120.0, 280.0, &cam, orbit);
             }
 
-            let share = relocated as f32 / POOL as f32;
-            assert!(
-                (share - expected).abs() < 0.02,
-                "a step at azimuth {azimuth} relocated {share:.3} of the shell \
-                 where the scale of {lambda:.4} asks for {expected:.3}"
-            );
-            for (i, edge) in [0.25f32, 0.5, 0.75].iter().enumerate() {
-                let got = inside[i] as f32 / POOL as f32;
-                let want = edge * edge;
+            let mut got = [0usize; SLICES];
+            for star in &field.stars {
+                let i = ((star.pos[2] - Z_NEAR) / (Z_FAR - Z_NEAR) * SLICES as f32) as usize;
+                got[i.min(SLICES - 1)] += 1;
+            }
+            // The share of `z²` each equal slice of range holds, integrated
+            // rather than sampled at the middle: the slices are wide and `z²`
+            // is not flat across them.
+            let edge = |i: usize| Z_NEAR + (Z_FAR - Z_NEAR) * i as f32 / SLICES as f32;
+            let cube = |z: f32| z * z * z;
+            let whole = cube(Z_FAR) - cube(Z_NEAR);
+            for (i, &count) in got.iter().enumerate() {
+                let want = (cube(edge(i + 1)) - cube(edge(i))) / whole;
+                let share = count as f32 / POOL as f32;
                 assert!(
-                    (got - want).abs() < 0.02,
-                    "after a step at azimuth {azimuth} the shell has {got:.3} \
-                     of itself inside {edge} of the band, where an even one \
-                     has {want:.3} — the stars went back in the wrong shape"
+                    (share - want).abs() < 0.02,
+                    "at azimuth {azimuth} slice {i} of the band holds \
+                     {share:.3} of the pool where an even sky holds \
+                     {want:.3} — got {got:?}"
+                );
+            }
+        }
+    }
+
+    /// The near wall is not a boundary at all when the sky runs flat.
+    ///
+    /// The other half of the ramp, and the half the reference frames rest on.
+    /// Abeam, `travel[2]` is a hard zero, nothing ever reaches the near wall,
+    /// and the ramp is switched off rather than reduced to an identity — so the
+    /// shot `side.txt` is recorded at is drawn from the bytes it always was.
+    /// Asserted on the `Streak`s themselves and by equality, because "very
+    /// nearly the same sky" is precisely what a golden hash cannot survive.
+    #[test]
+    fn the_near_wall_is_not_a_boundary_at_all_when_the_sky_runs_flat() {
+        let cam = cam();
+        for (elevation, roll) in [(0.0f32, 0.0f32), (0.9, 0.0), (-1.4, 2.2)] {
+            let orbit = Orbit {
+                azimuth: 0.0,
+                elevation,
+                roll,
+            }
+            .held();
+            let mut field = ExteriorField::new(500, 19, &cam, orbit);
+            for _ in 0..300 {
+                field.update(1.0 / 120.0, crate::ship::WARP_MAX, &cam, orbit);
+                assert_eq!(
+                    field.near_fade, 0.0,
+                    "the near wall grew a ramp at elevation {elevation}, roll \
+                     {roll}, where the flow never reaches it"
+                );
+            }
+            // And the brightness really is the unramped one, star for star.
+            for star in &field.stars {
+                assert_eq!(
+                    lit(star, field.near_fade, 0.22, 1.0),
+                    lit(star, 0.0, 0.22, 1.0),
+                    "a star was dimmed at elevation {elevation}, roll {roll}"
                 );
             }
         }
@@ -1763,7 +2152,7 @@ mod tests {
 
     /// The sky is as even off the beam as it is abeam.
     ///
-    /// The regression test for the fault the relocation in `update` exists for.
+    /// The regression test for the fault the recycle in `update` exists for.
     /// The band is held inside a range-scaled screen frustum by folding `x` and
     /// `y` modulo `band(half, focal, z)`, which is the right answer for the
     /// *translation* the flow applies and no answer at all for the *scale* that
@@ -1771,6 +2160,16 @@ mod tests {
     /// being `focal * pos / z`. Left alone that emptied the top and bottom of
     /// the frame and left a bar of stars across the middle, which is what a
     /// couple of seconds on `A` or `D` used to produce and what this holds.
+    ///
+    /// It has since caught two more of the same shape, both from the change that
+    /// took the relocations out. Filling a contraction's rim about the middle of
+    /// the frame rather than about the place the flow has slid the middle to put
+    /// the fill where the gap was not: 2.2 to 1 across the frame at 45 degrees,
+    /// with 0.57 of the pool on screen. And letting a star that is on its way
+    /// out keep travelling sideways let the travel pull it back inside the band
+    /// it had just left, so it hovered at the edge instead of leaving: 0.60 on
+    /// screen at −45. Both wear the symptom this test measures and neither is
+    /// visible in any reference frame.
     ///
     /// Measured before the fix, at the settings below and against an abeam
     /// baseline of 1.30 over six seeds: parked at 45 degrees the sky was 25 to
@@ -1791,13 +2190,13 @@ mod tests {
     /// a pan stretches the frame sideways by the square of the range ratio
     /// where it stretches it vertically by the ratio itself, and the deficit
     /// that leaves is spread over the leading half of the frame rather than
-    /// standing on the rim. Putting it right needs the relocation to place by
-    /// that profile instead of on the rim, which is a change of its own with
-    /// its own measurement; both were tried here and both made the gradient
-    /// worse, because a bigger correction placed symmetrically is worse than a
-    /// smaller one. So the bands are held tightly, the frame loosely, and the
-    /// loose bound is a ratchet against the 45 it came from rather than a
-    /// statement that this is right.
+    /// standing on the rim. Putting it right needs a placement that follows that
+    /// profile, which is a change of its own with its own measurement; both a
+    /// uniform placement and the exact anisotropic rate were tried here and both
+    /// made the gradient worse, because a bigger correction placed symmetrically
+    /// is worse than a smaller one. So the bands are held tightly, the frame
+    /// loosely, and the loose bound is a ratchet against the 45 it came from
+    /// rather than a statement that this is right.
     ///
     /// The reference frames cannot see any of this. `side.txt` and `warp.txt`
     /// are shot at [`Orbit::LEVEL`], where `travel[2]` is exactly zero, and
