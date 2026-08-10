@@ -154,50 +154,86 @@ pub fn draw(screen: &mut Screen, menu: &Menu) {
         .saturating_sub(shown / 2)
         .min(ships.len() - shown);
 
-    let rule: String = std::iter::repeat_n(g.horizontal, width - 2).collect();
-    let line = |text: &str| format!("{} {text} {}", g.vertical, g.vertical);
+    // Both runs of the box's horizontal, which differ only in what they have
+    // to reach across: the corners' spans the two frame characters, the rule
+    // under the title spans the body between them. That second one used to be
+    // a run of ASCII hyphens whatever face the terminal could take, so a
+    // Unicode box came out ruled `─` at the top and the bottom and `-` in the
+    // middle — one box drawn from two alphabets.
+    let rule = |n: usize| -> String { std::iter::repeat_n(g.horizontal, n).collect() };
+    // A frame character and the space inside it, from each side, built once
+    // rather than once per row. The two together are exactly `CHROME_COLS`.
+    let (opening, closing) = (format!("{} ", g.vertical), format!(" {}", g.vertical));
 
     let mut row = top;
-    // No bounds check: the box is sized to the terminal above, so every row of
-    // it has somewhere to go.
-    let put = |screen: &mut Screen, text: &str, color: (u8, u8, u8), row: &mut usize| {
-        screen.overlay_panel(left, *row, &truncate(text, cols - left), color);
+    // The top and the bottom, which are frame from corner to corner and so go
+    // down in one run.
+    //
+    // Nothing here is truncated or bounds-checked. The box is sized to the
+    // terminal above — `width` is held to `cols - CHROME_COLS`, so centring it
+    // leaves at least two columns to the right of the closing frame character,
+    // and `top + height` is inside `rows` the same way. The
+    // `truncate(text, cols - left)` that used to stand here could not fire at
+    // any size the box draws itself in, and bought a `String` per row for the
+    // privilege; what would carry a box that outgrew its terminal anyway is
+    // `Screen::stamp`, which clips per character and drops a row past the
+    // bottom outright.
+    let edge = |screen: &mut Screen, open: char, close: char, row: &mut usize| {
+        let text = format!("{open}{}{close}", rule(width - 2));
+        screen.overlay_panel(left, *row, &text, FRAME);
+        *row += 1;
+    };
+    // A row with sides on it, laid down as three runs so the frame keeps its
+    // own colour. It was one: the two `│` were fused into the string the text
+    // went in and the pair handed to a single `overlay_panel` — and
+    // `Screen::stamp` takes one colour for a whole run and gives it to every
+    // glyph in it that is not a space. So each side came out in whatever the
+    // *text* beside it was written in, TITLE down the flanks of the title,
+    // CHOSEN or REST down the flanks of each ship and BLURB down the flanks of
+    // the footer, while the corners and the two rules had been FRAME the whole
+    // time. `hud::draw_nav_panel` already draws its rule the way this one now
+    // does, at its own column in its own call.
+    //
+    // The three runs are laid end to end and must not overlap, which is a
+    // constraint rather than tidiness: a panel stamp dims what is behind it
+    // per stamp and not per frame, so a cell covered twice comes out at
+    // `PANEL_DIM` squared and the box grows a dark seam down the inside of its
+    // own frame. The instrument panel gets that for nothing, since
+    // `Backdrop::Glass` is idempotent; a dialogue does not. It is also why the
+    // spaces inside the frame characters travel with the frame rather than
+    // being padded back onto the body — under a dialogue a space takes no
+    // colour at all, so which run carries one settles nothing except how often
+    // it is dimmed.
+    let framed = |screen: &mut Screen, body: &str, color: (u8, u8, u8), row: &mut usize| {
+        screen.overlay_panel(left, *row, &opening, FRAME);
+        screen.overlay_panel(left + 2, *row, body, color);
+        screen.overlay_panel(left + width - 2, *row, &closing, FRAME);
         *row += 1;
     };
 
-    put(
+    edge(screen, g.corner[0], g.corner[1], &mut row);
+    framed(
         screen,
-        &format!("{}{}{}", g.corner[0], rule, g.corner[1]),
-        FRAME,
-        &mut row,
-    );
-    put(
-        screen,
-        &line(&title(menu, ships.len(), shown, inner)),
+        &title(menu, ships.len(), shown, inner),
         TITLE,
         &mut row,
     );
-    put(screen, &line(&"-".repeat(inner)), FRAME, &mut row);
+    framed(screen, &rule(inner), FRAME, &mut row);
 
     for (i, ship) in ships.iter().enumerate().skip(first).take(shown) {
         let mark = if i == menu.cursor { g.cursor } else { ' ' };
         let color = if i == menu.cursor { CHOSEN } else { REST };
-        put(
+        framed(
             screen,
-            &line(&pad(&ship_row(ship, mark, inner, g), inner)),
+            &pad(&ship_row(ship, mark, inner, g), inner),
             color,
             &mut row,
         );
     }
 
-    put(screen, &line(&" ".repeat(inner)), FRAME, &mut row);
-    put(screen, &line(&pad(footer(inner), inner)), BLURB, &mut row);
-    put(
-        screen,
-        &format!("{}{}{}", g.corner[2], rule, g.corner[3]),
-        FRAME,
-        &mut row,
-    );
+    framed(screen, &" ".repeat(inner), FRAME, &mut row);
+    framed(screen, &pad(footer(inner), inner), BLURB, &mut row);
+    edge(screen, g.corner[2], g.corner[3], &mut row);
 }
 
 /// The name column, as wide as the longest name there is.
@@ -363,6 +399,81 @@ mod tests {
                         || fg == BLURB,
                     "a streak showed through the top of ({col}, {row}): {fg:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn the_box_is_drawn_in_one_colour_and_what_is_in_it_in_their_own() {
+        // Regression: every row between the two corners was built as a single
+        // string with a frame character fused on each end of its text, and the
+        // pair handed to one `overlay_panel` — which takes one colour for the
+        // whole run and gives it to every glyph in it that is not a space. So
+        // the sides came out TITLE beside the title, CHOSEN or REST beside
+        // each ship and BLURB beside the footer, while the corners and the two
+        // rules had been FRAME the whole time.
+        //
+        // Asked of the two colour modes and not of Ascii, where `stamp`
+        // discards the colour outright so there is nothing here to be wrong;
+        // `the_popup_is_actually_ascii_in_ascii_mode` is what watches that one.
+        let (cols, rows) = (120usize, 34usize);
+        let ships = models::models();
+        let cursor = ships.len() - 1;
+        let width = wanted_cols();
+        let height = ships.len() + CHROME_ROWS;
+        let (left, top) = ((cols - width) / 2, (rows - height) / 2);
+
+        for mode in [ColorMode::Truecolor, ColorMode::Ansi256] {
+            let mut screen = lit(cols, rows, mode);
+            draw(&mut screen, &Menu::new(cursor));
+
+            // Read against the top rule rather than against the constant, so
+            // the claim survives the mode: in 256 what reaches the cell is
+            // FRAME snapped to a palette entry, which this module has no way
+            // to spell. Truecolor writes the constant through untouched and is
+            // asked for it here, so the reference cannot itself drift.
+            let frame = screen.cell_colors(left + 1, top).0;
+            if mode == ColorMode::Truecolor {
+                assert_eq!(frame, Some(FRAME), "the top rule is not the frame's colour");
+            }
+            for row in top..top + height {
+                for col in [left, left + width - 1] {
+                    assert_eq!(
+                        screen.cell_colors(col, row).0,
+                        frame,
+                        "the edge at ({col}, {row}) is not the colour of the top rule"
+                    );
+                }
+            }
+
+            // The other half, and the one a box painted FRAME throughout would
+            // fail. A body starts two columns in, past the frame character and
+            // the space inside it; a ship's row spends its first two on the
+            // cursor mark and a space — and that mark is a space on every row
+            // but one, which under a dialogue takes no colour at all — so a
+            // name is read two further along again.
+            for (i, ship) in ships.iter().enumerate() {
+                let ink = screen.cell_colors(left + 4, top + 3 + i).0;
+                assert_ne!(ink, frame, "{}'s name went the frame's colour", ship.name);
+                if mode == ColorMode::Truecolor {
+                    let want = if i == cursor { CHOSEN } else { REST };
+                    assert_eq!(
+                        ink,
+                        Some(want),
+                        "{} is not the colour its row asked for",
+                        ship.name
+                    );
+                }
+            }
+            for (row, want, what) in [
+                (top + 1, TITLE, "the title"),
+                (top + height - 2, BLURB, "the footer"),
+            ] {
+                let ink = screen.cell_colors(left + 2, row).0;
+                assert_ne!(ink, frame, "{what} went the frame's colour");
+                if mode == ColorMode::Truecolor {
+                    assert_eq!(ink, Some(want), "{what} lost its own colour");
+                }
             }
         }
     }
