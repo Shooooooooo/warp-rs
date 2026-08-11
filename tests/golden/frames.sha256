@@ -95,6 +95,56 @@
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+#
+# `orbit.txt` and `astern.txt` moved when the band stopped taking stars out of
+# the picture. Two faults with one root: it moved stars about to keep its own
+# books straight and never asked whether anyone was looking at the one it moved.
+#
+# The near wall was the reported one. `Z_NEAR` is a flat plane in `z` while the
+# band is a fixed rectangle on the *screen*, so a star arriving at it can be
+# anywhere in the frame at all, and `depth` reaches 1.0 there — full brightness.
+# The far wall has had the mirror of that ramp for as long as this band has
+# existed and the near wall never got one, because abeam `travel[2]` is a hard
+# zero and nothing has ever crossed it. Measured astern at full warp it was
+# taking four stars a step out of a 256-star pool at a mean brightness of 0.36,
+# which is a bright star winking out mid-frame eight times a second; at sublight,
+# twenty-six a second. It has a ramp now, `NEAR_FADE_STEPS` deep and scaled by
+# the flow so it is a fixed number of *frames* at any speed and goes to zero
+# smoothly as the camera comes back to the beam.
+#
+# The larger one was the density machinery. Holding a flat count per unit range
+# against a flow that magnifies costs a relocation per star per step, and both
+# of them were visible: expanding, what the magnification carried out was
+# scattered back across the whole band, twenty of the pool a step landing on
+# screen out of nowhere; contracting, the rim was filled from whichever star a
+# counter landed on, fourteen a step taken *off* the screen from anywhere at all.
+# Neither can be fixed by fading — at a tenth of the pool a step there is no
+# fade long enough to hide it and short enough to finish — and neither can be
+# fixed by choosing better places, because under a magnification the deficit a
+# step leaves is uniform and a uniform refill is the only correct one. So the
+# band is not held at a flat profile any more. A star that leaves now comes back
+# in through a boundary the flow is entering by and nowhere else — the rule
+# `crate::starfield` has always used — and the profile settles at the only one a
+# flow leaves alone, `n ∝ z²`, an even sky seen through a frustum. Both ends of
+# every move are then off the screen or already faded. The worst star taken from
+# a visible position went from 6.5 times the mean sky to 0.28 of it.
+#
+# One thing that follows and reads like an off-by-one until it is measured: a
+# star is now left outside the band for the single frame that carries it off the
+# screen. One step of magnification can be worth more than the band's 1.15
+# margin — `z_prev / z` reaches 1.5 at full warp — so taking it the moment it
+# crosses makes it vanish a couple of cells short of the edge, which is the
+# reported fault in miniature. It is held still sideways for that frame, because
+# the sideways travel can otherwise pull it back inside the band it just left and
+# it lingers at the edge instead: that alone took the share of the pool on screen
+# from 0.76 to 0.60 at 45 degrees off the beam.
+#
+# The same two hashes, for the same reason as the entry below and read the same
+# way. Everything above is gated on `turns_z`, and the ramp on `travel[2]` being
+# non-zero, which at `Orbit::LEVEL` it is exactly not — so `side.txt` is
+# byte-identical, and a move in it would mean something had been reduced to an
+# identity that was meant to be switched off. The three cockpit flights and
+# `warp.txt` never build an `ExteriorField` at all.
 # All seven moved together when the star count stopped following the terminal.
 # `--stars` is a plain count now, defaulting to 256, where it used to default to
 # 0 for "suit the pool to the canvas" — stars per subpixel, 0.02 where it
@@ -356,5 +406,5 @@ ce12297f85f145f84212b4c73c9e557dbfa58aecc3ea5d9c19a71faf1e7b9b01  truecolor.txt
 5c17fa2725b66d20fc698752b331eea0d34bd13d373681cf41a606d6bc33195d  ansi256.txt
 55b132cff11acac57e83b1425d4e2e7a43fb37d6493e8c009ed00f4a44f74a90  warp.txt
 ecb631ff6cef9044f4ee39260344723688d9ffdffb45ed02e2960ee22c0239e7  side.txt
-ad9848b396c5e93f1d09e23a3a78c5d1a2e66c0d3c0c0169aaebc484ab789921  orbit.txt
-ba909dbe511528bc4d893cb1906d140fc342b3242a0e665ac7104ef5c96f3460  astern.txt
+270fbc71ac18b3836bbb76d5275e93c68df3a8ce4c9412fa8972b9836ba35b63  orbit.txt
+b2acbe080940ece38fca6e736d44605d006ca1672079595e9c24d2b1b7c3c1c9  astern.txt

@@ -218,13 +218,17 @@ side`, and rebuilding the enterprise is the worked example — and one aimed at
 the tunnel glare moves `warp.txt` and only `warp.txt`, since
 the two `--demo` flights never leave sublight and the outside view goes through
 `add_glow_oval` instead. There is a third shape, and it is the sharpest of the
-lot: a change to something the outside view only does *off* the beam moves
-`orbit.txt` alone, because the whole of that geometry reduces exactly to the old
-arithmetic where `side.txt` has the camera. Stopping the engine lance at its
-vanishing point moved that one hash and no other, and so did putting the drive
-behind the hull from ahead — both turn on a quantity that is exactly zero abeam
-and neither could reach the shot recorded there. A hash moving outside the shape
-its change predicts has leaked.
+lot: a change to something the outside view only does *off* the beam leaves
+`side.txt` alone, because the whole of that geometry reduces exactly to the old
+arithmetic where `side.txt` has the camera. Which of the other two move then says
+what the change turns on. Stopping the engine lance at its vanishing point moved
+`orbit.txt` and no other, and so did putting the drive behind the hull from
+ahead; anything gated on the star band's depth travel moves `orbit.txt` **and**
+`astern.txt` together, since those are the two flights with a `travel[2]` at all
+and they take opposite signs of it — the near wall's ramp and the recycle rule
+are the worked example. A hash moving outside the shape its change predicts has
+leaked, and `side.txt` moving at all means something meant to be switched off was
+reduced to an identity instead.
 
 There is a fourth, and it wears the first one's clothes: a change to the
 arithmetic inside `lens`, `exterior` or `Canvas::draw_path` also moves
@@ -504,15 +508,18 @@ take the sky with it or the control is a barrel roll wearing new keys —
 picks the case that makes it sharp, lifting the camera at zero azimuth, where
 the *flow direction* does not change at all.
 
-The band therefore has four fast paths that are switched **off** rather than
-reduced to identities, and all four are exact at `Orbit::LEVEL`. The pool is
+The band therefore has five fast paths that are switched **off** rather than
+reduced to identities, and all five are exact at `Orbit::LEVEL`. The pool is
 turned only when `orbit != self.orbit` — compared, not composed with an
 identity, because the angles are unchanged bit for bit when nothing moved them.
 Depth travel runs only when `travel[2] != 0.0`, and the vertical fold only when
 depth or height moved, because `fold` is *not* an exact identity for a value
 already inside its band and the level shot is exactly where `y` never moves. The
-fourth is the relocation described two paragraphs down, gated on `turns_z`, and
-it is the one that would move `side.txt` if the gate were ever widened.
+fourth is the recycle described two paragraphs down, gated on `turns_z`. The
+fifth is the near wall's brightness ramp, gated on `travel[2]` being non-zero —
+its width is `NEAR_FADE_STEPS · |travel[2] · step|`, which is a hard zero abeam
+and at rest, so the branch in `lit` is never taken there. Widening any of the
+five gates moves `side.txt`.
 Off the beam three things the band was written never to face come alive. Stars
 cross the near and far walls and have to be respawned, and a respawn is handed
 the trail it *would* have had, one step back along the track — without that, at
@@ -571,42 +578,101 @@ just carried over and the next step carries it over again, so the pool piles
 into the off-screen margin and the middle drains. Two seconds of holding `A` or
 `D` emptied the top and bottom of the frame and left a bar of stars across the
 middle — 45 to 1 across the frame against an abeam baseline of 1.3, or three
-quarters of the pool off screen on the other side of the beam. `update` now puts
-the scale's own share back by hand: `1 − λ²` of each range shell onto the rim a
-contraction vacates, and whatever an expansion carried out scattered over the
-whole band. Both are exactly the density the shell started with rather than an
-approximation of it, both are relocations of stars already in the pool so the
-count is self-balancing, and `1 − λ` per axis is the natural mistake — it
-double-counts the corners and comes out nearly twice too small.
-`a_range_change_leaves_the_shell_as_evenly_spread_as_it_found_it` pins the rates
-and the shape on a single shell, and
-`the_sky_is_as_even_off_the_beam_as_it_is_abeam` is the acceptance test over a
-flight.
+quarters of the pool off screen on the other side of the beam.
 
-**What that fix does not reach, and it is written down because it looks like the
+**What answers that is the profile itself, and not a correction applied to it.**
+The band used to hold a flat count per unit range and pay for it every step, by
+relocating stars: `1 − λ²` of each shell onto the rim a contraction vacated, and
+whatever an expansion carried out scattered back over the whole band. Both were
+exactly the right density and both were plainly visible, because neither asked
+whether anyone was looking at the star it moved. Astern at full warp, twenty of
+a 256-star pool a step landed back on screen out of nowhere; from ahead of the
+beam, fourteen a step were taken *off* the screen from wherever they happened to
+be. That cannot be faded away — at a tenth of the pool a step there is no fade
+both long enough to read as one and short enough to finish — and it cannot be
+placed better either, because under a magnification the deficit a step leaves is
+*uniform over the screen*, so a uniform refill is the only correct one.
+
+So the flat profile went instead. Advection through a frustum takes a count per
+unit range `n(z + d)` to `n(z + d)·(z/(z + d))²`, and the only profile a step
+returns unchanged is **`n ∝ z²`** — an even sky, seen through a cone. The rule
+that gets there is one line and it is `crate::starfield`'s: **a star that leaves
+comes back in through a boundary the flow is entering by, and nowhere else.**
+Expanding, the exits are the near wall and the rim and the only way in is the far
+wall, where `depth` has already faded a star to nothing. Contracting, the only
+exit is the far wall and the way in is the rim plus the near cap — and those
+balance exactly, the rim wanting `Z_FAR² − Z_NEAR²` a step against the cap's
+`Z_NEAR²` and the far wall supplying `Z_FAR²`, which is why `spawn` picks between
+them and picks the range with one draw across `Z_FAR²` and no counter at all.
+Nothing is conjured; both ends of every move are off the screen or already dark.
+`the_band_settles_at_the_one_profile_a_flow_leaves_alone` pins the profile,
+`a_range_change_takes_exactly_the_stars_the_frame_no_longer_holds` pins the rate
+and the shape on a single shell, `nothing_lit_is_ever_taken_out_of_the_middle_of_the_frame`
+is the regression test, and `the_sky_is_as_even_off_the_beam_as_it_is_abeam` is
+the acceptance test over a flight.
+
+Two things about that rule are easy to get subtly wrong and were:
+
+**The rim a contraction vacates is not centred where the band is.** A step
+shrinks the band about the middle of the frame *and* slides it sideways, and the
+gap the two leave together is an even frame about the place the flow has moved
+the middle to. The offset is `travel[0] / travel[2]` scaled by the band's shape
+and does not fall off with range, so at 45 degrees off the beam it is wider than
+the rim itself and the fill misses the gap entirely: 2.2 to 1 across the frame
+against 1.3 abeam, with only 0.57 of the pool on screen. The band wraps, so the
+fix is to place on the rim about the origin and then fold the drift in.
+
+**A star is left outside the band for the one frame that carries it off the
+screen.** One step of magnification can be worth more than the band's 1.15
+margin — `z_prev / z` reaches 1.5 at full warp — so taking a star the moment it
+crosses makes it vanish a couple of cells short of the edge rather than sweeping
+through it, which is the reported fault in miniature. It is held *still*
+sideways for that frame, not merely unfolded: the sideways travel can otherwise
+pull it back inside the band it just left, so it lingers at the edge for step
+after step, which took the share of the pool on screen from 0.76 to 0.60. Held
+still, the recycle's test is exact — the band at the range it came from is the
+band it went out through — and every star costs one frame and no more. The
+consequence for tests is that "every star is inside the band" is *not* an
+invariant of this module and must not be reasserted;
+`the_band_holds_together_from_every_angle` holds the sharper form, which is that
+a star outside the band is outside the picture.
+
+**What none of this reaches, and it is written down because it looks like the
 same thing.** A swing scales the frame too — a rigid turn of the sky is
 area-preserving on the sphere, so it scales screen area by the *cube* of its
 range ratio, with the extra factor landing on whichever axis the camera turned
 across. That scale is neither uniform over the frame nor equal on the two axes,
 so the deficit it leaves is spread over the leading half rather than standing on
-the rim, and the relocation above puts stars in the wrong place for it. What
-survives is a left-to-right gradient of about 3.5 to 1 *while a key is actually
-down*, gone within a step of letting go, with the frame still even top to bottom
-— which is why the guard holds the bands tightly and the frame loosely there.
-Both the exact anisotropic rate and a uniform placement were tried and both made
-it worse: a larger correction placed symmetrically is worse than a smaller one.
-Putting it right means placing by the deficit profile, which is its own change
-and its own measurement.
+the rim. What survives is a left-to-right gradient of about 3.5 to 1 *while a
+key is actually down*, gone within a step of letting go, with the frame still
+even top to bottom — which is why the guard holds the bands tightly and the
+frame loosely there. Putting it right means placing by the deficit profile,
+which is its own change and its own measurement.
 
-Two more things about the recycle. A star crossing a depth wall comes back
-just inside the wall the flow is *entering* through — `Reentry::Wall`, which is
-the fold in `z` written in distribution — because seeding it anywhere in the
-band turns a one-way flow into a linear ramp in the count per unit range,
-measured at seven to one at 45 degrees off the beam against 1.04 abeam. And
-`starfield::DepthRule` answers the same question with the far plane alone and is
-right to: the cockpit has one flow regime for the life of the program, where the
-band's regime is a camera control, so seeding one end out here would make the
-sky's character a function of where the eye is parked. **Do not unify the two.**
+**The near wall gets the ramp the far wall has always had, and it needed it
+more.** `depth` reaches zero at `Z_FAR` with zero slope so stars fade up out of
+nothing; at `Z_NEAR` it reached *one*, and `Z_NEAR` is a flat plane in `z` while
+the band is a fixed rectangle on the screen — so a star arriving there could be
+anywhere in the frame, including dead centre where the flow is slowest and the
+eye follows it best. Nothing had ever crossed it, because abeam `travel[2]` is a
+hard zero. Astern at full warp it was taking four stars a step at a mean
+brightness of 0.36 against a sky averaging half that, and twenty-six a second at
+sublight: this is the reported bug. `lit` now folds a ramp in before the
+exponent, `NEAR_FADE_STEPS` steps deep and scaled by the depth travel so it is a
+fixed number of *frames* at any speed and goes to zero smoothly as the camera
+returns to the beam — a fixed width behind a flag would dim a tenth of the pool
+in the single frame the camera stopped being abeam. It is affordable because of
+the profile above: at `z²` the range it dims holds five percent of the pool
+rather than a third, and the measured cost to the sky's mean brightness is five
+percent.
+
+The cockpit reaches the same profile by the same rule — `starfield::DepthRule`
+sends everything that leaves to the far plane, and the steady state of that *is*
+`z²`, which is most of why the cockpit reads as distance rather than as a
+curtain. The two are now one idea with two parameterisations, because out here
+the flow's direction is a camera control and the entering boundary has to be
+asked for rather than assumed. **The constants stay separate all the same** —
+see below.
 
 The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
 `Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with
