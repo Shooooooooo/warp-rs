@@ -112,28 +112,44 @@
 #     # and put this comment block back
 #
 #
-# `steer.txt` arrived on its own, with the fix for a turn that lifted the nose,
-# and **not one of the other seven moved for it** — which is the whole reason
-# there is now an eighth. `bank` leans the picture by rotating it after the
-# divide, and `StarField::update` was steering about the camera's own axes
-# underneath that, so a turn laid the flow across the frame at exactly the bank
-# angle: twenty degrees at the stops, measured in the middle of the frame. The
-# lean takes its sign from the yaw rate, so the vertical share came out downward
-# for a turn to port and a turn to starboard alike, and a sky sliding downward
-# is what climbing looks like. Both stick keys lifted the nose. The sky is now
-# rotated into the frame the lean has turned the picture to, steered there, and
-# rotated back — which leaves the *change* of bank showing, so rolling into a
-# turn and out of it still reads and holding one streams flat.
+# `steer.txt` moved on its own when the lean came out of the cockpit picture,
+# and the entry below — one commit old — is what it supersedes. That commit
+# fixed a turn that lifted the nose by steering the sky in the frame the lean
+# had turned the picture to. It worked, and it bought a second fault with it:
+# the step became the steering with a roll of however much the lean moved in
+# front of it, and rotations do not commute, so working the stick round a closed
+# loop left a residue about the camera's own x. It goes as the *square* of the
+# yaw rate — the same way round whichever way the stick went — and it came to
+# about nine degrees a second of nose-down that nothing brought back. Parked and
+# working the stick left and right was enough to fly the sky off the top of the
+# frame.
 #
-# No hash could have moved, and that is a hole rather than a vindication: the
-# whole of it is gated on `cam.bank != 0.0`, which every one of the seven holds
-# at an exact zero from the first frame to the last, because none of them ever
-# steers. The guard at the level the fault lives at is
-# `a_flat_turn_streams_the_sky_flat_across_the_frame` in `starfield.rs`, which
-# takes the lean off a real `Ship` held in a turn and holds the flow at the
-# middle of the frame flat to within a twentieth of its own length — it came out
-# at 19.1 degrees before and a hundredth of one after. This file gets the
-# region.
+# There is no way to put a yaw-coupled angle into the sky's orientation without
+# one of those two: rotate the picture and steer underneath it and the flow
+# tilts by the lean; steer in the leaning frame and the path stops closing. So
+# the picture is not rotated at all now. `Camera` has no bank, `Camera::project`
+# is a divide and a translation, and the lean is a fact about the *hull* —
+# `models::attitude` still poses it by `roll + bank`, which is where a lean can
+# be seen without also being flown.
+#
+# One hash, and it is the only shape this can have. `steer.txt` is the only
+# flight here with a hand on the stick and so the only one where the lean was
+# ever off zero; the other seven hold it at an exact zero from the first frame
+# to the last, so taking the arithmetic out had to be bit-identical for them —
+# `x·1 − y·0` is `x`, and `d·1` is `d`. All seven came back byte-identical,
+# including `orbit.txt` and `astern.txt`, which run the star band's fold where
+# the same rotation was being applied to a carried trail. Had one of them moved,
+# an "obviously equivalent" removal would not have been, and that would have
+# been the finding rather than a regeneration.
+#
+# Worth recording, since the entry below claims the opposite: taking the lean
+# out also settles a mismatch it papered over. `spawn` lays its rectangle out in
+# unrotated camera space and `escaped` tested the *rotated* projection against
+# the same rectangle, so past about eleven degrees of lean on an 80x24 terminal
+# the screen corners fell outside the seeded region and stopped being refilled
+# from the far plane. That commit said the screen was inside the spawn rectangle
+# at every angle the lean reaches. It is not, and now the question does not
+# arise: the two are in the same space again.
 #
 # `orbit.txt` and `astern.txt` moved when the band stopped taking stars out of
 # the picture. Two faults with one root: it moved stars about to keep its own
@@ -447,4 +463,4 @@ ce12297f85f145f84212b4c73c9e557dbfa58aecc3ea5d9c19a71faf1e7b9b01  truecolor.txt
 ecb631ff6cef9044f4ee39260344723688d9ffdffb45ed02e2960ee22c0239e7  side.txt
 270fbc71ac18b3836bbb76d5275e93c68df3a8ce4c9412fa8972b9836ba35b63  orbit.txt
 b2acbe080940ece38fca6e736d44605d006ca1672079595e9c24d2b1b7c3c1c9  astern.txt
-e70475075ded6d33e2598461893a1e5962d528e9c9e34fd38aeafa3ad65e6ace  steer.txt
+e44d7f112932bb33cc89e67ddc70ddc05ba975367c22362ab4a9eff413d55709  steer.txt

@@ -103,7 +103,13 @@ impl Renderer {
         &mut self.screen
     }
 
-    /// Build the camera for this instant, including shake and bank.
+    /// Build the camera for this instant, shake included.
+    ///
+    /// The lean into a turn is deliberately *not* here, and neither is it in
+    /// the view from outside — see [`crate::starfield::StarField::update`],
+    /// which carries the argument. It leans the hull instead, by way of
+    /// [`crate::models::attitude`], which is the one place it can be seen
+    /// without also being flown.
     pub fn camera(&self, ship: &Ship, time: f64) -> Camera {
         let (w, h) = self.canvas.dims();
         let mut cam = Camera::new(w, h);
@@ -116,7 +122,6 @@ impl Renderer {
             cam.cx += amp * ((time * 31.0).sin() + (time * 17.3).sin() * 0.6) as f32;
             cam.cy += amp * ((time * 27.7).cos() + (time * 13.1).sin() * 0.6) as f32;
         }
-        cam.bank = ship.bank;
         cam
     }
 
@@ -140,9 +145,6 @@ impl Renderer {
             cam.cx += amp * ((time * 31.0).sin() + (time * 17.3).sin() * 0.6) as f32;
             cam.cy += amp * ((time * 27.7).cos() + (time * 13.1).sin() * 0.6) as f32;
         }
-        // `bank` stays level. Out here the horizon is the direction of travel,
-        // and a star stream that tilts into a turn reads as a skid — the lean
-        // belongs to the hull, which has one of its own.
         cam
     }
 
