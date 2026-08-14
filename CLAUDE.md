@@ -59,8 +59,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 283 unit + 7 flight + 3 golden, ~16s
-cargo test --locked --all-features      # 284 unit — adds the snapshot-gated one
+cargo test                              # 288 unit + 7 flight + 3 golden, ~18s
+cargo test --locked --all-features      # 289 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -139,15 +139,15 @@ The in-process half is the reason `render_headless` is public and separate from
 `run_headless`. It costs about four seconds — most of `cargo test`'s wall clock
 after the unit tests — and is **Linux-gated**, for the reason below.
 
-**Seven flights, and the case list lives in three places** — the comment block
+**Eight flights, and the case list lives in three places** — the comment block
 in `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job.
 Adding one means adding it to all three, and `.gitignore` needs the file's name
 too, which is a list that has fallen behind that recipe twice. They share
 `--headless --frames 120 --seed 1 --size 120x36` and differ in what they make
 the renderer do: three `--demo` runs in truecolor, ascii and 256, one
 `--engage --throttle 1.0`, one of those from `--view side`, the same again with
-the camera swung off the beam by `--orbit 55,35,20`, and one more from *behind*
-the ship at `--orbit -75,6,20`.
+the camera swung off the beam by `--orbit 55,35,20`, one more from *behind*
+the ship at `--orbit -75,6,20`, and one more `--demo` at `--fps 10`.
 
 `ansi256.txt` is the odd one and the only case here recorded to be read against
 another rather than against itself. It is `truecolor.txt`'s flight in the other
@@ -190,6 +190,20 @@ point landing 24 subpixels from the ship and 20 from the nearest edge of a
 120x72 canvas; both were checked by shooting the frame, since a point inside the
 bubble or half off the top asks nothing.
 
+`steer.txt` is the newest, and the hole it closes is the widest any of them
+left: for seven flights **nothing here ever put a hand on the stick**. The four
+`--engage` runs carry no autopilot, and the three `--demo` runs stop four
+seconds short of the weave — that cycle spends its opening six seconds on the
+throttle alone, and 120 frames at 60 fps is two of them. So the cockpit's whole
+steering path was unpinned: yaw, pitch, the lean they come with, and the
+`swung_out` branch that carries a star off one edge and back in the other. The
+case is
+`--demo` again at `--fps 10`, which in headless *is* the timestep — the same
+120 frames become twelve seconds of flight and the last six of them steer. Note
+what
+that makes it: the only flight here where `cam.bank` is ever non-zero, and so
+the only guard on everything gated on it.
+
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
 the whole sky has to say so. When the change was intended, regenerate
@@ -205,7 +219,8 @@ common="--headless --frames 120 --seed 1 --size 120x36"
 ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
-sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt \
+./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
+sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt \
     > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
@@ -239,6 +254,14 @@ half of that shape is `warp.txt` staying byte-identical, which is what says a
 change to how a span is measured stayed inside the view it was aimed at. Taking
 `hypot` off the bent-streak path is the worked example, and
 `tests/golden/frames.sha256` carries it in full.
+
+And a fifth, which is the cockpit's version of the third: a change to how the
+sky is *steered* moves `steer.txt` and only `steer.txt`, since it is the one
+flight with a hand on the stick and therefore the one flight where `cam.bank`
+comes off zero. Steering in the frame the lean has turned the picture to is the
+worked example — it moved that hash and left the other seven bit for bit,
+including the three `--demo` runs it shares every flag but `--fps` with, because
+those stop before the weave starts.
 
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
@@ -507,6 +530,35 @@ take the sky with it or the control is a barrel roll wearing new keys —
 `swinging_the_camera_sweeps_the_sky_past_it` is the test that says so, and it
 picks the case that makes it sharp, lifting the camera at zero azimuth, where
 the *flow direction* does not change at all.
+
+**The cockpit's three rates are flown in the camera's *banked* frame, which is
+why `StarField::update` takes a camera and not just the geometry.** `bank` is
+the lean into a turn and it is applied to the *picture*, after the divide in
+`Camera::project` — so it is the pilot's own up and right, not the camera's. A
+turn flown about the camera's axes underneath a leaning image comes out across
+the frame at exactly the bank angle, and a sky streaming diagonally while the
+stick asks for a flat turn is not read as a lean. It is read as a *climb*,
+because a sky sliding downward is what going up looks like, and `bank` takes its
+sign from the yaw rate — so both A and D lifted the nose, by twenty degrees at
+the stops. The star is rotated into the banked frame, steered there, and rotated
+back out; the pair is switched off rather than reduced to an identity, on
+`cam.bank != 0.0`, and everything the module stores stays in the unbanked space
+the frustum test, the respawn and the projection are written against.
+
+Note what that leaves showing, because it is the reason this is a round trip
+rather than dropping `bank` from the projection outright. A held turn streams
+flat, which is correct — a bank against a sky with no horizon in it is
+invisible except through the flow — but the *change* of bank does not cancel:
+whatever the lean moved between one frame and the next survives as a roll of
+the sky, so
+rolling into a turn and back out of it still reads.
+`a_flat_turn_streams_the_sky_flat_across_the_frame` holds the first half,
+taking the lean off a real `Ship` held in a turn rather than writing the angle
+down, and `the_lean_coming_on_still_turns_the_sky` holds the second. The
+whole-frame mean carries about a degree the middle of the frame does not, and
+it is a fact about where stars are rather than which way they are going:
+`spawn` lays its rectangle out before the lean turns the picture and `escaped`
+reads it after.
 
 The band therefore has five fast paths that are switched **off** rather than
 reduced to identities, and all five are exact at `Orbit::LEVEL`. The pool is
