@@ -444,7 +444,6 @@ impl ExteriorField {
         let travel = orbit.sky_travel();
         let focal = self.focal;
         let (half_width, half_height) = self.bound;
-        let (bank_sin, bank_cos) = cam.bank.sin_cos();
 
         // How much the camera has turned since the pool was last laid against
         // it, as a rotation in the camera's own space. Compared rather than
@@ -624,11 +623,15 @@ impl ExteriorField {
             // for a star swung out by a turn — would leave the nearest stars
             // drawing bare points every few frames, and a sky that flickers
             // between streaks and dots reads as static rather than as speed.
+            //
+            // The shift is along a camera axis and `project` is a divide and a
+            // translation, so it lands on the screen along the matching screen
+            // axis and needs no rotation on the way. That was not always true:
+            // the projection used to turn the picture by the cockpit's lean,
+            // and this had to turn with it.
             if shift != 0.0 {
                 if let Some(p) = &mut star.prev {
-                    let d = shift * focal / z_prev;
-                    p.0 += d * bank_cos;
-                    p.1 += d * bank_sin;
+                    p.0 += shift * focal / z_prev;
                 }
             }
 
@@ -647,9 +650,7 @@ impl ExteriorField {
                     star.pos[1] = folded;
                     if shift != 0.0 {
                         if let Some(p) = &mut star.prev {
-                            let d = shift * focal / z_prev;
-                            p.0 -= d * bank_sin;
-                            p.1 += d * bank_cos;
+                            p.1 += shift * focal / z_prev;
                         }
                     }
                 }

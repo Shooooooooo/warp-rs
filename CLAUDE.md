@@ -195,14 +195,13 @@ left: for seven flights **nothing here ever put a hand on the stick**. The four
 `--engage` runs carry no autopilot, and the three `--demo` runs stop four
 seconds short of the weave — that cycle spends its opening six seconds on the
 throttle alone, and 120 frames at 60 fps is two of them. So the cockpit's whole
-steering path was unpinned: yaw, pitch, the lean they come with, and the
-`swung_out` branch that carries a star off one edge and back in the other. The
-case is
+steering path was unpinned: yaw, pitch, and the `swung_out` branch that carries
+a star off one edge and back in the other. The case is
 `--demo` again at `--fps 10`, which in headless *is* the timestep — the same
 120 frames become twelve seconds of flight and the last six of them steer. Note
-what
-that makes it: the only flight here where `cam.bank` is ever non-zero, and so
-the only guard on everything gated on it.
+what that makes it: the only flight here that turns at all, and so the only
+guard on anything the stick reaches. It has already earned that twice, moving
+alone for both of the lean's faults.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -257,11 +256,16 @@ change to how a span is measured stayed inside the view it was aimed at. Taking
 
 And a fifth, which is the cockpit's version of the third: a change to how the
 sky is *steered* moves `steer.txt` and only `steer.txt`, since it is the one
-flight with a hand on the stick and therefore the one flight where `cam.bank`
-comes off zero. Steering in the frame the lean has turned the picture to is the
-worked example — it moved that hash and left the other seven bit for bit,
-including the three `--demo` runs it shares every flag but `--fps` with, because
-those stop before the weave starts.
+flight with a hand on the stick and the other seven hold every steering rate at
+an exact zero from the first frame to the last. There are two worked examples
+and they are the same fault arriving and leaving — steering in the frame the
+lean turned the picture to, and then taking the lean out of the picture
+altogether. Each moved that hash and left the other seven bit for bit, including
+the three `--demo` runs it shares every flag but `--fps` with, because those
+stop before the weave starts. The second is the more useful of the two to read:
+it deleted arithmetic from `Camera::project`, which every star and every hull
+vertex in the program goes through, so seven byte-identical hashes are what
+says the deletion really was the identity it looked like.
 
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
@@ -334,12 +338,15 @@ wider than most of the entries above.
 
 This tree is compiled with fat LTO and `codegen-units = 1`, and LLVM is
 consequently doing far more than a reading of the source suggests. **The trap is
-optimising by eye.** `Camera::project` calls `self.bank.sin_cos()` on every
-star, which looks like sixty thousand libm calls a frame and is not one: `bank`
-is fixed for the frame, `sin` is `readnone`, and LICM hoists it — every `sinf`
-in the profile is accounted for by the twinkle alone. Measure first, and measure
-instructions rather than wall clock when the change is small; callgrind resolves
-a percent that a loaded machine's clock cannot.
+optimising by eye.** `Camera::project` used to call `self.bank.sin_cos()` on
+every star, which looked like sixty thousand libm calls a frame and was not one:
+`bank` was fixed for the frame, `sin` is `readnone`, and LICM hoisted it —
+every `sinf` in the profile was accounted for by the twinkle alone, and taking
+the
+lean out of the projection for quite unrelated reasons cost the sweep nothing
+measurable. Measure first, and measure instructions rather than wall clock when
+the change is small; callgrind resolves a percent that a loaded machine's clock
+cannot.
 
 The following were each prototyped and measured, and none of them earned its
 place:
@@ -531,34 +538,53 @@ take the sky with it or the control is a barrel roll wearing new keys —
 picks the case that makes it sharp, lifting the camera at zero azimuth, where
 the *flow direction* does not change at all.
 
-**The cockpit's three rates are flown in the camera's *banked* frame, which is
-why `StarField::update` takes a camera and not just the geometry.** `bank` is
-the lean into a turn and it is applied to the *picture*, after the divide in
-`Camera::project` — so it is the pilot's own up and right, not the camera's. A
-turn flown about the camera's axes underneath a leaning image comes out across
-the frame at exactly the bank angle, and a sky streaming diagonally while the
-stick asks for a flat turn is not read as a lean. It is read as a *climb*,
-because a sky sliding downward is what going up looks like, and `bank` takes its
-sign from the yaw rate — so both A and D lifted the nose, by twenty degrees at
-the stops. The star is rotated into the banked frame, steered there, and rotated
-back out; the pair is switched off rather than reduced to an identity, on
-`cam.bank != 0.0`, and everything the module stores stays in the unbanked space
-the frustum test, the respawn and the projection are written against.
+**`Ship::bank` reaches nothing the cockpit draws, and putting it back is a
+two-commit mistake somebody has already made twice.** The lean into a turn is a
+display affectation: it chases the yaw rate, centres itself, and is kept apart
+from `Ship::roll`, which is the attitude. There is no way to put a yaw-coupled
+angle into the sky's orientation without one of two faults, and both shipped
+before this paragraph was written.
 
-Note what that leaves showing, because it is the reason this is a round trip
-rather than dropping `bank` from the projection outright. A held turn streams
-flat, which is correct — a bank against a sky with no horizon in it is
-invisible except through the flow — but the *change* of bank does not cancel:
-whatever the lean moved between one frame and the next survives as a roll of
-the sky, so
-rolling into a turn and back out of it still reads.
-`a_flat_turn_streams_the_sky_flat_across_the_frame` holds the first half,
-taking the lean off a real `Ship` held in a turn rather than writing the angle
-down, and `the_lean_coming_on_still_turns_the_sky` holds the second. The
-whole-frame mean carries about a degree the middle of the frame does not, and
-it is a fact about where stars are rather than which way they are going:
-`spawn` lays its rectangle out before the lean turns the picture and `escaped`
-reads it after.
+Rotate the *picture* by the lean — after the divide, in `Camera::project` —
+and steer the sky underneath it, and the flow comes out across the frame at
+exactly the bank angle: twenty degrees at the stops. A sky streaming diagonally
+while the stick asks for a flat turn is not read as a lean but as a *climb*,
+because a sky sliding downward is what going up looks like, and the lean's sign
+follows the yaw's, so both A and D lifted the nose.
+
+Steer in the frame the lean has turned the picture to instead, and a held turn
+streams flat — but the step becomes the steering with a roll of however much
+the lean moved in front of it, and rotations do not commute. Working the stick
+round a closed loop leaves a residue about the camera's own `x`, going as the
+*square* of the yaw rate and so the same way round whichever way it went: about
+nine degrees a second of nose-down that nothing brings back. Parked, working
+left and right was enough to fly the sky off the top of the frame. That is
+honest rigid-body kinematics, which is the point — a cosmetic lean has no
+business accumulating into the flight's attitude.
+
+So the sky is steered about the camera's own axes and the picture is not rolled
+at all. `Camera` has no bank; `Camera::project` is a divide and a translation.
+`a_flat_turn_streams_the_sky_flat_across_the_frame` and
+`working_the_stick_leaves_the_sky_where_it_found_it` hold the two halves, the
+second exactly rather than within a tolerance: a yaw turns `x` and `z` and
+leaves `y` alone to the bit, so a probe star on `y = 0` projects to precisely
+`cy` however the stick is worked.
+
+There is a third position and it is worth knowing before anyone re-derives the
+second. The angle shown at projection does not have to *be* `bank`: a
+high-passed one washes out to zero in a held turn, which streams flat, while the
+path stays unconjugated, which closes exactly. That keeps a visible roll into
+and out of a turn at the cost of a tilt during the transient. It was not taken:
+the lean is a fact about the hull, and `models::attitude` poses it by
+`roll + bank`, which is the one place a lean can be seen without also being
+flown.
+
+Note what the removal settled on the way past. `spawn` lays its rectangle out in
+unrotated camera space while `escaped` tested the *rotated* projection against
+the same rectangle, so past about eleven degrees of lean on an 80x24 terminal
+the screen corners fell outside the seeded region and stopped being refilled
+from the far plane. The two are in the same space again and the question does
+not arise.
 
 The band therefore has five fast paths that are switched **off** rather than
 reduced to identities, and all five are exact at `Orbit::LEVEL`. The pool is

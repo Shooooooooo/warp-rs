@@ -371,12 +371,18 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
     // kind and the one that went unnoticed longest. The four `--engage` flights
     // fly with nobody at the controls, and `--demo` spends its opening six
     // seconds on the throttle alone — so for seven flights the cockpit's whole
-    // steering path went unpinned, the lean into a turn with it. Asked by
-    // running each case's own autopilot over its own frame count and timestep,
-    // rather than by reading the flags, because what makes a flight steer is
-    // whether it lasts long enough to reach the weave. The ship is stepped once
-    // a frame where the renderer steps it at `SIM_STEP`, which is not the same
-    // flight and does not need to be: the question is zero against not zero.
+    // steering path went unpinned. Asked by running each case's own autopilot
+    // over its own frame count and timestep, rather than by reading the flags,
+    // because what makes a flight steer is whether it lasts long enough to
+    // reach the weave. The ship is stepped once a frame where the renderer
+    // steps it at `SIM_STEP`, which is not the same flight and does not need to
+    // be: the question is zero against not zero.
+    //
+    // Asked of the yaw rate alone. It was `yaw_rate != 0.0 && bank != 0.0` for
+    // one commit, which read as tighter and was not: the lean is a fact about
+    // the hull now and reaches nothing the cockpit draws, so pinning the
+    // reference's steering coverage to it would have been pinning it to
+    // something no cockpit frame can see.
     let steered = CASES.iter().any(|(_, case)| {
         let args = reference_args(case);
         if args.demo.is_none() {
@@ -388,7 +394,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         (0..args.frames).any(|frame| {
             autopilot.update(&mut ship, frame as f64 * dt);
             ship.update(dt as f32);
-            ship.yaw_rate != 0.0 && ship.bank != 0.0
+            ship.yaw_rate != 0.0
         })
     });
     assert!(steered, "no reference flight ever touches the stick");
