@@ -117,6 +117,19 @@ pub struct Flight {
     /// neither can grow however long a key is leaned on.
     orbit: Orbit,
     orbit_target: Orbit,
+    /// Whether a hand has been put on the camera since the flight opened.
+    ///
+    /// Only [`Flight::fly_itself`] reads it, and it reads it to stand off: an
+    /// autopilot writing the orbit target every frame would leave the camera
+    /// keys pressing against something that overwrote them before the next
+    /// draw, and a control that swallows a press and gives nothing back is
+    /// exactly what the split in `handle_key` exists to avoid. `R` clears it,
+    /// so the autopilot can be handed the camera back. The ship stays on
+    /// autopilot either way — `--demo` still flies itself and still stops.
+    ///
+    /// It cannot reach a reference frame: headless and snapshot flights take no
+    /// input at all, so nothing there ever sets it.
+    hands_on: bool,
     /// Kept so a field built later gets the sky the seed asked for.
     seed: u64,
     /// Wall time since launch, in seconds. `f64` because it only ever grows and
@@ -155,6 +168,7 @@ impl Flight {
             zoom_target: view::ZOOM_DEFAULT,
             orbit: args.orbit,
             orbit_target: args.orbit,
+            hands_on: false,
             seed,
             time: 0.0,
             accumulator: 0.0,
@@ -204,6 +218,7 @@ impl Flight {
             1.0 / view::ZOOM_STEP
         };
         self.zoom_target = (self.zoom_target * step).clamp(view::ZOOM_MIN, view::ZOOM_MAX);
+        self.hands_on = true;
     }
 
     /// Back to the framing the flight opened on. Snapped rather than eased,
@@ -240,6 +255,7 @@ impl Flight {
             roll: self.orbit_target.roll + roll * view::ORBIT_STEP,
         }
         .held();
+        self.hands_on = true;
     }
 
     /// Back to the shot the flight opened on, snapped rather than eased, for
@@ -252,6 +268,40 @@ impl Flight {
     pub fn reset_orbit(&mut self, orbit: Orbit) {
         self.orbit = orbit.held();
         self.orbit_target = self.orbit;
+        // And the autopilot has the camera again. `R` is the key for putting
+        // the view back, and on an unattended flight the view it goes back to
+        // is the one that was flying itself.
+        self.hands_on = false;
+    }
+
+    /// Fly a frame with nobody at the controls: the ship, and the camera that
+    /// is watching it.
+    ///
+    /// Both `--demo` and `--screensaver` come through here, and the camera half
+    /// is the reason it exists. `Autopilot` knows nothing about a `Flight` —
+    /// it flies a `Ship` and answers where a camera should be, and the joining
+    /// up happens here, where the targets it writes are the same ones a key
+    /// writes and the same ease in [`Flight::advance`] smooths both.
+    ///
+    /// The swing is *added* to what `--orbit` asked for rather than replacing
+    /// it, so the flag still parks the shot and the autopilot walks out from
+    /// there. Both views are driven, not just the one that can see it: the
+    /// cockpit reads neither the orbit nor the zoom, so it costs nothing there
+    /// and means cycling out to the camera mid-flight lands on a live shot
+    /// rather than one that has been parked since launch.
+    pub fn fly_itself(&mut self, args: &Args, elapsed: f64, dt: f32) {
+        self.autopilot.update(&mut self.ship, elapsed, dt);
+        if self.hands_on {
+            return;
+        }
+        let (swing, zoom) = self.autopilot.camera(elapsed);
+        self.orbit_target = Orbit {
+            azimuth: args.orbit.azimuth + swing.azimuth,
+            elevation: args.orbit.elevation + swing.elevation,
+            roll: args.orbit.roll + swing.roll,
+        }
+        .held();
+        self.zoom_target = (view::ZOOM_DEFAULT * zoom).clamp(view::ZOOM_MIN, view::ZOOM_MAX);
     }
 
     fn set_view(&mut self, view: ViewMode, args: &Args) {
@@ -336,10 +386,12 @@ impl Flight {
             // that only settled while it was being looked at would arrive
             // mid-move on the frame the camera came back.
             //
-            // When there is nothing to catch up with — every headless and
-            // snapshot flight, which take no input at all — the difference is
-            // exactly zero and so is the whole term, so this cannot move a
-            // reference frame by an ulp.
+            // When there is nothing to catch up with the difference is exactly
+            // zero and so is the whole term, so this cannot move a reference
+            // frame by an ulp. That covers the four flights in the reference
+            // that carry no autopilot — it stopped covering the rest of them
+            // when the autopilot started flying the camera, which is what
+            // `drift.txt` is recorded to watch.
             self.zoom +=
                 (self.zoom_target - self.zoom) * (1.0 - (-view::ZOOM_EASE * SIM_STEP).exp());
             // And the same for the orbit, with one difference: all three of its
@@ -350,7 +402,8 @@ impl Flight {
             // until the elevation stopped being clamped.
             //
             // `wrap_signed` of an exact zero is an exact zero, so a flight
-            // nobody is swinging the camera on still adds nothing at all here.
+            // whose camera is neither being flown by a hand nor by the
+            // autopilot still adds nothing at all here.
             let ease = 1.0 - (-view::ORBIT_EASE * SIM_STEP).exp();
             let chase = |from: f32, to: f32| from + wrap_signed(to - from) * ease;
             self.orbit = Orbit {
@@ -714,14 +767,31 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                 break 'flying;
             }
         }
-        if args.demo.is_some() || args.screensaver {
-            flight.autopilot.update(&mut flight.ship, elapsed);
-        }
-
+        // Measured before the autopilot rather than after it: the stick is
+        // impulse-driven, so what the autopilot asks of it has to be scaled by
+        // the frame it is asking over or the weave comes out proportional to
+        // the frame rate — and the rate this loop actually runs at is not
+        // `--fps`, which is only a cap and is abandoned outright while
+        // something is being typed.
         let dt = (frame_start - last).as_secs_f32().clamp(0.0, MAX_FRAME_DT);
         last = frame_start;
         // Smoothed so the readout is legible rather than flickering.
         fps += (1.0 / dt.max(1e-4) - fps) * 0.08;
+
+        if args.demo.is_some() || args.screensaver {
+            // Zero while paused, and that is not the same as skipping the call.
+            // The throttle and the camera are closed forms of the clock, so
+            // they are unaffected either way and a paused `--demo` goes on
+            // flying itself exactly as it always has. The stick is the one
+            // thing here that is not: it is an impulse against a damper, and
+            // the damper lives in `advance`, which a pause stops. So a pause
+            // that did not stop the impulse would ratchet the rate with
+            // nothing bleeding it off — eleven seconds of `P` pinned the yaw
+            // at `MAX_YAW_RATE`, held the hull at its full lean, drove
+            // `models::drive_behind_hull` to a hard one, and snapped the ship
+            // into a turn on the way out.
+            flight.fly_itself(args, elapsed, if paused { 0.0 } else { dt });
+        }
 
         if !paused {
             flight.advance(dt);
@@ -820,9 +890,7 @@ pub fn render_headless(args: &Args, out: &mut impl Write) -> io::Result<()> {
 
     for frame in 0..args.frames {
         if args.demo.is_some() {
-            flight
-                .autopilot
-                .update(&mut flight.ship, frame as f64 * dt as f64);
+            flight.fly_itself(args, frame as f64 * dt as f64, dt);
         }
         flight.advance(dt);
         flight.draw(args.fps as f32, false, true);
@@ -847,9 +915,7 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
 
     for frame in 0..args.warmup {
         if args.demo.is_some() {
-            flight
-                .autopilot
-                .update(&mut flight.ship, frame as f64 * dt as f64);
+            flight.fly_itself(args, frame as f64 * dt as f64, dt);
         }
         flight.advance(dt);
     }
@@ -1726,7 +1792,7 @@ mod tests {
             let mut peak: f32 = 0.0;
             let start = cycle as f64 * Autopilot::CYCLE;
             for frame in 0..(Autopilot::CYCLE / dt as f64) as usize {
-                autopilot.update(&mut ship, start + frame as f64 * dt as f64);
+                autopilot.update(&mut ship, start + frame as f64 * dt as f64, dt);
                 ship.update(dt);
                 peak = peak.max(ship.velocity_c());
             }
@@ -2187,6 +2253,107 @@ mod tests {
     }
 
     #[test]
+    fn an_unattended_flight_swings_the_camera_and_a_flown_one_does_not() {
+        // The gap the autopilot's camera closes, and the line it must not
+        // cross. A flight nobody is at flies its own camera; a flight somebody
+        // is at is left exactly where `--orbit` parked it, to the bit, however
+        // long it runs.
+        let args = args_for(&["--view", "side", "--stars", "40", "--size", "60x20"]);
+        let mut flown = Flight::new(&args, 60, 20);
+        for frame in 0..600 {
+            flown.advance(1.0 / 60.0);
+            let _ = frame;
+        }
+        assert_eq!(
+            flown.orbit_target(),
+            args.orbit,
+            "a flight nobody asked to fly itself moved its own camera"
+        );
+
+        let mut unattended = Flight::new(&args, 60, 20);
+        for frame in 0..600 {
+            unattended.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+            unattended.advance(1.0 / 60.0);
+        }
+        assert!(
+            !unattended.orbit_target().is_level(),
+            "ten seconds of autopilot left the camera on the beam"
+        );
+        assert!(
+            !unattended.orbit().is_level(),
+            "the camera was asked to swing and never eased there"
+        );
+    }
+
+    #[test]
+    fn a_paused_demo_does_not_wind_the_stick_up() {
+        // `P` gates `advance` and not the autopilot, which is deliberate and
+        // documented — a paused demo goes on flying itself and repainting. But
+        // `advance` is where the steering damper lives, so an autopilot that
+        // went on working the stick through a pause was pushing against
+        // nothing: at any frame rate, eleven seconds of `P` walked the yaw all
+        // the way to `MAX_YAW_RATE`, and letting go snapped the ship into a
+        // turn it took a second and a half to come out of.
+        //
+        // The throttle and the camera are closed forms of the clock, so they
+        // are unaffected and the paragraph about `P` stays true of them.
+        let args = args_for(&["--demo", "--stars", "40", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        for frame in 0..(30 * 60) {
+            // Exactly what the loop does while `paused` is set: wall clock goes
+            // on, the step handed to the stick does not, and nothing advances.
+            flight.fly_itself(&args, frame as f64 / 60.0, 0.0);
+        }
+        assert!(
+            flight.ship.yaw_rate.abs() < 0.01 && flight.ship.pitch_rate.abs() < 0.01,
+            "thirty seconds of pause wound the stick to {} yaw and {} pitch",
+            flight.ship.yaw_rate,
+            flight.ship.pitch_rate
+        );
+        // And it was still flying itself the whole time.
+        assert!(
+            flight.ship.warp_engaged,
+            "a paused demo stopped running its autopilot"
+        );
+    }
+
+    #[test]
+    fn a_hand_on_the_camera_takes_it_off_the_autopilot() {
+        // A control that swallows a press and gives nothing back is worse than
+        // one plainly not connected, so the autopilot stands off the moment
+        // somebody swings the camera themselves — and `R`, which is the key for
+        // putting the view back, hands it over again.
+        let args = args_for(&[
+            "--demo", "--view", "side", "--stars", "40", "--size", "60x20",
+        ]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+
+        handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
+        let asked = flight.orbit_target();
+        for frame in 0..120 {
+            flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+        }
+        assert_eq!(
+            flight.orbit_target(),
+            asked,
+            "the autopilot overwrote a camera somebody had hold of"
+        );
+        // The ship is still flying itself — only the camera was handed over.
+        assert!(flight.ship.throttle > 0.15, "the demo stopped flying");
+
+        handle_key(press(KeyCode::Char('r')), &mut flight, &args, &mut paused);
+        for frame in 120..360 {
+            flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+        }
+        assert_ne!(
+            flight.orbit_target(),
+            asked,
+            "`R` did not give the camera back to the autopilot"
+        );
+    }
+
+    #[test]
     fn a_camera_notch_and_its_opposite_land_back_where_they_started() {
         // Stronger than the zoom's version of this, and worth stating because
         // it is why the step is additive: `x + s - s` is exactly `x` where a
@@ -2351,9 +2518,8 @@ mod tests {
             "--seed", "3", "--stars", "800", "--size", "60x20", "--engage",
         ]);
         let mut flight = Flight::new(&args, 60, 20);
-        let mut autopilot = Autopilot::default();
         for frame in 0..3000 {
-            autopilot.update(&mut flight.ship, frame as f64 / 60.0);
+            flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
             flight.advance(1.0 / 60.0);
         }
         flight.draw(60.0, false, true);

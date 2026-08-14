@@ -55,6 +55,49 @@ fn a_flight_needs_nothing_but_the_library() {
 }
 
 #[test]
+fn a_flight_can_be_left_to_fly_itself() {
+    // The autopilot reached the way another program would have to reach it.
+    // `Flight::fly_itself` is what `--demo` and `--screensaver` are made of, and
+    // it flies the camera as well as the ship — so a program that wanted a
+    // screensaver of its own needs nothing here but this and `advance`.
+    let args = Args::try_parse_from([
+        "warp",
+        "--color",
+        "truecolor",
+        "--demo",
+        "--view",
+        "side",
+        "--seed",
+        "5",
+        "--stars",
+        "300",
+    ])
+    .expect("arguments should parse");
+    let mut flight = Flight::new(&args, 60, 20);
+    let opened = flight.orbit_target();
+
+    let mut out = Vec::new();
+    for frame in 0..600 {
+        flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+        flight.advance(1.0 / 60.0);
+        flight.draw(60.0, false, true);
+        flight
+            .present_plain(&mut out)
+            .expect("writing to a Vec cannot fail");
+    }
+
+    assert!(!out.is_empty(), "ten seconds of autopilot drew nothing");
+    assert_ne!(
+        flight.orbit_target(),
+        opened,
+        "the autopilot never moved the camera it was given"
+    );
+    // And it really flew: ten seconds is past the run-up, so the drive is lit.
+    let glyphs = String::from_utf8_lossy(&out);
+    assert!(glyphs.contains("WARP"), "the panel never showed the drive");
+}
+
+#[test]
 fn the_seed_is_the_whole_of_the_state() {
     let a = fly(&["--seed", "5", "--stars", "600"], 60, 20, 20);
     let b = fly(&["--seed", "5", "--stars", "600"], 60, 20, 20);

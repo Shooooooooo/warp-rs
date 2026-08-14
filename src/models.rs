@@ -2490,28 +2490,40 @@ mod tests {
         // The second scale, and the load-bearing one. The autopilot weaves, so
         // the hull's own lean carries the track across square every few seconds
         // whether or not anything has touched the camera — and a swap that fired
-        // on that would blink the drive on and off in a screensaver parked on
-        // the beam. Before the ramp went in it did: 137 of 255 on a subpixel,
-        // thirty of them at once.
+        // on that would blink the drive on and off. Before the ramp went in it
+        // did: 137 of 255 on a subpixel, thirty of them at once.
         //
         // Asked through the real function at the shot the flight opens on,
         // rather than of the yaw rate, because what has to stay small is what
-        // the renderer reads.
+        // the renderer reads. Abeam and nowhere else, and that is still the
+        // question even though the autopilot now walks the camera round: off
+        // the beam the swap fires because the camera has moved, which is what
+        // it is for. Here it can only fire because the ship leaned.
+        //
+        // Asked at three frame rates, which is new and is the point. This used
+        // to be a fact about 1/60: the weave was an impulse a frame against a
+        // decay a second, so its amplitude went with the frame rate and the
+        // lean at 500 fps — a stuck key, or a pasted burst, both of which the
+        // interactive loop runs the frame cap off for — was eight times this
+        // one and would have failed outright.
         use crate::autopilot::Autopilot;
-        let dt = 1.0 / 60.0;
-        let mut ship = Ship::new();
-        let mut autopilot = Autopilot::default();
-        let mut worst = 0.0f32;
-        for frame in 0..(2.0 * Autopilot::CYCLE / dt as f64) as usize {
-            autopilot.update(&mut ship, frame as f64 * dt as f64);
-            ship.update(dt);
-            worst = worst.max(drive_behind_hull(attitude(&ship), &abeam()));
+        for fps in [10.0f32, 60.0, 500.0] {
+            let dt = 1.0 / fps;
+            let mut ship = Ship::new();
+            let mut autopilot = Autopilot::default();
+            let mut worst = 0.0f32;
+            for frame in 0..(2.0 * Autopilot::CYCLE * fps as f64) as usize {
+                autopilot.update(&mut ship, frame as f64 * dt as f64, dt);
+                ship.update(dt);
+                worst = worst.max(drive_behind_hull(attitude(&ship), &abeam()));
+            }
+            assert!(
+                worst < 0.25,
+                "at {fps} frames a second the autopilot's weave carries the \
+                 drive {worst} of the way across the swap, which is close \
+                 enough to the far side to read as a blink"
+            );
         }
-        assert!(
-            worst < 0.25,
-            "the autopilot's weave carries the drive {worst} of the way across \
-             the swap, which is close enough to the far side to read as a blink"
-        );
     }
 
     #[test]

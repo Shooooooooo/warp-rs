@@ -11,7 +11,7 @@
 # drifted it; the `headless` CI job produces the same files from a release
 # binary and runs `sha256sum -c` over this, which also proves the two agree.
 #
-# Eight flights, sharing
+# Nine flights, sharing
 #
 #     --headless --frames 120 --seed 1 --size 120x36
 #
@@ -25,9 +25,38 @@
 #     orbit.txt       the same, --orbit 55,35,20
 #     astern.txt      the same, --orbit -75,6,20
 #     steer.txt       --demo --fps 10 --color truecolor
+#     drift.txt       the same, --view side --orbit -20,0,0
 #
-# `steer.txt` is the newest and it closes the widest hole the others left: not
-# one of the seven before it ever put a hand on the stick. The four `--engage`
+# `drift.txt` is the newest, and it is `steer.txt`'s hole seen from outside. The
+# autopilot flies the camera as well as the ship — before it did, a screensaver
+# on the outside view was very nearly a still life — and not one of the eight
+# flights before this could have said anything about it: the four `--engage`
+# ones carry no autopilot at all, and the four `--demo` ones watch from the
+# cockpit, which reads neither the orbit nor the zoom. So the camera could have
+# been swung anywhere on an unattended flight with every hash here standing.
+#
+# It shares every flag with `steer.txt` but the view, which makes the pair the
+# same twelve seconds of flight watched from inside and from outside — the
+# relationship `truecolor.txt` and `ansi256.txt` have, applied to a camera
+# instead of to a colour mode. A change that moves both has landed in the
+# autopilot; a change that moves one has landed in a view. Six of those seconds
+# are sublight and six are at warp, so the cheap exterior path and the bent
+# streaks are both in it, and the hull, the drive and the bubble are all lit for
+# the second half.
+#
+# Parked aft of the beam rather than on it, and both halves of that matter. The
+# swing is *added* to where `--orbit` put the camera, so a flight that opened
+# where the flag asked and then flew off on its own would be indistinguishable
+# from one that ignored the flag entirely if the flag said zero. And starting
+# aft means the camera **crosses** the beam, at frame 76, with the drive lit
+# since frame 60: the ship's own vanishing point stops existing partway through
+# the flight, and the band the drive swaps sides over is traversed as a ramp
+# rather than sat on one side of. `orbit.txt` sits at a fixed 55 degrees and
+# `astern.txt` at a fixed -75; neither of them ever crosses. Elevation and roll
+# are parked at exactly zero, so anything off level here is the autopilot's own.
+#
+# `steer.txt` closed the widest hole the seven before it left: not
+# one of them ever put a hand on the stick. The four `--engage`
 # flights carry no autopilot, and the three `--demo` ones stop four seconds
 # short of the weave, because that cycle spends its opening six seconds easing
 # the throttle up and 120 frames at 60 fps is two of them. So the cockpit's
@@ -49,7 +78,7 @@
 # bubble's outline off the horizontal, and it puts the star band's depth travel,
 # its vertical fold and its wall recycle on the path as well.
 #
-# `astern.txt` is the newest and it is here because the six above it all watch
+# `astern.txt` is here because the six recorded before it all watch
 # the ship from abeam or from in front of it. The camera goes all the way round;
 # the point the ship's own *track* vanishes at is on the screen from behind and
 # from nowhere else. So half the range of a control had no reference at all, and
@@ -92,7 +121,7 @@
 # terminal with a `TERM` entry and no `COLORTERM`, which was most of them.
 # Detection is gone and `--color` opens at truecolor now, so nothing is handed
 # this mode; it is asked for. That makes this file the only guard left on
-# `quantize_256` and the palette-index path, since the other six flights are
+# `quantize_256` and the palette-index path, since every other flight here is
 # truecolor or ascii and would not notice either of them repainted.
 #
 # Regenerate deliberately, with the diff in hand to say what moved:
@@ -107,9 +136,37 @@
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
 #     ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
-#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt \
+#     ./target/release/warp $common --demo --fps 10 --view side --orbit -20,0,0 --color truecolor > drift.txt
+#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt drift.txt \
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
+#
+#
+# Four moved and four did not, and `drift.txt` arrived, when the autopilot was
+# rewritten to fly the same flight at any frame rate, to keep a hand on the
+# stick the whole cycle, and to fly the camera as well as the ship.
+#
+# The four that moved are the four that carry an autopilot at all, and that is
+# the whole of the shape: `render_headless` gates it on `args.demo.is_some()`,
+# so `warp.txt`, `side.txt`, `orbit.txt` and `astern.txt` are bit for bit what
+# they were. Two things moved the other four. The weave used to sit inside the
+# warp leg of the cycle, which left the run-up, the drop-out and the coast —
+# twenty of the forty-six seconds — with every rate decaying to nothing and the
+# sky perfectly still; it runs the whole cycle now, which is what reaches the
+# three flights that never leave the opening ramp. And the weave was an impulse
+# a *frame* against a decay a *second*, so its amplitude went with the frame
+# rate: forty seconds of it swept a sixth of its 60 fps arc at ten frames a
+# second and eight and a third times it at five hundred, and `steer.txt` flies
+# at ten. Scaled by the frame it sweeps 36.75 degrees of arc at every rate from
+# ten to five hundred, agreeing to five significant figures. The gains are sixty
+# times the per-frame ones they replace, so the flight at 60 fps is the flight
+# that was there before — which is why the three cockpit `--demo` hashes moved
+# for the phases the weave reached rather than for its width.
+#
+# The peak throttle a cycle climbs to now wanders between 0.78 and full, so
+# consecutive cycles run warp 7.3 to warp 9.8 rather than the same pass over
+# again. It cannot reach these hashes: the wave has a period of 71 seconds and
+# no flight here is longer than twelve.
 #
 #
 # `steer.txt` moved on its own when the lean came out of the cockpit picture,
@@ -456,11 +513,12 @@
 # turns a one-ulp difference into a different sky. So this is checked on
 # ubuntu-latest only, and a runner image moving to a new glibc may need it
 # regenerated once.
-ce12297f85f145f84212b4c73c9e557dbfa58aecc3ea5d9c19a71faf1e7b9b01  truecolor.txt
-9a78bbd3695bd0247e6f93f10181da8b704f3219d6e810501b093d534e42d1aa  ascii.txt
-5c17fa2725b66d20fc698752b331eea0d34bd13d373681cf41a606d6bc33195d  ansi256.txt
+9dd6f1906fb0176fa5be711107598a87543f78eeb418e60d435e9a3fc3e4800c  truecolor.txt
+2befe4ec8c1dcc9e7fbf042feaee4416e92ebddf9c7badadcbc5e27a8a1f1161  ascii.txt
+b6613a154e98755a04ee772dc96320920a26764689ed07be1bd40c835d0de340  ansi256.txt
 55b132cff11acac57e83b1425d4e2e7a43fb37d6493e8c009ed00f4a44f74a90  warp.txt
 ecb631ff6cef9044f4ee39260344723688d9ffdffb45ed02e2960ee22c0239e7  side.txt
 270fbc71ac18b3836bbb76d5275e93c68df3a8ce4c9412fa8972b9836ba35b63  orbit.txt
 b2acbe080940ece38fca6e736d44605d006ca1672079595e9c24d2b1b7c3c1c9  astern.txt
-e44d7f112932bb33cc89e67ddc70ddc05ba975367c22362ab4a9eff413d55709  steer.txt
+ec59677a60ec43e12e8b8f82cb446897a409fb9f085c1ca6e411ea194e5610a7  steer.txt
+f425f93f4d92ca490f16309cfb21d9d7f3072b8c0221a25010f64ac80e56ddd5  drift.txt
