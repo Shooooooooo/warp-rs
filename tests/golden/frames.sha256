@@ -11,7 +11,7 @@
 # drifted it; the `headless` CI job produces the same files from a release
 # binary and runs `sha256sum -c` over this, which also proves the two agree.
 #
-# Seven flights, sharing
+# Eight flights, sharing
 #
 #     --headless --frames 120 --seed 1 --size 120x36
 #
@@ -24,6 +24,21 @@
 #     side.txt        --engage --throttle 1.0 --view side --color truecolor
 #     orbit.txt       the same, --orbit 55,35,20
 #     astern.txt      the same, --orbit -75,6,20
+#     steer.txt       --demo --fps 10 --color truecolor
+#
+# `steer.txt` is the newest and it closes the widest hole the others left: not
+# one of the seven before it ever put a hand on the stick. The four `--engage`
+# flights carry no autopilot, and the three `--demo` ones stop four seconds
+# short of the weave, because that cycle spends its opening six seconds easing
+# the throttle up and 120 frames at 60 fps is two of them. So the cockpit's
+# whole steering path — yaw, pitch, the lean they come with, and the branch that
+# swings a star out of the frame and back in the far side — sat outside this
+# file, and a change that repainted every turn ever flown could leave all seven
+# hashes standing. `--fps` in headless *is* the timestep, so at 10 the same 120
+# frames are twelve seconds of flight instead of two, and the last six of them
+# have the stick moving. The lean it reaches is small — the weave asks for a
+# few thousandths of a radian a frame — and it moves 62% of the bytes, which is
+# the reference doing its job rather than the flight being violent.
 #
 # `orbit.txt` is the camera swung off the beam, and it is here for the reason
 # the two before it are: the outside view's whole geometry is written to reduce
@@ -91,10 +106,34 @@
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
-#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt \
+#     ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
+#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt \
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
 #
+#
+# `steer.txt` arrived on its own, with the fix for a turn that lifted the nose,
+# and **not one of the other seven moved for it** — which is the whole reason
+# there is now an eighth. `bank` leans the picture by rotating it after the
+# divide, and `StarField::update` was steering about the camera's own axes
+# underneath that, so a turn laid the flow across the frame at exactly the bank
+# angle: twenty degrees at the stops, measured in the middle of the frame. The
+# lean takes its sign from the yaw rate, so the vertical share came out downward
+# for a turn to port and a turn to starboard alike, and a sky sliding downward
+# is what climbing looks like. Both stick keys lifted the nose. The sky is now
+# rotated into the frame the lean has turned the picture to, steered there, and
+# rotated back — which leaves the *change* of bank showing, so rolling into a
+# turn and out of it still reads and holding one streams flat.
+#
+# No hash could have moved, and that is a hole rather than a vindication: the
+# whole of it is gated on `cam.bank != 0.0`, which every one of the seven holds
+# at an exact zero from the first frame to the last, because none of them ever
+# steers. The guard at the level the fault lives at is
+# `a_flat_turn_streams_the_sky_flat_across_the_frame` in `starfield.rs`, which
+# takes the lean off a real `Ship` held in a turn and holds the flow at the
+# middle of the frame flat to within a twentieth of its own length — it came out
+# at 19.1 degrees before and a hundredth of one after. This file gets the
+# region.
 #
 # `orbit.txt` and `astern.txt` moved when the band stopped taking stars out of
 # the picture. Two faults with one root: it moved stars about to keep its own
@@ -408,3 +447,4 @@ ce12297f85f145f84212b4c73c9e557dbfa58aecc3ea5d9c19a71faf1e7b9b01  truecolor.txt
 ecb631ff6cef9044f4ee39260344723688d9ffdffb45ed02e2960ee22c0239e7  side.txt
 270fbc71ac18b3836bbb76d5275e93c68df3a8ce4c9412fa8972b9836ba35b63  orbit.txt
 b2acbe080940ece38fca6e736d44605d006ca1672079595e9c24d2b1b7c3c1c9  astern.txt
+e70475075ded6d33e2598461893a1e5962d528e9c9e34fd38aeafa3ad65e6ace  steer.txt

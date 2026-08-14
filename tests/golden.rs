@@ -143,20 +143,32 @@ const COMMON: [&str; 7] = [
 /// watching `quantize_256` and the palette-index path under it — every other
 /// flight here is truecolor or ascii and would not notice them repainted.
 ///
-/// `astern.txt` is the newest and it arrived the way `ansi256.txt` did — with
-/// the fix for a fault the other six could not see. Every one of them puts the
-/// camera abeam or forward of it, and the point the *ship's own track*
-/// vanishes at is on the screen only from behind: half the range of a control
-/// that goes all the way round, and the only half where a trail can be
-/// stretched past somewhere it will never reach. Recorded at
-/// `--orbit -75,6,20`, which has all three angles off zero and puts that point
-/// on the canvas clear of the ship — the same two conditions
+/// `astern.txt` arrived the way `ansi256.txt` did — with the fix for a fault
+/// the others could not see. Every one of them puts the camera abeam or forward
+/// of it, and the point the *ship's own track* vanishes at is on the screen only
+/// from behind: half the range of a control that goes all the way round, and the
+/// only half where a trail can be stretched past somewhere it will never reach.
+/// Recorded at `--orbit -75,6,20`, which has all three angles off zero and puts
+/// that point on the canvas clear of the ship — the same two conditions
 /// `models::forward_quarter()` picks its angles for, and for the same reason.
+///
+/// `steer.txt` is the newest, and it closes the widest hole any of them has
+/// left: not one of the seven before it ever put a hand on the stick. The four
+/// `--engage` flights carry no autopilot at all, and the three `--demo` ones
+/// stop four seconds short of the weave, since the opening six seconds of that
+/// cycle are the throttle easing up and 120 frames at 60 fps is two of them. So
+/// the whole cockpit steering path — the yaw, the pitch, the lean they come
+/// with, and the branch that swings a star out of the frame and back in the
+/// other side — was outside the reference, and a change to any of it could
+/// repaint every turn ever flown with all seven hashes standing still. It is
+/// `--demo` again at `--fps 10`, which in headless *is* the timestep, so the
+/// same 120 frames are twelve seconds of flight rather than two and the last
+/// six of them have the stick moving.
 ///
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
 /// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
 /// it to all three, and to `.gitignore`.
-const CASES: [(&str, &[&str]); 7] = [
+const CASES: [(&str, &[&str]); 8] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
     ("ansi256.txt", &["--demo", "--color", "256"]),
@@ -203,6 +215,10 @@ const CASES: [(&str, &[&str]); 7] = [
             "--color",
             "truecolor",
         ],
+    ),
+    (
+        "steer.txt",
+        &["--demo", "--fps", "10", "--color", "truecolor"],
     ),
 ];
 
@@ -350,6 +366,32 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         .iter()
         .any(|(_, case)| reference_args(case).orbit.nose_in_camera()[2] > 0.0);
     assert!(astern, "no reference flight ever gets behind the ship");
+
+    // And some flight has a hand on the stick, which is the third of the same
+    // kind and the one that went unnoticed longest. The four `--engage` flights
+    // fly with nobody at the controls, and `--demo` spends its opening six
+    // seconds on the throttle alone — so for seven flights the cockpit's whole
+    // steering path went unpinned, the lean into a turn with it. Asked by
+    // running each case's own autopilot over its own frame count and timestep,
+    // rather than by reading the flags, because what makes a flight steer is
+    // whether it lasts long enough to reach the weave. The ship is stepped once
+    // a frame where the renderer steps it at `SIM_STEP`, which is not the same
+    // flight and does not need to be: the question is zero against not zero.
+    let steered = CASES.iter().any(|(_, case)| {
+        let args = reference_args(case);
+        if args.demo.is_none() {
+            return false;
+        }
+        let mut ship = warp_rs::ship::Ship::new();
+        let mut autopilot = warp_rs::autopilot::Autopilot::default();
+        let dt = 1.0 / args.fps as f64;
+        (0..args.frames).any(|frame| {
+            autopilot.update(&mut ship, frame as f64 * dt);
+            ship.update(dt as f32);
+            ship.yaw_rate != 0.0 && ship.bank != 0.0
+        })
+    });
+    assert!(steered, "no reference flight ever touches the stick");
 
     // And the warp cases really are at warp rather than nominally engaged: a
     // flight that lit the drive and never spooled up would pin the same

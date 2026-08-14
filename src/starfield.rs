@@ -108,8 +108,14 @@ pub struct Camera {
     pub cy: f32,
     pub focal: f32,
     /// The lean into a turn, applied after projection. The pilot's own roll is
-    /// not here: that turns the stars instead, in `StarField::update`, so that
-    /// it streaks along the arc it swept.
+    /// not here: that turns the stars instead, in [`StarField::update`], so
+    /// that it streaks along the arc it swept.
+    ///
+    /// Being applied to the picture rather than to the sky makes this the
+    /// frame the pilot steers in, which is why [`StarField::update`] reads it
+    /// as well as [`Camera::project`] does. A turn flown about the camera's own
+    /// axes underneath a leaning image comes out across the frame at exactly
+    /// this angle, and that reads as a climb rather than as a lean.
     pub bank: f32,
 }
 
@@ -322,12 +328,38 @@ impl StarField {
     /// axes do: a streak is the segment between a star's old and new positions,
     /// and a camera that rolled underneath a star that had not moved would draw
     /// no arc at all.
+    ///
+    /// All three are flown in the camera's *banked* frame, which is why this
+    /// takes the camera rather than only the geometry — see below.
     pub fn update(&mut self, dt: f32, speed: f32, yaw: f32, pitch: f32, roll: f32, cam: &Camera) {
         let (sy, cy) = (yaw * dt).sin_cos();
         let (sp, cp) = (pitch * dt).sin_cos();
         // Negated: the sky turns the opposite way from the ship, so dropping
         // the starboard wing swings the stars anticlockwise.
         let (sr, cr) = (-roll * dt).sin_cos();
+        // The lean into a turn is a rotation of the *picture*, applied after the
+        // divide in `Camera::project`, so the pilot's own up and right are the
+        // banked ones rather than the camera's. Steering about the camera's axes
+        // while the image is rolled lays the flow across the frame at exactly
+        // the bank angle — twenty degrees at the stops — and a sky that streams
+        // diagonally while the stick is asking for a flat turn is not read as a
+        // lean. It is read as a climb, because a sky sliding downward is what
+        // going up looks like, and `bank` takes its sign from the yaw, so both
+        // A and D lifted the nose. So the star is rotated into the frame the
+        // pilot is looking at, steered there, and rotated back out.
+        //
+        // What that leaves showing is the *change* of bank, which is the half
+        // worth seeing: whatever the lean moved between one frame and the next
+        // survives the round trip as a roll of the sky, so rolling into a turn
+        // and back out of it reads, and holding the turn streams flat.
+        //
+        // Switched off rather than reduced to an identity. It would be one —
+        // `sin_cos` of a zero is an exact zero and one, and the pair of
+        // rotations collapses — but the reference frames should not have to
+        // rest on the system maths library agreeing about that, and a flight
+        // nobody is turning pays nothing.
+        let banked = cam.bank != 0.0;
+        let (sb, cb) = cam.bank.sin_cos();
         let travel = speed * dt;
         let (bound_x, bound_y) = self.bound;
         let focal = self.focal;
@@ -348,6 +380,13 @@ impl StarField {
             // star which has left the frustum can say which way it went.
             let coasted = [x, y, z - travel];
 
+            // Into the frame the lean has turned the picture to.
+            let (x, y) = if banked {
+                (x * cb - y * sb, x * sb + y * cb)
+            } else {
+                (x, y)
+            };
+
             // Yaw about the vertical axis, pitch about the horizontal, roll
             // about the nose. Each is a rotation of camera space, so all three
             // stay relative to the ship: roll ninety degrees and the pitch axis
@@ -356,6 +395,15 @@ impl StarField {
             let (x, z) = (x * cy - z * sy, x * sy + z * cy);
             let (y, z) = (y * cp - z * sp, y * sp + z * cp);
             let (x, y) = (x * cr - y * sr, x * sr + y * cr);
+
+            // And back out of it, so what is stored stays the unbanked camera
+            // space everything else here — the frustum test, the respawn, the
+            // projection — is written against.
+            let (x, y) = if banked {
+                (x * cb + y * sb, y * cb - x * sb)
+            } else {
+                (x, y)
+            };
             star.pos = [x, y, z - travel];
             let pos = star.pos;
 
@@ -729,6 +777,128 @@ mod tests {
             length(&field) > coasting * 2.0,
             "rolling should smear the field: {coasting} then {}",
             length(&field)
+        );
+    }
+
+    #[test]
+    fn a_flat_turn_streams_the_sky_flat_across_the_frame() {
+        // Regression: `bank` leans the picture by rotating it after the divide,
+        // and the sky was steered about the camera's own axes underneath that.
+        // So a turn laid the flow across the frame at the whole bank angle —
+        // twenty degrees at the stops — and the lean takes its sign from the
+        // yaw rate, which put the vertical share downward for a turn to port
+        // and a turn to starboard alike. A sky sliding downward is what going
+        // up looks like, so both stick keys lifted the nose.
+        //
+        // The lean is read off a real `Ship` rather than written down here,
+        // because what has to agree is the pair: the flight model's answer for
+        // how far a held turn leans, against the sky the same turn streams.
+        //
+        // Measured in the middle of the frame, where the expansion the travel
+        // drives is smallest and the turn is nearly all of what is left. The
+        // whole-frame mean carries about a degree of its own, from the corners
+        // where `spawn` lays its rectangle out before the lean turns the
+        // picture and `escaped` reads it after — a fact about where stars are,
+        // not about which way they are going.
+        for dir in [1.0f32, -1.0] {
+            let mut ship = crate::ship::Ship::new();
+            for _ in 0..120 {
+                ship.nudge_yaw(dir);
+                ship.update(1.0 / 60.0);
+            }
+            assert!(ship.bank.abs() > 0.3, "a held turn should lean hard");
+
+            let mut cam = cam();
+            cam.bank = ship.bank;
+            let mut field = StarField::new(4000, 11, &cam);
+            for _ in 0..600 {
+                field.update(1.0 / 60.0, 30.0, 0.0, 0.0, 0.0, &cam);
+            }
+            field.update(1.0 / 60.0, 30.0, ship.yaw_rate, 0.0, 0.0, &cam);
+
+            let (mut dx, mut dy, mut n) = (0.0f32, 0.0f32, 0);
+            for star in &field.stars {
+                // A star that was recycled has had its trail cleared and did
+                // not travel to where it now is, so it says nothing about the
+                // flow. `prev` is exactly this frame's starting point for the
+                // rest of them.
+                let (Some(prev), Some(to)) = (star.prev, cam.project(star.pos)) else {
+                    continue;
+                };
+                if (to.0 - cam.cx).abs() > cam.width * 0.15
+                    || (to.1 - cam.cy).abs() > cam.height * 0.15
+                {
+                    continue;
+                }
+                dx += to.0 - prev.0;
+                dy += to.1 - prev.1;
+                n += 1;
+            }
+            assert!(n > 100, "too few stars in the middle to say anything: {n}");
+            let (dx, dy) = (dx / n as f32, dy / n as f32);
+            assert!(
+                dx.abs() > 0.5 && dx.signum() == -dir,
+                "a turn to {dir} should stream the sky the other way: {dx}"
+            );
+            // A twentieth is under three degrees, against the twenty this used
+            // to lean the flow by and the hundredth of a degree it comes out at.
+            assert!(
+                dy.abs() < dx.abs() * 0.05,
+                "steering at {} with the ship leaning {} streamed the sky \
+                 ({dx}, {dy}) — {:.1} degrees off flat",
+                ship.yaw_rate,
+                ship.bank,
+                dy.atan2(dx.abs()).to_degrees().abs()
+            );
+        }
+    }
+
+    #[test]
+    fn the_lean_coming_on_still_turns_the_sky() {
+        // The other half of the one above, and the reason the fix is a round
+        // trip through the banked frame rather than dropping the lean from the
+        // projection outright. Steering in the frame the lean has turned the
+        // picture to cancels the lean out of a *held* turn — which is right,
+        // since a bank against a sky with no horizon in it is invisible except
+        // through the flow — but what does not cancel is the lean arriving.
+        // Whatever it moved between one frame and the next is left over as a
+        // roll of the sky, so rolling into a turn and out of it is still seen.
+        let mut cam = cam();
+        let mut field = StarField::new(400, 5, &cam);
+        for _ in 0..120 {
+            field.update(1.0 / 60.0, 30.0, 0.0, 0.0, 0.0, &cam);
+        }
+        let before: Vec<_> = field.stars.iter().map(|s| cam.project(s.pos)).collect();
+
+        // A frame of the lean coming on, with the ship holding its course and
+        // its speed, so a roll is the only thing that can have moved anything.
+        let swing = 0.1;
+        cam.bank += swing;
+        field.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0.0, &cam);
+
+        let radius = |p: (f32, f32)| (p.0 - cam.cx).hypot(p.1 - cam.cy);
+        let angle = |p: (f32, f32)| (p.1 - cam.cy).atan2(p.0 - cam.cx);
+        let mut turned = 0;
+        for (star, before) in field.stars.iter().zip(&before) {
+            // A star the swing carried out of the frustum has been put back
+            // somewhere it did not travel to, and one sitting on the vanishing
+            // point has no angle worth taking. Neither says anything here.
+            let (Some(before), Some(after)) = (*before, cam.project(star.pos)) else {
+                continue;
+            };
+            if star.prev.is_none() || radius(before) < 1.0 {
+                continue;
+            }
+            let swept = crate::ship::wrap_signed(angle(after) - angle(before));
+            assert!(
+                (swept - swing).abs() < 1e-3,
+                "the lean swung a star by {swept} rather than {swing}"
+            );
+            turned += 1;
+        }
+        assert!(
+            turned > 300,
+            "hardly any of the sky was looked at: {turned}"
         );
     }
 
