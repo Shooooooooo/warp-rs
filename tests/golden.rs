@@ -176,18 +176,25 @@ const COMMON: [&str; 7] = [
 /// from inside and from outside: a change that moves both has landed in the
 /// autopilot, and one that moves only one has landed in a view.
 ///
-/// It is parked at `--orbit -20,0,0` rather than left on the beam, for two
+/// It is parked at `--orbit -60,0,0` rather than left on the beam, for two
 /// reasons that are both about what a moving camera can ask and a parked one
 /// cannot. The autopilot's swing is *added* to where the flag put it, so a
 /// bubble that opened where `--orbit` asked and then flew off on its own would
 /// look identical to one that ignored the flag if the flag said zero. And
-/// starting aft of the beam means the camera **crosses** it, at frame 76, with
+/// starting aft of the beam means the camera **crosses** it, at frame 72, with
 /// the drive lit since frame 60 — so the ship's own vanishing point stops
 /// existing partway through, and the band the drive swaps sides over is
 /// traversed as a ramp rather than sat on one side of. `orbit.txt` sits at a
 /// fixed 55 degrees and `astern.txt` at a fixed -75; neither ever crosses.
 /// Elevation and roll are parked at exactly zero, so anything off level in
 /// these frames is the autopilot's own doing.
+///
+/// That angle is *derived from* `autopilot::CAMERA_TURN` rather than picked,
+/// and has to be re-derived whenever that moves: it is how far the camera walks
+/// in the seconds before the crossing should land, and the crossing has to land
+/// after the drive lights at frame 60 or the sentence above stops being true of
+/// anything. It was -20 while a turn took 137 seconds. At 43 that same angle
+/// would have crossed at frame 24, with the drive still cold.
 ///
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
 /// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
@@ -253,7 +260,7 @@ const CASES: [(&str, &[&str]); 9] = [
             "--view",
             "side",
             "--orbit",
-            "-20,0,0",
+            "-60,0,0",
             "--color",
             "truecolor",
         ],

@@ -148,7 +148,7 @@ the renderer do: three `--demo` runs in truecolor, ascii and 256, one
 `--engage --throttle 1.0`, one of those from `--view side`, the same again with
 the camera swung off the beam by `--orbit 55,35,20`, one more from *behind*
 the ship at `--orbit -75,6,20`, one more `--demo` at `--fps 10`, and that last
-one again from `--view side --orbit -20,0,0`.
+one again from `--view side --orbit -60,0,0`.
 
 `ansi256.txt` is the odd one and the only case here recorded to be read against
 another rather than against itself. It is `truecolor.txt`'s flight in the other
@@ -212,15 +212,22 @@ autopilot, and the four `--demo` runs watch from the cockpit, which reads
 neither the orbit nor the zoom. It shares every flag with `steer.txt` but the
 view, which makes the pair one flight watched from inside and from outside —
 `ansi256.txt`'s relationship to `truecolor.txt`, applied to a camera instead of
-to a colour mode. It is parked at `--orbit -20,0,0` rather than on the beam for
+to a colour mode. It is parked at `--orbit -60,0,0` rather than on the beam for
 two reasons, and both are about what a *moving* camera can ask: the swing is
 added to where the flag put it, so a flag reading zero could not tell an
 autopilot that honoured it from one that ignored it; and starting aft means the
-camera **crosses** the beam mid-flight, at frame 76 with the drive lit since
+camera **crosses** the beam mid-flight, at frame 72 with the drive lit since
 frame 60, so the ship's own vanishing point stops existing partway through and
 the band the drive swaps sides over is crossed as a ramp rather than sat beside.
 `orbit.txt` sits at a fixed 55 degrees and `astern.txt` at a fixed -75; neither
 ever crosses.
+
+**That angle is derived from `autopilot::CAMERA_TURN`, not chosen**, and it has
+to be re-derived every time the camera's speed moves: it is how far the camera
+walks in the seconds before the crossing should land, and the crossing has to
+land *after* the drive lights at frame 60 or the whole framing says nothing. It
+was `-20,0,0` while a turn took 137 seconds; speeding that up to 43 would have
+put the same angle's crossing at frame 24, with the drive still cold.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -238,7 +245,7 @@ common="--headless --frames 120 --seed 1 --size 120x36"
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
 ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
-./target/release/warp $common --demo --fps 10 --view side --orbit -20,0,0 --color truecolor > drift.txt
+./target/release/warp $common --demo --fps 10 --view side --orbit -60,0,0 --color truecolor > drift.txt
 sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt drift.txt \
     > tests/golden/frames.sha256
 # then put the comment block at the top of that file back

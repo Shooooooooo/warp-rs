@@ -25,7 +25,7 @@
 #     orbit.txt       the same, --orbit 55,35,20
 #     astern.txt      the same, --orbit -75,6,20
 #     steer.txt       --demo --fps 10 --color truecolor
-#     drift.txt       the same, --view side --orbit -20,0,0
+#     drift.txt       the same, --view side --orbit -60,0,0
 #
 # `drift.txt` is the newest, and it is `steer.txt`'s hole seen from outside. The
 # autopilot flies the camera as well as the ship — before it did, a screensaver
@@ -48,12 +48,17 @@
 # swing is *added* to where `--orbit` put the camera, so a flight that opened
 # where the flag asked and then flew off on its own would be indistinguishable
 # from one that ignored the flag entirely if the flag said zero. And starting
-# aft means the camera **crosses** the beam, at frame 76, with the drive lit
+# aft means the camera **crosses** the beam, at frame 72, with the drive lit
 # since frame 60: the ship's own vanishing point stops existing partway through
 # the flight, and the band the drive swaps sides over is traversed as a ramp
 # rather than sat on one side of. `orbit.txt` sits at a fixed 55 degrees and
 # `astern.txt` at a fixed -75; neither of them ever crosses. Elevation and roll
 # are parked at exactly zero, so anything off level here is the autopilot's own.
+#
+# The angle is derived from `autopilot::CAMERA_TURN` and has to be re-derived
+# whenever that moves — it is how far the camera walks in the seconds before the
+# crossing should land, and the crossing has to land after the drive lights at
+# frame 60. It was -60,0,0 at a turn every 43 seconds and -20,0,0 at every 137.
 #
 # `steer.txt` closed the widest hole the seven before it left: not
 # one of them ever put a hand on the stick. The four `--engage`
@@ -136,10 +141,38 @@
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
 #     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
 #     ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
-#     ./target/release/warp $common --demo --fps 10 --view side --orbit -20,0,0 --color truecolor > drift.txt
+#     ./target/release/warp $common --demo --fps 10 --view side --orbit -60,0,0 --color truecolor > drift.txt
 #     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt drift.txt \
 #         > tests/golden/frames.sha256
 #     # and put this comment block back
+#
+#
+# One hash moved and eight did not, when the autopilot's camera was sped up by
+# about three — a turn round the ship every 43 seconds rather than every 137,
+# with the lift and the zoom shortened in proportion so no one axis runs away
+# from the others. The amplitudes are untouched: the camera covers the same
+# ground, sooner. At 2.6 degrees a second the shot did not read as moving at
+# all over the span anyone watches a screensaver for; it got a third of the way
+# round the hull per run to warp, which is only visible if you leave and come
+# back.
+#
+# One hash is the whole shape, and it is the sixth one CLAUDE.md lists: a change
+# to where the camera outside is pointed by nobody moves `drift.txt` and nothing
+# else. `warp.txt`, `side.txt`, `orbit.txt` and `astern.txt` carry no autopilot
+# at all. The other four run one, and their `orbit_target` and `zoom_target`
+# really did take different values every frame of this — but all four watch from
+# the cockpit, which reads neither, so they are bit for bit what they were. That
+# is what says the camera is still confined to the view that can see it.
+#
+# `drift.txt` moved twice over, and both were expected: the camera walks faster,
+# and its start angle was re-derived from the new rate. `--orbit` went from
+# -20,0,0 to -60,0,0 to keep the beam crossing after the drive lights — at the
+# new rate the old angle crossed at frame 24 with the drive still cold, which
+# would have quietly cost the flight the thing it was recorded for. The frame it
+# crosses on moved 76 to 72. Two things about the flight got better on the way:
+# the elevation now rises, peaks and starts back down inside the twelve seconds
+# where it used to only rise, and the zoom reaches its full 1.40 where it used
+# to stop at 1.23. The reference covers more of both axes than it did.
 #
 #
 # Four moved and four did not, and `drift.txt` arrived, when the autopilot was
@@ -521,4 +554,4 @@ ecb631ff6cef9044f4ee39260344723688d9ffdffb45ed02e2960ee22c0239e7  side.txt
 270fbc71ac18b3836bbb76d5275e93c68df3a8ce4c9412fa8972b9836ba35b63  orbit.txt
 b2acbe080940ece38fca6e736d44605d006ca1672079595e9c24d2b1b7c3c1c9  astern.txt
 ec59677a60ec43e12e8b8f82cb446897a409fb9f085c1ca6e411ea194e5610a7  steer.txt
-f425f93f4d92ca490f16309cfb21d9d7f3072b8c0221a25010f64ac80e56ddd5  drift.txt
+e7e0a1ba4acfc7e9d4b58108c947d61fd4486315b60d8e57fa194d1abe712ab5  drift.txt

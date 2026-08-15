@@ -109,10 +109,18 @@ const WEAVE_PERIOD: f64 = 149.0;
 ///
 /// It walks rather than wanders, because the whole subject of the view from
 /// outside is the ship and there is no one angle that is the ship. A turn every
-/// couple of minutes is about two and a half degrees a second — slow enough to
-/// read as a shot rather than as a spin, and fast enough that no two cycles are
-/// watched from the same quarter.
-const CAMERA_TURN: f64 = 137.0;
+/// three quarters of a minute is about eight and a half degrees a second — fast
+/// enough that the shot has plainly moved over the span anyone watches it for,
+/// and still under a twentieth of what a held camera key sweeps, which is what
+/// keeps it a shot rather than a spin.
+///
+/// It was 137 seconds, and that was too slow to read as motion at all: a
+/// screensaver got a third of the way round the hull per run to warp, so the
+/// shot looked parked unless you left it and came back. Deliberately *not* 47,
+/// which would sit one second off the cycle and slip by only eight degrees a
+/// pass — very nearly the same shot every time round, which is the one thing
+/// this whole set of periods is chosen to avoid.
+const CAMERA_TURN: f64 = 43.0;
 
 /// How far the camera lifts over the hull and drops under it, in radians, and
 /// how long that takes.
@@ -120,8 +128,14 @@ const CAMERA_TURN: f64 = 137.0;
 /// It crosses zero rather than sitting off it, so the camera passes *through*
 /// the beam — which is where every exact identity in the view from outside
 /// lives — instead of parking on one side of it.
+///
+/// The period is kept in proportion to [`CAMERA_TURN`] rather than tuned on its
+/// own: all three axes were sped up by about three together, because an orbit
+/// walking briskly against a lift still taking a minute and a half reads as one
+/// axis running away from the others rather than as a camera being flown. The
+/// *amplitude* is untouched — the camera covers the same ground, sooner.
 const CAMERA_LIFT: f32 = 0.55;
-const CAMERA_LIFT_PERIOD: f64 = 89.0;
+const CAMERA_LIFT_PERIOD: f64 = 29.0;
 
 /// How much closer and further off the camera drifts, as a factor either way,
 /// and how long that takes.
@@ -132,7 +146,7 @@ const CAMERA_LIFT_PERIOD: f64 = 89.0;
 /// the zoom is held to — and it is clamped to them anyway, since a constant
 /// that drifts out of range should cost a framing rather than a panic.
 const CAMERA_ZOOM_SWING: f32 = 1.4;
-const CAMERA_ZOOM_PERIOD: f64 = 113.0;
+const CAMERA_ZOOM_PERIOD: f64 = 37.0;
 
 /// A repeating run-up to warp: a long cruise with a lazy weave, then a drop
 /// back to impulse and a coast before the next one — flown a little differently
@@ -146,9 +160,11 @@ impl Autopilot {
     /// Length of one full run-up-and-drop-out cycle, in seconds.
     ///
     /// The skeleton is fixed even though the flight is not. Every wave above
-    /// has a period that shares no factor with it — 71, 89, 113, 137 and 149
-    /// are prime and 46 is 2·23 — so the schedule as a whole comes round on
-    /// their product, which is some twenty thousand years.
+    /// has a period that shares no factor with it — 29, 37, 43, 71 and 149 are
+    /// prime and 46 is 2·23 — so the schedule as a whole comes round on their
+    /// product, which is some seven hundred years. That is down from twenty
+    /// thousand, because speeding the camera up shortened three of the five;
+    /// what the figure has to be is longer than a machine stays up, and it is.
     pub const CYCLE: f64 = 46.0;
 
     /// Fly the ship for one frame.
@@ -260,9 +276,11 @@ fn wave(elapsed: f64, period: f64) -> f32 {
 /// `period` seconds.
 ///
 /// This one has to fold. It is a ramp rather than a wave, so unfolded it would
-/// be half a million radians by the time a screensaver had been up a season —
+/// be over a million radians by the time a screensaver had been up a season —
 /// and as an `f32` at that magnitude consecutive frames round to the same
 /// angle, so a camera that is supposed to be gliding would stutter instead.
+/// Note which way speeding the camera up moved that: a shorter period is *more*
+/// radians a season, not fewer, so the fold matters more than it did.
 fn ramp(elapsed: f64, period: f64) -> f32 {
     ((elapsed % period) * (TAU / period)) as f32
 }
