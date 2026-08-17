@@ -175,6 +175,7 @@ jobs:
           ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
           ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
           ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
+          ./target/release/warp $common --demo --fps 10 --view side --orbit -60,0,0 --color truecolor > drift.txt
           if ! sha256sum -c tests/golden/frames.sha256; then
             echo "::error::the frames no longer match tests/golden/frames.sha256; if that was the point of the change, regenerate it with the recipe in that file"
             exit 1

@@ -165,10 +165,41 @@ const COMMON: [&str; 7] = [
 /// same 120 frames are twelve seconds of flight rather than two and the last
 /// six of them have the stick moving.
 ///
+/// `drift.txt` is the newest, and it is `steer.txt`'s hole seen from outside.
+/// The autopilot flies the camera as well as the ship now — a screensaver on
+/// the outside view used to be very nearly a still life — and not one of the
+/// eight flights before it could have said so: the four `--engage` ones carry
+/// no autopilot, and the four `--demo` ones watch from the cockpit, which reads
+/// neither the orbit nor the zoom. So the camera could have been swung anywhere
+/// at all with every hash standing. It shares every flag with `steer.txt` but
+/// the view, which makes the pair the same twelve seconds of flight watched
+/// from inside and from outside: a change that moves both has landed in the
+/// autopilot, and one that moves only one has landed in a view.
+///
+/// It is parked at `--orbit -60,0,0` rather than left on the beam, for two
+/// reasons that are both about what a moving camera can ask and a parked one
+/// cannot. The autopilot's swing is *added* to where the flag put it, so a
+/// bubble that opened where `--orbit` asked and then flew off on its own would
+/// look identical to one that ignored the flag if the flag said zero. And
+/// starting aft of the beam means the camera **crosses** it, at frame 72, with
+/// the drive lit since frame 60 — so the ship's own vanishing point stops
+/// existing partway through, and the band the drive swaps sides over is
+/// traversed as a ramp rather than sat on one side of. `orbit.txt` sits at a
+/// fixed 55 degrees and `astern.txt` at a fixed -75; neither ever crosses.
+/// Elevation and roll are parked at exactly zero, so anything off level in
+/// these frames is the autopilot's own doing.
+///
+/// That angle is *derived from* `autopilot::CAMERA_TURN` rather than picked,
+/// and has to be re-derived whenever that moves: it is how far the camera walks
+/// in the seconds before the crossing should land, and the crossing has to land
+/// after the drive lights at frame 60 or the sentence above stops being true of
+/// anything. It was -20 while a turn took 137 seconds. At 43 that same angle
+/// would have crossed at frame 24, with the drive still cold.
+///
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
 /// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
 /// it to all three, and to `.gitignore`.
-const CASES: [(&str, &[&str]); 8] = [
+const CASES: [(&str, &[&str]); 9] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
     ("ansi256.txt", &["--demo", "--color", "256"]),
@@ -219,6 +250,20 @@ const CASES: [(&str, &[&str]); 8] = [
     (
         "steer.txt",
         &["--demo", "--fps", "10", "--color", "truecolor"],
+    ),
+    (
+        "drift.txt",
+        &[
+            "--demo",
+            "--fps",
+            "10",
+            "--view",
+            "side",
+            "--orbit",
+            "-60,0,0",
+            "--color",
+            "truecolor",
+        ],
     ),
 ];
 
@@ -392,12 +437,35 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         let mut autopilot = warp_rs::autopilot::Autopilot::default();
         let dt = 1.0 / args.fps as f64;
         (0..args.frames).any(|frame| {
-            autopilot.update(&mut ship, frame as f64 * dt);
+            autopilot.update(&mut ship, frame as f64 * dt, dt as f32);
             ship.update(dt as f32);
             ship.yaw_rate != 0.0
         })
     });
     assert!(steered, "no reference flight ever touches the stick");
+
+    // And some flight has the autopilot on the *camera*, which is the fifth of
+    // the same kind and arrived with the ability. The four `--engage` flights
+    // carry no autopilot, and the four `--demo` flights that watch from the
+    // cockpit read neither the orbit nor the zoom — so an autopilot that swung
+    // the camera anywhere at all could have left every one of those eight
+    // hashes standing. Asked the same way as the stick above, by running the
+    // real path over the case's own frame count and timestep rather than by
+    // reading the flags, and of the parsed view rather than the string.
+    let swung = CASES.iter().any(|(_, case)| {
+        let args = reference_args(case);
+        if args.demo.is_none() || args.view.resolve() != warp_rs::view::ViewMode::Side {
+            return false;
+        }
+        let autopilot = warp_rs::autopilot::Autopilot::default();
+        let dt = 1.0 / args.fps as f64;
+        (0..args.frames)
+            .any(|frame| autopilot.camera(frame as f64 * dt).0 != warp_rs::view::Orbit::LEVEL)
+    });
+    assert!(
+        swung,
+        "no reference flight ever swings the camera on its own"
+    );
 
     // And the warp cases really are at warp rather than nominally engaged: a
     // flight that lit the drive and never spooled up would pin the same

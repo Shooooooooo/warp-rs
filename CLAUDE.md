@@ -59,8 +59,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 288 unit + 7 flight + 3 golden, ~18s
-cargo test --locked --all-features      # 289 unit — adds the snapshot-gated one
+cargo test                              # 300 unit + 8 flight + 3 golden, ~20s
+cargo test --locked --all-features      # 301 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -139,7 +139,7 @@ The in-process half is the reason `render_headless` is public and separate from
 `run_headless`. It costs about four seconds — most of `cargo test`'s wall clock
 after the unit tests — and is **Linux-gated**, for the reason below.
 
-**Eight flights, and the case list lives in three places** — the comment block
+**Nine flights, and the case list lives in three places** — the comment block
 in `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job.
 Adding one means adding it to all three, and `.gitignore` needs the file's name
 too, which is a list that has fallen behind that recipe twice. They share
@@ -147,7 +147,8 @@ too, which is a list that has fallen behind that recipe twice. They share
 the renderer do: three `--demo` runs in truecolor, ascii and 256, one
 `--engage --throttle 1.0`, one of those from `--view side`, the same again with
 the camera swung off the beam by `--orbit 55,35,20`, one more from *behind*
-the ship at `--orbit -75,6,20`, and one more `--demo` at `--fps 10`.
+the ship at `--orbit -75,6,20`, one more `--demo` at `--fps 10`, and that last
+one again from `--view side --orbit -60,0,0`.
 
 `ansi256.txt` is the odd one and the only case here recorded to be read against
 another rather than against itself. It is `truecolor.txt`'s flight in the other
@@ -159,7 +160,7 @@ the terminals it exists for cannot read, and the mode had no reference at all
 until then while being the one detection handed to any terminal with a `TERM`
 entry and no `COLORTERM`. Detection is gone and nothing is handed that mode now
 — which makes this the *only* guard on `quantize_256` and the palette-index
-path, since the other six flights are truecolor or ascii throughout.
+path, since every other flight here is truecolor or ascii throughout.
 
 The last three are not decoration. With only the `--demo` pair, the reference
 covered two seconds of flight that never leaves sublight — `--demo` spends its
@@ -190,18 +191,43 @@ point landing 24 subpixels from the ship and 20 from the nearest edge of a
 120x72 canvas; both were checked by shooting the frame, since a point inside the
 bubble or half off the top asks nothing.
 
-`steer.txt` is the newest, and the hole it closes is the widest any of them
-left: for seven flights **nothing here ever put a hand on the stick**. The four
-`--engage` runs carry no autopilot, and the three `--demo` runs stop four
-seconds short of the weave — that cycle spends its opening six seconds on the
-throttle alone, and 120 frames at 60 fps is two of them. So the cockpit's whole
-steering path was unpinned: yaw, pitch, and the `swung_out` branch that carries
-a star off one edge and back in the other. The case is
-`--demo` again at `--fps 10`, which in headless *is* the timestep — the same
-120 frames become twelve seconds of flight and the last six of them steer. Note
-what that makes it: the only flight here that turns at all, and so the only
-guard on anything the stick reaches. It has already earned that twice, moving
+`steer.txt` closed the widest hole any of the seven before it left: **nothing
+here had ever put a hand on the stick**. The four `--engage` runs carry no
+autopilot, and the three `--demo` runs stopped four seconds short of the weave —
+that cycle spent its opening six seconds on the throttle alone, and 120 frames
+at 60 fps is two of them. So the cockpit's whole steering path was unpinned:
+yaw, pitch, and the `swung_out` branch that carries a star off one edge and back
+in the other. The case is `--demo` again at `--fps 10`, which in headless *is*
+the timestep — the same 120 frames become twelve seconds of flight instead of
+two. Note that its old distinction has since gone: the weave used to live in the
+warp leg alone, so this was the only flight that turned at all; it runs the
+whole cycle now, so all four `--demo` flights steer and the split is autopilot
+against no autopilot. It earned its keep three times over on the way, moving
 alone for both of the lean's faults.
+
+`drift.txt` is the newest, and it is `steer.txt`'s hole seen from outside. The
+autopilot flies the *camera* as well as the ship, and not one of the eight
+before it could say a word about that: the four `--engage` runs carry no
+autopilot, and the four `--demo` runs watch from the cockpit, which reads
+neither the orbit nor the zoom. It shares every flag with `steer.txt` but the
+view, which makes the pair one flight watched from inside and from outside —
+`ansi256.txt`'s relationship to `truecolor.txt`, applied to a camera instead of
+to a colour mode. It is parked at `--orbit -60,0,0` rather than on the beam for
+two reasons, and both are about what a *moving* camera can ask: the swing is
+added to where the flag put it, so a flag reading zero could not tell an
+autopilot that honoured it from one that ignored it; and starting aft means the
+camera **crosses** the beam mid-flight, at frame 72 with the drive lit since
+frame 60, so the ship's own vanishing point stops existing partway through and
+the band the drive swaps sides over is crossed as a ramp rather than sat beside.
+`orbit.txt` sits at a fixed 55 degrees and `astern.txt` at a fixed -75; neither
+ever crosses.
+
+**That angle is derived from `autopilot::CAMERA_TURN`, not chosen**, and it has
+to be re-derived every time the camera's speed moves: it is how far the camera
+walks in the seconds before the crossing should land, and the crossing has to
+land *after* the drive lights at frame 60 or the whole framing says nothing. It
+was `-20,0,0` while a turn took 137 seconds; speeding that up to 43 would have
+put the same angle's crossing at frame 24, with the drive still cold.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -219,7 +245,8 @@ common="--headless --frames 120 --seed 1 --size 120x36"
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
 ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
-sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt \
+./target/release/warp $common --demo --fps 10 --view side --orbit -60,0,0 --color truecolor > drift.txt
+sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt drift.txt \
     > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
@@ -255,17 +282,26 @@ change to how a span is measured stayed inside the view it was aimed at. Taking
 `tests/golden/frames.sha256` carries it in full.
 
 And a fifth, which is the cockpit's version of the third: a change to how the
-sky is *steered* moves `steer.txt` and only `steer.txt`, since it is the one
-flight with a hand on the stick and the other seven hold every steering rate at
-an exact zero from the first frame to the last. There are two worked examples
-and they are the same fault arriving and leaving — steering in the frame the
-lean turned the picture to, and then taking the lean out of the picture
-altogether. Each moved that hash and left the other seven bit for bit, including
-the three `--demo` runs it shares every flag but `--fps` with, because those
-stop before the weave starts. The second is the more useful of the two to read:
-it deleted arithmetic from `Camera::project`, which every star and every hull
-vertex in the program goes through, so seven byte-identical hashes are what
-says the deletion really was the identity it looked like.
+sky is *steered* moves the four `--demo` hashes and leaves the four `--engage`
+ones bit for bit, since `render_headless` gates the autopilot on
+`args.demo.is_some()` and those four hold every steering rate at an exact zero
+from the first frame to the last. It used to be sharper than that — `steer.txt`
+alone, because the weave lived in the warp leg and the three 60 fps `--demo`
+runs stopped before it started — and the two worked examples are from then: the
+same fault arriving and leaving, steering in the frame the lean turned the
+picture to and then taking the lean out of the picture altogether. Each moved
+that one hash and left the other seven bit for bit. The second is the more
+useful of the two to read: it deleted arithmetic from `Camera::project`, which
+every star and every hull vertex in the program goes through, so seven
+byte-identical hashes are what says the deletion really was the identity it
+looked like. The weave runs the whole cycle now, so all four carry it.
+
+And a sixth, which is the sharpest of the lot and the one that replaced what the
+fifth used to be: a change to **where the camera outside is pointed by nobody**
+moves `drift.txt` and only `drift.txt`. It is the one flight here whose camera
+moves at all — the other three side-view runs hold `orbit_target - orbit` at an
+exact zero, so `Flight::advance`'s two eases still add nothing to them, and the
+four cockpit flights never read the orbit or the zoom in the first place.
 
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
@@ -318,7 +354,18 @@ goes for anything that changes how many values are drawn per star.
 **The easing form.** Every ease in `src/ship.rs` is `1 - exp(-k·dt)` or
 `exp(-k·dt)`, which is frame-rate independent. Rewriting one as `k * dt` is the
 classic simplification and it silently makes the flight model depend on step
-size. Perf edits are documented with the measurement that justified them —
+size. `src/autopilot.rs` was the tree's one counterexample and is the worked
+example of what that costs: its throttle came down by a fixed step per *frame*
+with no `dt` at all, so the eight-second drop-out shed 1.92 of throttle at
+60 fps and 0.32 at `--fps 10`, where it never reached its floor; and the weave
+was an impulse a frame against a decay a second, so the angle it swept was
+*proportional to the frame rate* over a fiftyfold range. Both are closed forms
+of the clock now. The one control that cannot be — the stick, which is
+impulse-driven because a terminal reports presses and not releases — is scaled
+by `dt`, and the identity that makes that exact is worth knowing: a per-frame
+impulse `a` against a decay `exp(-k·dt)` sweeps exactly `a/k` per frame whatever
+`dt` is, so an impulse proportional to `dt` sweeps a fixed angle per second.
+Perf edits are documented with the measurement that justified them —
 `draw_streak` takes one reciprocal per streak rather than a divide per sample,
 worth about six percent of drawing time at twenty thousand stars — so do not
 undo one without a number saying why. The others on that list are the writer
@@ -371,7 +418,7 @@ whole run. The working set fits. This is instruction-bound, and shrinking
 src/lib.rs        module list and the orientation doc comment
 src/main.rs       parse, fly, report — nothing else
 src/app.rs        the three loops (interactive, headless, snapshot) and Flight
-src/autopilot.rs  the hand on the stick for --demo and --screensaver
+src/autopilot.rs  the hand on the stick and the camera for --demo/--screensaver
 src/cli.rs        every flag, and the bounds each one is held to
 src/view.rs       ViewMode, the outside camera: its orbit, its range, the zoom
 src/ship.rs       flight model: throttle, warp, steering, transients
@@ -459,6 +506,9 @@ panel.
 | size | `resolved_size(args)` | `resolved_size(args)` | `args.size` or `(240, 68)` |
 | terminal | `RawGuard`, alt screen | none | none |
 | `--demo` | deadline **and** autopilot | autopilot only | autopilot only |
+
+The autopilot flies the camera as well as the ship in all three — `Flight::fly_itself`
+lays a swing of its own on top of whatever `--orbit` parked the shot at.
 | output | `Screen::flush` | `write_plain` | `write_png` of `pixels()` |
 
 `--demo 5 --headless` does not stop after five seconds; headless always runs
@@ -474,7 +524,15 @@ changing how it is used moves the golden frames.
 
 Three more asymmetries worth knowing before you touch the loops: `P` gates only
 `advance`, so a paused `--demo` still runs its autopilot, still repaints, and
-still exits at its deadline. In screensaver mode `handle_key` is never reached
+still exits at its deadline. **One thing about that had to be qualified**, and
+the qualification is not a hedge: the step handed to `fly_itself` is zero while
+paused. The throttle and the camera are closed forms of the clock and so are
+unaffected either way, but the stick is an impulse against a damper and the
+damper is in `advance` — so a pause that stopped the damping and not the
+impulse ratcheted the rate with nothing bleeding it off. Eleven seconds of `P`
+pinned the yaw at `MAX_YAW_RATE`, held the hull at its full lean, drove
+`models::drive_behind_hull` to a hard one, and snapped the ship into a turn on
+the way out. In screensaver mode `handle_key` is never reached
 at all — any non-release key breaks the loop, so there are no controls, not even
 pause. And `R` restores what the *command line* asked for rather than any fixed
 number: `args.throttle` rather than `Ship::new()`'s 0.18, and `args.orbit`
@@ -907,6 +965,15 @@ is left running for days and an `f32` accumulator stops advancing after about
 six — freezing the twinkle, the shake and the flame with it.
 `Flight::accumulator` stays `f32` deliberately: it is bounded by one sim step
 and never drifts. Do not "unify" these.
+
+Everything the autopilot reads off that clock is on the same list, and one of
+them needs more than `f64` to survive: the camera's azimuth is a *ramp* rather
+than a wave, so `autopilot::ramp` folds the clock onto one period before working
+the angle out. Unfolded it would be half a million radians by the time a
+screensaver had been up a season, and at that magnitude an `f32` rounds
+consecutive frames to the same angle — a camera meant to be gliding would
+stutter instead. `autopilot::wave` shares the fold, where it is only tidiness,
+because two spellings of one idea is how the two come apart.
 
 The camera's own state is `f32` on the same test, not by omission. The zoom and
 its target are bounded at both ends and are not accumulators. The orbit *is* the
@@ -1389,7 +1456,7 @@ itself is pinned in `defaults_are_sane` beside the frame rate and the star
 count. **Nothing in the tree reads an environment variable** — those two
 `env::var` calls were the only ones, so `grep -rn 'env::var' src/` finding
 anything at all means a door has been reopened. Note what did *not* move: not
-one golden hash, because all seven flights in `tests/golden.rs` pass an
+one golden hash, because every flight in `tests/golden.rs` passes an
 explicit `--color` and none of them ever exercised the default.
 
 **`--color ascii` emits no escape codes beyond cursor moves, and no byte
