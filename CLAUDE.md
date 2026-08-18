@@ -10,11 +10,21 @@ obvious, and how to write changes that read like what is already here.
 ## What this is
 
 `warp-rs` is a terminal starfield renderer: a starship flown at warp, drawn
-with the upper half block `▀` in a character grid. Stars live in a real 3D
-volume, are projected each frame, and are drawn as the segment between where
-they were last frame and where they are now — accumulated into a
-floating-point buffer and tonemapped at the end, so the hyperspace smear falls
-out of the motion rather than being drawn as an effect.
+with the upper half block `▀` in a character grid. Stars live in a world-space
+volume the ship is somewhere *inside*, are projected each frame through
+whichever camera is flying, and are drawn as the segment each one swept over
+the last few seconds of flight — accumulated into a floating-point buffer and
+tonemapped at the end, so the hyperspace smear falls out of the motion rather
+than being drawn as an effect.
+
+The distances are real, which is most of what the sky's behaviour follows from.
+A star is placed by its own photometry — how bright it is against how bright it
+looks — so the nearest are a few light years off and the brightest giants are
+thousands. At impulse that makes the sky *still*: 0.9 c against a star four
+light years away is a hundredth of a subpixel a second, and a full-impulse frame
+differs from a parked one only by the twinkle. At warp, five and a half light
+years a second, the near sky tears past a far one that barely moves, which is
+the depth cue the old three-hundred-unit-deep volume could not have had.
 
 One crate, `warp-rs`, with a binary named `warp`. `src/lib.rs` carries
 everything; `src/main.rs` is sixteen lines of entry point. That split is
@@ -59,8 +69,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 300 unit + 8 flight + 3 golden, ~20s
-cargo test --locked --all-features      # 301 unit — adds the snapshot-gated one
+cargo test                              # 277 unit + 8 flight + 3 golden, ~20s
+cargo test --locked --all-features      # 278 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -74,12 +84,14 @@ committing; they are the two cheapest ways to turn a branch red.
 cargo run --release                     # fly it
 cargo run --release -- --demo           # autopilot, 45s, no keyboard needed
 cargo run --release --example bench     # where a frame's 16.7 ms goes
-cargo run --release --example bench 200 60 20000 side truecolor
+cargo run --release --example bench 200 60 8 side truecolor
 ```
 
 `bench` prints sim / draw / write milliseconds per case against the 60 fps
-budget. Its arguments are `[cols] [rows] [stars] [view] [color]`, and the
-colour mode is a *column* rather than an assumption for the reason
+budget. Its arguments are `[cols] [rows] [magnitude] [view] [color]` — the
+third one is how faint a sky rather than how many stars, since that is what the
+program takes now — and the colour mode is a *column* rather than an assumption
+for the reason
 `tests/flight.rs` pins its own: a sweep that rides the flag's default measures
 something else the day that default moves, and the figures below are compared
 across exactly such changes. It is worth real time — the same case came out at
@@ -104,7 +116,9 @@ The two images on the README's front page are that command with a seed on it,
 and they are written down here because they were not: both recipes lived only
 in the commit messages that shot them, which is how the hero came to advertise
 twice the sky a default run draws for the whole life of the renderer before
-anyone thought to check it.
+anyone thought to check it. Reshoot them whenever the sky changes: they are the
+first thing anybody sees of this program and there is no test that will tell you
+they have gone stale.
 
 ```sh
 common="--engage --throttle 1.0 --warmup 600 --scale 2"
@@ -162,65 +176,32 @@ entry and no `COLORTERM`. Detection is gone and nothing is handed that mode now
 — which makes this the *only* guard on `quantize_256` and the palette-index
 path, since every other flight here is truecolor or ascii throughout.
 
-The last three are not decoration. With only the `--demo` pair, the reference
-covered two seconds of flight that never leaves sublight — `--demo` spends its
-opening six seconds easing the throttle up — so it peaked at a quarter of light
-speed with the drive cold. A deliberate change to `TAIL_BRIGHTNESS` did not move
-the hashes at all, because a sublight streak is shorter than a subpixel and
-takes the branch in `draw_streak` that never reads it. The streak ramp, the
-glare, the flash, the Doppler shift and the entire view from outside — band,
-lens, arcs and hulls — were all outside the reference.
+The last three are not decoration, and what they are *for* has changed under
+them. With only the `--demo` pair, the reference covered two seconds of flight
+that never leaves sublight — `--demo` spends its opening six seconds easing the
+throttle up — so it peaked at a quarter of light speed with the drive cold. A
+deliberate change to `TAIL_BRIGHTNESS` did not move the hashes at all, because a
+sublight streak is shorter than a subpixel and takes the branch in `draw_streak`
+that never reads it. The streak ramp, the glare, the flash, the Doppler shift
+and the entire view from outside were all outside the reference.
 
-The orbit case is there for the same kind of reason one step further in. The
-view from outside is written to reduce *exactly* to the old arithmetic when the
-camera is abeam, which is where `side.txt` has it — so a change that repainted
-every angle except that one would have left the reference untouched.
-`--orbit 55,35,20` has all three angles off zero at once, which is the only
-configuration that turns the bubble's outline off the horizontal and puts the
-star band's depth travel, its vertical fold and its wall recycle on the path
-as well.
+Each of the later cases went in to close a hole of that kind, and most of the
+holes were in the star band's own machinery: the fast paths that reduced to
+identities when the camera was abeam, the sign of the depth travel, the ramp the
+near wall needed, the fold that carried a trail across the edge. **All of that
+is gone**, so those reasons no longer describe anything. Read the spread as a
+grid instead — nine flights over one sky, at both speeds, from five camera
+angles, in three colour modes, with and without a hand on the stick — and
+`tests/golden/frames.sha256` carries the same grid in full.
 
-`astern.txt` is the newest and it closes a hole the other six could not see
-past: every one of them watches from abeam or from in front. The camera goes
-all the way round, and the point the ship's own *track* vanishes at is on the
-screen from behind and from nowhere else — so half the range of a control had no
-reference at all, and it was the half where a trail stretched in screen space
-can be drawn clean through a place the track only ever approaches.
-`--orbit -75,6,20` has all three angles off zero, the nose receding, and that
-point landing 24 subpixels from the ship and 20 from the nearest edge of a
-120x72 canvas; both were checked by shooting the frame, since a point inside the
-bubble or half off the top asks nothing.
-
-`steer.txt` closed the widest hole any of the seven before it left: **nothing
-here had ever put a hand on the stick**. The four `--engage` runs carry no
-autopilot, and the three `--demo` runs stopped four seconds short of the weave —
-that cycle spent its opening six seconds on the throttle alone, and 120 frames
-at 60 fps is two of them. So the cockpit's whole steering path was unpinned:
-yaw, pitch, and the `swung_out` branch that carries a star off one edge and back
-in the other. The case is `--demo` again at `--fps 10`, which in headless *is*
-the timestep — the same 120 frames become twelve seconds of flight instead of
-two. Note that its old distinction has since gone: the weave used to live in the
-warp leg alone, so this was the only flight that turned at all; it runs the
-whole cycle now, so all four `--demo` flights steer and the split is autopilot
-against no autopilot. It earned its keep three times over on the way, moving
-alone for both of the lean's faults.
-
-`drift.txt` is the newest, and it is `steer.txt`'s hole seen from outside. The
-autopilot flies the *camera* as well as the ship, and not one of the eight
-before it could say a word about that: the four `--engage` runs carry no
-autopilot, and the four `--demo` runs watch from the cockpit, which reads
-neither the orbit nor the zoom. It shares every flag with `steer.txt` but the
-view, which makes the pair one flight watched from inside and from outside —
-`ansi256.txt`'s relationship to `truecolor.txt`, applied to a camera instead of
-to a colour mode. It is parked at `--orbit -60,0,0` rather than on the beam for
-two reasons, and both are about what a *moving* camera can ask: the swing is
-added to where the flag put it, so a flag reading zero could not tell an
-autopilot that honoured it from one that ignored it; and starting aft means the
-camera **crosses** the beam mid-flight, at frame 72 with the drive lit since
-frame 60, so the ship's own vanishing point stops existing partway through and
-the band the drive swaps sides over is crossed as a ramp rather than sat beside.
-`orbit.txt` sits at a fixed 55 degrees and `astern.txt` at a fixed -75; neither
-ever crosses.
+Two of the old reasons survive intact and are worth keeping in mind. `side.txt`
+is still the shot with **no vanishing point at all**: `Eye::to_camera` at
+`Orbit::LEVEL` is an exact swizzle, so the hull's axis lies flat in the image
+plane and the engine lance's clamp cannot move that frame. And `drift.txt` is
+still parked aft of the beam so the camera **crosses** it mid-flight, at frame
+72 with the drive lit since frame 60, which traverses the band the drive swaps
+sides over as a ramp rather than sitting beside it. `orbit.txt` sits at a fixed
+55 degrees and `astern.txt` at a fixed -75; neither ever crosses.
 
 **That angle is derived from `autopilot::CAMERA_TURN`, not chosen**, and it has
 to be re-derived every time the camera's speed moves: it is how far the camera
@@ -228,6 +209,12 @@ walks in the seconds before the crossing should land, and the crossing has to
 land *after* the drive lights at frame 60 or the whole framing says nothing. It
 was `-20,0,0` while a turn took 137 seconds; speeding that up to 43 would have
 put the same angle's crossing at frame 24, with the drive still cold.
+
+One split got *stronger* rather than weaker. The four `--demo` flights steer and
+the four `--engage` ones hold every rate at an exact zero from first frame to
+last — and the ship carries an attitude now, which the sky is projected through,
+so a turn moves the sky from **both** cameras where the band took no steering
+argument at all. `drift.txt` is the flight that watches that from outside.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -252,56 +239,49 @@ sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern
 ```
 
 Diff the old hashes against the new ones before committing and say which moved.
-The split is usually the sharpest thing you have: a change aimed at the hull
-moves `side.txt`, `orbit.txt` and `astern.txt` and must leave all four cockpit
-flights alone — `warp.txt` is one of them, since it never asks for `--view
-side`, and rebuilding the enterprise is the worked example — and one aimed at
-the tunnel glare moves `warp.txt` and only `warp.txt`, since
-the two `--demo` flights never leave sublight and the outside view goes through
-`add_glow_oval` instead. There is a third shape, and it is the sharpest of the
-lot: a change to something the outside view only does *off* the beam leaves
-`side.txt` alone, because the whole of that geometry reduces exactly to the old
-arithmetic where `side.txt` has the camera. Which of the other two move then says
-what the change turns on. Stopping the engine lance at its vanishing point moved
-`orbit.txt` and no other, and so did putting the drive behind the hull from
-ahead; anything gated on the star band's depth travel moves `orbit.txt` **and**
-`astern.txt` together, since those are the two flights with a `travel[2]` at all
-and they take opposite signs of it — the near wall's ramp and the recycle rule
-are the worked example. A hash moving outside the shape its change predicts has
-leaked, and `side.txt` moving at all means something meant to be switched off was
-reduced to an identity instead.
+The split is usually the sharpest thing you have, and it comes in four shapes
+now where it used to come in six — two of the old ones were about arithmetic the
+star band switched off when the camera was abeam, and there is no band.
 
-There is a fourth, and it wears the first one's clothes: a change to the
-arithmetic inside `lens`, `exterior` or `Canvas::draw_path` also moves
-`side.txt` and `orbit.txt` and nothing else — not because of what geometry those
-flights have, but because of which modules they reach. Nothing in the cockpit
-goes anywhere near the three; the tunnel is streaks and two glows. So the useful
-half of that shape is `warp.txt` staying byte-identical, which is what says a
-change to how a span is measured stayed inside the view it was aimed at. Taking
-`hypot` off the bent-streak path is the worked example, and
-`tests/golden/frames.sha256` carries it in full.
+**By view.** A change aimed at the hull moves `side.txt`, `orbit.txt` and
+`astern.txt` and must leave all four cockpit flights alone — `warp.txt` is one
+of them, since it never asks for `--view side`, and rebuilding the enterprise is
+the worked example. One aimed at the tunnel glare moves `warp.txt` and only
+`warp.txt`, since the two 60 fps `--demo` flights never leave sublight and the
+outside view goes through `add_glow_oval` instead.
 
-And a fifth, which is the cockpit's version of the third: a change to how the
-sky is *steered* moves the four `--demo` hashes and leaves the four `--engage`
-ones bit for bit, since `render_headless` gates the autopilot on
-`args.demo.is_some()` and those four hold every steering rate at an exact zero
-from the first frame to the last. It used to be sharper than that — `steer.txt`
-alone, because the weave lived in the warp leg and the three 60 fps `--demo`
-runs stopped before it started — and the two worked examples are from then: the
-same fault arriving and leaving, steering in the frame the lean turned the
-picture to and then taking the lean out of the picture altogether. Each moved
-that one hash and left the other seven bit for bit. The second is the more
-useful of the two to read: it deleted arithmetic from `Camera::project`, which
-every star and every hull vertex in the program goes through, so seven
-byte-identical hashes are what says the deletion really was the identity it
-looked like. The weave runs the whole cycle now, so all four carry it.
+**By module.** A change inside `lens`, `bend` or `Canvas::draw_path` moves the
+side-view flights and nothing else — not because of what geometry they have but
+because of which modules they reach. Nothing in the cockpit goes near the three;
+the tunnel is streaks and two glows. So the useful half of that shape is
+`warp.txt` staying byte-identical, which is what says a change to how a span is
+measured stayed inside the view it was aimed at. Taking `hypot` off the
+bent-streak path is the worked example.
 
-And a sixth, which is the sharpest of the lot and the one that replaced what the
-fifth used to be: a change to **where the camera outside is pointed by nobody**
-moves `drift.txt` and only `drift.txt`. It is the one flight here whose camera
-moves at all — the other three side-view runs hold `orbit_target - orbit` at an
-exact zero, so `Flight::advance`'s two eases still add nothing to them, and the
-four cockpit flights never read the orbit or the zoom in the first place.
+**By camera angle.** `side.txt` is abeam, where `Eye::to_camera` is an exact
+swizzle and the hull's axis lies flat in the image plane, so anything that only
+happens *off* the beam leaves it alone. Stopping the engine lance at its
+vanishing point moved `orbit.txt` and no other, and so did putting the drive
+behind the hull from ahead.
+
+**By stick.** A change to how the sky is *steered* moves the four `--demo`
+hashes and leaves the four `--engage` ones bit for bit, since `render_headless`
+gates the autopilot on `args.demo.is_some()` and those four hold every steering
+rate at an exact zero from first frame to last. The worked example is worth
+reading: taking the lean out of the cockpit picture deleted arithmetic from
+`Camera::project`, which every star and every hull vertex in the program goes
+through, and seven byte-identical hashes are what said the deletion really was
+the identity it looked like. Note that this shape now reaches the side view too
+— the ship carries an attitude and both cameras are projected through it — so a
+steering change that leaves `drift.txt` alone has probably missed something.
+
+**And by camera drift.** A change to where the camera outside is pointed by
+nobody moves `drift.txt` and only `drift.txt`. It is the one flight whose camera
+moves at all: the other three side-view runs hold `orbit_target - orbit` at an
+exact zero, so `Flight::advance`'s two eases add nothing to them, and the four
+cockpit flights never read the orbit or the zoom in the first place.
+
+A hash moving outside the shape its change predicts has leaked.
 
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
@@ -317,15 +297,17 @@ The other answer is a new flight, and the test of which one you want is whether
 the hole is a *variant* or a *region*. One ship out of the hangar is a variant,
 and another flight would have pinned one more of them while leaving the rest
 unlooked at; a property test over `models()` covers all of them at once. But
-when the flights covered no camera aft of the beam, what was missing was half the range
-of a control — the only half where the sky has a vanishing point at all, and so
-the only half a trail can be stretched through one. A trail running past the
-point its track vanishes at moved no hash for exactly that reason, and it got
-both: `a_trail_never_runs_past_the_point_the_track_vanishes_at` at the level the
-fault lives at, and `astern.txt` so the region stops being unwatched. The
-matching clause went into the case list's own coverage test beside the two
-already there, asked of the parsed `--orbit` rather than of the angle written
-above it.
+when the flights covered no camera aft of the beam, what was missing was half
+the range of a control — the only half where the sky has a vanishing point at
+all, and so the only half a trail could be stretched through one. A trail
+running past the point its track vanishes at moved no hash for exactly that
+reason, and it got both: a test at the level the fault lived at, and
+`astern.txt` so the region stopped being unwatched. The matching clause went
+into the case list's own coverage test beside the others, asked of the parsed
+`--orbit` rather than of the angle written above it — and it is still there,
+still earning its place, even though the fault it was written for cannot happen
+any more: a star's tail is now projected from where the ship stood rather than
+extrapolated toward a vanishing point, so there is nothing left to overshoot.
 
 Say in the commit message what moved and why. Regenerating without explanation
 throws away the only thing that file is for.
@@ -345,11 +327,14 @@ same reason.
 
 Two more things the hashes are sensitive to:
 
-**The RNG draw order.** `StarField::spawn` draws z, then sx, then sy, then the
-magnitude sample, then the class, then the phase. `--seed` reproducibility is a
-property of that sequence, so hoisting a draw out of a struct literal or
-reordering two that "obviously do not interact" gives a different sky. The same
-goes for anything that changes how many values are drawn per star.
+**The RNG draw order.** `Universe::spawn` draws the class, then the three that
+scatter its absolute magnitude, then how deep into its own sphere it sits, then
+the two that point it, then its twinkle — and it will redraw the first four if
+the star comes out too faint to be as far off as the nearest one really is.
+`--seed` reproducibility is a property of that sequence, so hoisting a draw out
+of a struct literal or reordering two that "obviously do not interact" gives a
+different sky. The same goes for anything that changes how many values are drawn
+per star, the rejection loop included.
 
 **The easing form.** Every ease in `src/ship.rs` is `1 - exp(-k·dt)` or
 `exp(-k·dt)`, which is frame-rate independent. Rewriting one as `k * dt` is the
@@ -373,9 +358,17 @@ spelling a colour into one stack sequence instead of seven capacity-checked
 pushes (−30% of the write column), `canvas::length_of` in place of `hypot`
 (−6% of an exterior frame), `Lens::inv_axes` (−1.8%), `draw_path` reusing the
 span it already measured (−2.5%), and the twinkle `sin` skipped at warp, where
-its amount is a hard zero (−2%). Together they take the expensive frame — the
-outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2, which
-is the number to reproduce before believing a regression here.
+its amount is a hard zero (−2%). Together they took the expensive frame — the
+outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2.
+
+**Those figures are from before the sky went world-space and none of them is
+the number to reproduce now.** The same case is a different frame: the pool is
+what a limiting magnitude asks for rather than a count, and a streak is a few
+subpixels rather than one across the frame, so the outside view at warp runs
+12.2 ms at 72 000 stars where it ran 21.1 at 20 000. Every optimisation above is
+still in place and still worth its comment; what has moved is the baseline they
+add up to. Re-measure before believing a regression, and re-measure the two
+trees back to back.
 
 Measure the two trees back to back rather than against a figure written down
 earlier. This container drifts about ten percent between sessions, which is
@@ -412,6 +405,14 @@ D1 miss rate is 1.4% and last-level misses are in the tens of thousands for a
 whole run. The working set fits. This is instruction-bound, and shrinking
 `Star` or restriping the canvas is solving a problem it does not have.
 
+Those figures predate the world-space sky and its pool is thirty-six times
+larger, so the cache claim in particular wants remeasuring before it is leaned
+on again. What has been measured since is the wall clock, and it went the good
+way: the expensive frame — the outside view at warp — runs 12.2 ms against 21.1
+before, with 72 000 stars against 20 000, because a streak that is a few
+subpixels long costs a few samples where one across the frame costs a hundred.
+The default cockpit frame at 200x60 went from 1.1 ms to 2.7.
+
 ## Layout
 
 ```
@@ -422,9 +423,11 @@ src/autopilot.rs  the hand on the stick and the camera for --demo/--screensaver
 src/cli.rs        every flag, and the bounds each one is held to
 src/view.rs       ViewMode, the outside camera: its orbit, its range, the zoom
 src/ship.rs       flight model: throttle, warp, steering, transients
-src/starfield.rs  the cockpit's sky — a cone opening forward, plus Camera
-src/exterior.rs   the side view's sky — a band the ship flies through
+src/universe.rs   the sky: a world-space volume the ship is inside, and the
+                  photometry that puts each star where it is
+src/camera.rs     the projection both views and the hull share, and a Streak
 src/lens.rs       the warp bubble: a point-mass lens in an elliptical metric
+src/bend.rs       drawing a streak the bubble reaches: arcs and two images
 src/models.rs     the hulls, and how to draw one
 src/menu.rs       the ship picker
 src/canvas.rs     f32 RGB accumulation buffer, rasterisers, tonemap
@@ -450,7 +453,10 @@ private; new state that another module needs comes with an accessor.
 
 `advance` accumulates wall-clock `dt` and steps the simulation at a **fixed
 `SIM_STEP` of 1/120 s**, so the flight model behaves the same whether the
-terminal keeps up or not. Only the sky for the current `ViewMode` is stepped.
+terminal keeps up or not. There is one sky and it is stepped whichever camera
+is flying — there is no longer a second one to be kept warm or skipped, and
+`Universe::advance` is one distance test per star because the *ship* does all
+the moving.
 
 There are **two** clamps on `dt` and they are not the same one. `advance`
 holds its own argument to `MAX_STEP_DT` (1.0 s) and turns a non-finite step
@@ -463,10 +469,11 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
 `draw` runs, per view:
 
 1. `canvas.clear()` — the f32 buffer, at `cols × 2·rows` subpixels.
-2. Streaks: `field.streaks(..)` → `canvas.draw_streak`. Cockpit only.
-   Side view goes through `ExteriorField::draw`, which bends the streaks the
-   lens actually reaches — chopping each into arcs and drawing both images —
-   and leaves the rest, which at sublight is all of them, on the ordinary
+2. Streaks: `sky.streaks(cam, &observer, time)` → `canvas.draw_streak` in the
+   cockpit. The same sky, through a different `Observer`, and the side view
+   hands the result to `bend::Bend::draw`, which bends the ones
+   the lens actually reaches — chopping each into arcs and drawing both images
+   — and leaves the rest, which at sublight is all of them, on the ordinary
    `draw_streak` path. That fast path is why lighting the drive is what makes
    an exterior frame expensive.
 3. The lit things — `add_glow`: cockpit gets the tunnel glare down the throat
@@ -576,267 +583,163 @@ the held-key case to nearly three times its resting cost while handing the
 latency back. If that ceiling ever wants bounding it
 wants its own attempt and its own measurement, not that shape.
 
-### The two skies
+### The one sky
 
-`starfield::StarField` is a cone opening forward from the canopy: right for the
-cockpit, wrong to look at side-on, because there is nothing behind the ship.
-`exterior::ExteriorField` is the same idea rebuilt as a band the ship flies
-*through*. It is built lazily — a cockpit-only run pays nothing for it, not
-even a draw from its generator — and gets its own RNG seeded with
-`seed ^ EXTERIOR_SEED` so building it never disturbs the cockpit field's
-stream, which is the one the reference frames were recorded from.
+`universe::Universe` is a volume of space the ship is somewhere inside, laid out
+in an **inertial world frame** and projected through whichever camera is flying.
+There used to be two of these — a cone opening forward from the canopy and a
+band the ship flew through side-on — and the whole of the difference between
+them was that each was laid out *in front of its own camera*. That is what made
+a camera swung ninety degrees round the ship show the sky it had already been
+showing, and what the fold, the rim, the near cap and the entering-surface
+sampler existed to patch up afterwards.
 
-The two are steered by different things, and the asymmetry is the design.
-`StarField::update` takes the *ship's* three rates, because the cockpit is
-bolted to the hull. `ExteriorField::update` takes no steering at all and takes
-the *camera's* `Orbit` instead: out there the camera rides with the ship, so a
-turn of the hull moves nothing an eye can see, while swinging the eye has to
-take the sky with it or the control is a barrel roll wearing new keys —
-`swinging_the_camera_sweeps_the_sky_past_it` is the test that says so, and it
-picks the case that makes it sharp, lifting the camera at zero azimuth, where
-the *flow direction* does not change at all.
+**Nothing about looking at the sky may move it.** That is the invariant the
+rebuild bought and the one to protect: `a_camera_swing_moves_no_star` asserts it
+bitwise over a full turn on all three axes, and
+`the_sky_is_left_alone_by_everything_but_the_flight` says the same of the zoom,
+the twinkle clock and a ship sitting still. Only `Universe::advance` may move a
+star, and only because the ship went somewhere.
 
-**`Ship::bank` reaches nothing the cockpit draws, and putting it back is a
-two-commit mistake somebody has already made twice.** The lean into a turn is a
-display affectation: it chases the yaw rate, centres itself, and is kept apart
-from `Ship::roll`, which is the attitude. There is no way to put a yaw-coupled
-angle into the sky's orientation without one of two faults, and both shipped
-before this paragraph was written.
+#### How a star gets where it is
 
-Rotate the *picture* by the lean — after the divide, in `Camera::project` —
-and steer the sky underneath it, and the flow comes out across the frame at
-exactly the bank angle: twenty degrees at the stops. A sky streaming diagonally
-while the stick asks for a flat turn is not read as a lean but as a *climb*,
-because a sky sliding downward is what going up looks like, and the lean's sign
-follows the yaw's, so both A and D lifted the nose.
+`spawn` draws a class from the census in `CLASSES`, gives it an absolute
+magnitude with `ABSOLUTE_SPREAD` of scatter, and places it **uniformly by
+volume** inside the sphere it could still be seen from. Its distance therefore
+falls out of its photometry — how bright it is against how bright it looks —
+which is the real correlation and is why the sky reads as depth rather than as
+confetti. At the default limit an M dwarf lands ten light years off, a G dwarf
+seventy, an A star three hundred and an O giant thousands.
 
-Steer in the frame the lean has turned the picture to instead, and a held turn
-streams flat — but the step becomes the steering with a roll of however much
-the lean moved in front of it, and rotations do not commute. Working the stick
-round a closed loop leaves a residue about the camera's own `x`, going as the
-*square* of the yaw rate and so the same way round whichever way it went: about
-nine degrees a second of nose-down that nothing brings back. Parked, working
-left and right was enough to fly the sky off the top of the frame. That is
-honest rigid-body kinematics, which is the point — a cosmetic lean has no
-business accumulating into the flight's attitude.
+**The scatter is load-bearing.** With one absolute magnitude per class a star's
+brightness would *determine* its distance, so at warp every equally bright star
+would move at exactly the same rate and brightness would read as speed.
 
-So the sky is steered about the camera's own axes and the picture is not rolled
-at all. `Camera` has no bank; `Camera::project` is a divide and a translation.
-`a_flat_turn_streams_the_sky_flat_across_the_frame` and
-`working_the_stick_leaves_the_sky_where_it_found_it` hold the two halves, the
-second exactly rather than within a tolerance: a yaw turns `x` and `z` and
-leaves `y` alone to the bit, so a probe star on `y = 0` projects to precisely
-`cy` however the stick is worked.
+**`COUNT_SLOPE` is 0.6 and not the 0.5 the real sky measures**, and the reason
+is the same one the old band eventually reached about its own profile: a rigid
+translation through space preserves a uniform density and nothing else. The
+measured sky is flatter because the Galaxy is a disc that thins out; sample that
+and the sky would relax into `10^(0.6 m)` over the first minutes of a flight,
+thickening as it went. Self-consistency wins here because the alternative is a
+sky that changes while you fly it.
 
-There is a third position and it is worth knowing before anyone re-derives the
-second. The angle shown at projection does not have to *be* `bank`: a
-high-passed one washes out to zero in a held turn, which streams flat, while the
-path stays unconjugated, which closes exactly. That keeps a visible roll into
-and out of a turn at the cost of a tilt during the transient. It was not taken:
-the lean is a fact about the hull, and `models::attitude` poses it by
-`roll + bank`, which is the one place a lean can be seen without also being
-flown.
+**`NEAREST_STAR` is a fact rather than a margin.** There is nothing between here
+and Proxima at 4.2 light years, and the catalogue needs telling because it is
+built from photometry rather than from a volume: the faint end of the scatter
+has a visibility sphere under two light years across and is therefore *always*
+very close. Those were the stars that tore past at impulse — thirty seconds of
+it moving one twelve thousand subpixels — in a sky whose whole point is to hold
+still down there. They are left out rather than moved, since a star that faint
+is not visible from anywhere it could actually be. That tips the census toward
+the luminous classes as the limit comes down, which is the observation and not a
+side effect: a magnitude-two sky really is all giants.
 
-Note what the removal settled on the way past. `spawn` lays its rectangle out in
-unrotated camera space while `escaped` tested the *rotated* projection against
-the same rectangle, so past about eleven degrees of lean on an 80x24 terminal
-the screen corners fell outside the seeded region and stopped being refilled
-from the far plane. The two are in the same space again and the question does
-not arise.
+#### What leaves, and what comes back
 
-The band therefore has five fast paths that are switched **off** rather than
-reduced to identities, and all five are exact at `Orbit::LEVEL`. The pool is
-turned only when `orbit != self.orbit` — compared, not composed with an
-identity, because the angles are unchanged bit for bit when nothing moved them.
-Depth travel runs only when `travel[2] != 0.0`, and the vertical fold only when
-depth or height moved, because `fold` is *not* an exact identity for a value
-already inside its band and the level shot is exactly where `y` never moves. The
-fourth is the recycle described two paragraphs down, gated on `turns_z`. The
-fifth is the near wall's brightness ramp, gated on `travel[2]` being non-zero —
-its width is `NEAR_FADE_STEPS · |travel[2] · step|`, which is a hard zero abeam
-and at rest, so the branch in `lit` is never taken there. Widening any of the
-five gates moves `side.txt`.
-Off the beam three things the band was written never to face come alive. Stars
-cross the near and far walls and have to be respawned, and a respawn is handed
-the trail it *would* have had, one step back along the track — without that, at
-full warp two to four percent of the pool draws a bare point every frame, which
-is the sky flickering between streaks and dots that the sideways fold exists to
-avoid, arriving by the other door. The Doppler is measured against the
-cached `nose` rather than against camera `+x`, which is only the direction of
-travel while the camera is abeam; measured against the frame, a chase view would
-redden the sky ahead and blue the wake. Abeam the nose is `(1, 0, 0)`, so that
-dot product is `pos[0]` to the bit.
+A star is in the catalogue while its own distance keeps it brighter than the
+limit. `reach_sq` is that distance squared, folded once at spawn, and it is the
+same number as `lumen / limiting intensity` — so the ratio `reach_sq / range_sq`
+answers two questions at once: above one exactly while the star is still worth
+drawing, and how far above says how much of the fade is left to climb.
 
-And **a star's range changes while it flies, so a step has two of them and the
-fold has to name which.** Carrying a folded trail across means turning a
-world-space jump into a screen-space one, which is a divide by the range — and
-the range it wants is the one `prev` was projected through, not the one the star
-ends the step at. `z_prev` is captured beside that projection for exactly this,
-and moving it below the depth travel puts the fault straight back. Abeam the two
-are the same bit for bit, so nothing showed there for as long as the camera was
-pinned; off the beam the trail lands out by `shift · focal · (1/z_new − 1/z_old)`
-along one camera axis, `streaks` multiplies it by six at full warp, and the sky
-grows a lattice of long faint streaks lying across the flow.
-`a_trail_carried_over_the_fold_is_scaled_by_the_range_it_was_drawn_at` is the
-guard, and it is a property over the whole pool rather than a reference frame —
-`orbit.txt` had the fault recorded *in* it, which is what a pinned frame does
-with anything nobody has looked at.
+When one crosses out it is put back on the **entering hemisphere** of its own
+sphere, distributed by how much of the flow crosses there — density
+proportional to the cosine of the angle from the direction it is coming from,
+which is the square root of a uniform rather than a uniform.
+`the_flow_brings_stars_in_from_the_side_it_is_coming_from` checks the mean
+cosine is two thirds rather than the half a uniform sampler would give. Nothing
+arrives in view: a star put back at its own reach is by construction at exactly
+the limiting magnitude, where `FADE_MAGNITUDES` has it at nothing at all.
 
-And **a trail is stretched in screen space, so it has to be held back from the
-point its own track vanishes at.** This is `models::draw_trail`'s problem
-arriving from the other end, and it wears the same fix. `streaks` multiplies the
-one step a star swept by six at full warp — but a straight ray running away from
-the eye does not project onto a screen-space ray. It projects onto the segment
-between the star and the point its direction vanishes at, *approaching* that
-point and never arriving, so the multiply drew trail past a place it had already
-gone: 77 of 800 came out the far side, the worst half again as far as the point,
-and every star at the one depth where the stretch comes to exactly the whole
-distance laid its trailing end precisely on it. `trail_head` answers both with
-one division and no depth — `k` steps cover `k·u / (1 + (k−1)·u)` of the way,
-which is under one for every `u` under one.
+#### The streak is a long exposure
 
-**It is switched off in three cases and every one of them is exact.**
-`cam.vanishing_point(self.nose)` answers `None` abeam, where the nose lies flat
-in the image plane; `None` from anywhere forward of the beam, where the track
-runs toward the eye and its projection diverges rather than converging; and the
-gate is `stretch > 1.0`, which is a hard identity at sublight. That is why not
-one reference hash moved for it — and why the reference grew `astern.txt`, since
-the case those three exclusions leave is exactly what nothing was watching.
+This is the part most likely to be misread as an effect. At honest distances one
+sim step at full warp moves a ten-light-year star **0.19 subpixels**, and the
+`1 + 5·warp²` multiplier the old sky used makes that 1.1 against the 119 the
+renderer used to draw. Multiplying harder is not the answer; saying what the
+streak *is* is.
 
-**The fold is the right boundary for a translation and no boundary at all for a
-scale, and a change of range is a scale.** A star's place in the frame is
-`focal · pos / z`, so a step that moves its range does not slide it across the
-band — it magnifies it about the middle of the frame, by `z_before / z_after`.
-Wrapping says nothing about that, and the two directions fail differently:
-contracting, the band widens away from a pool shrinking inside it and nothing
-refills the frame edges; expanding, a star is put back on the very edge it was
-just carried over and the next step carries it over again, so the pool piles
-into the off-screen margin and the middle drains. Two seconds of holding `A` or
-`D` emptied the top and bottom of the frame and left a bar of stars across the
-middle — 45 to 1 across the frame against an abeam baseline of 1.3, or three
-quarters of the pool off screen on the other side of the beam.
+It is the track the star actually flew over the last `TRAIL_SECONDS`, and the
+tail is computed rather than remembered: the ship was at `P − n·v·T`, so the
+tail is that star projected from there. Three things follow, and all three are
+why this replaced `prev` rather than joining it.
 
-**What answers that is the profile itself, and not a correction applied to it.**
-The band used to hold a flat count per unit range and pay for it every step, by
-relocating stars: `1 − λ²` of each shell onto the rim a contraction vacated, and
-whatever an expansion carried out scattered back over the whole band. Both were
-exactly the right density and both were plainly visible, because neither asked
-whether anyone was looking at the star it moved. Astern at full warp, twenty of
-a 256-star pool a step landed back on screen out of nowhere; from ahead of the
-beam, fourteen a step were taken *off* the screen from wherever they happened to
-be. That cannot be faded away — at a tenth of the pool a step there is no fade
-both long enough to read as one and short enough to finish — and it cannot be
-placed better either, because under a magnification the deficit a step leaves is
-*uniform over the screen*, so a uniform refill is the only correct one.
+- **It is exact** for a straight track, which is what a warp run is, where a
+  linear extrapolation of one step is a chord across a curve.
+- **It cannot fall behind the near plane.** Going back in time moves a star
+  *away* from the eye, so the tail's depth only ever increases — which is why
+  there is no clamp here, no vanishing point to chase, and no `trail_head`.
+- **It deletes `prev`**, and with it the range a trail was drawn at, the fold's
+  trail shift, the rule about handing a recycled star the trail it would have
+  had, and `retarget` dropping every trail on a resize.
 
-So the flat profile went instead. Advection through a frustum takes a count per
-unit range `n(z + d)` to `n(z + d)·(z/(z + d))²`, and the only profile a step
-returns unchanged is **`n ∝ z²`** — an even sky, seen through a cone. The rule
-that gets there is one line and it is `crate::starfield`'s: **a star that leaves
-comes back in through a boundary the flow is entering by, and nowhere else.**
-Expanding, the exits are the near wall and the rim and the only way in is the far
-wall, where `depth` has already faded a star to nothing. Contracting, the only
-exit is the far wall and the way in is the rim plus the near cap — and those
-balance exactly, the rim wanting `Z_FAR² − Z_NEAR²` a step against the cap's
-`Z_NEAR²` and the far wall supplying `Z_FAR²`, which is why `spawn` picks between
-them and picks the range with one draw across `Z_FAR²` and no counter at all.
-Nothing is conjured; both ends of every move are off the screen or already dark.
-`the_band_settles_at_the_one_profile_a_flow_leaves_alone` pins the profile,
-`a_range_change_takes_exactly_the_stars_the_frame_no_longer_holds` pins the rate
-and the shape on a single shell, `nothing_lit_is_ever_taken_out_of_the_middle_of_the_frame`
-is the regression test, and `the_sky_is_as_even_off_the_beam_as_it_is_abeam` is
-the acceptance test over a flight.
+And it puts depth in the tunnel for the first time: 67 subpixels for a star at
+ten light years, 9.6 at seventy, 2.1 at three hundred, 0.7 at a thousand. The
+old sky drew every streak the same length because every star was the same
+distance away.
 
-Two things about that rule are easy to get subtly wrong and were:
+**Rotational smear went, and the measurement is why.** A whole sim step at the
+yaw stop moves a star at the frame edge 0.58 of a subpixel, which is inside the
+branch `draw_streak` takes for anything under three quarters of one — so the
+smear a turn used to leave was invisible before it was removed. Do not put it
+back without a number.
 
-**The rim a contraction vacates is not centred where the band is.** A step
-shrinks the band about the middle of the frame *and* slides it sideways, and the
-gap the two leave together is an even frame about the place the flow has moved
-the middle to. The offset is `travel[0] / travel[2]` scaled by the band's shape
-and does not fall off with range, so at 45 degrees off the beam it is wider than
-the rim itself and the fill misses the gap entirely: 2.2 to 1 across the frame
-against 1.3 abeam, with only 0.57 of the pool on screen. The band wraps, so the
-fix is to place on the rim about the origin and then fold the drift in.
+#### Brightness is a magnitude, and the canvas is linear
 
-**A star is left outside the band for the one frame that carries it off the
-screen.** One step of magnification can be worth more than the band's 1.15
-margin — `z_prev / z` reaches 1.5 at full warp — so taking a star the moment it
-crosses makes it vanish a couple of cells short of the edge rather than sweeping
-through it, which is the reported fault in miniature. It is held *still*
-sideways for that frame, not merely unfolded: the sideways travel can otherwise
-pull it back inside the band it just left, so it lingers at the edge for step
-after step, which took the share of the pool on screen from 0.76 to 0.60. Held
-still, the recycle's test is exact — the band at the range it came from is the
-band it went out through — and every star costs one frame and no more. The
-consequence for tests is that "every star is inside the band" is *not* an
-invariant of this module and must not be reasserted;
-`the_band_holds_together_from_every_angle` holds the sharper form, which is that
-a star outside the band is outside the picture.
+`intensity = 10^(−0.4·(m − ZERO_POINT))`, which is the one transform between a
+logarithmic scale and a linear buffer and is the only thing here that has to be
+exactly right. `ZERO_POINT` is **derived, not chosen**: the old renderer's
+typical star laid down `luminosity · magnitude · depth^1.4 ≈ 0.155`, and the
+mean of `10^(−0.4 m)` under the count law is `slope/(slope − 0.4) · 10^(−0.4 L)`,
+so the two agree at `10^(0.4 z) = 20.6`. Move the count law or the limit and
+this wants re-deriving, or `--exposure` stops meaning what it means.
 
-**What none of this reaches, and it is written down because it looks like the
-same thing.** A swing scales the frame too — a rigid turn of the sky is
-area-preserving on the sphere, so it scales screen area by the *cube* of its
-range ratio, with the extra factor landing on whichever axis the camera turned
-across. That scale is neither uniform over the frame nor equal on the two axes,
-so the deficit it leaves is spread over the leading half rather than standing on
-the rim. What survives is a left-to-right gradient of about 3.5 to 1 *while a
-key is actually down*, gone within a step of letting go, with the frame still
-even top to bottom — which is why the guard holds the bands tightly and the
-frame loosely there. Putting it right means placing by the deficit profile,
-which is its own change and its own measurement.
+That replaced a `DEPTH_FALLOFF` of 1.4 and a cubed magnitude sample, both of
+which existed to fake a lopsided brightness distribution and to stop honest
+inverse-square making everything invisible. Neither problem survives a catalogue
+in which every star is by construction brighter than the limit.
 
-**The near wall gets the ramp the far wall has always had, and it needed it
-more.** `depth` reaches zero at `Z_FAR` with zero slope so stars fade up out of
-nothing; at `Z_NEAR` it reached *one*, and `Z_NEAR` is a flat plane in `z` while
-the band is a fixed rectangle on the screen — so a star arriving there could be
-anywhere in the frame, including dead centre where the flow is slowest and the
-eye follows it best. Nothing had ever crossed it, because abeam `travel[2]` is a
-hard zero. Astern at full warp it was taking four stars a step at a mean
-brightness of 0.36 against a sky averaging half that, and twenty-six a second at
-sublight: this is the reported bug. `lit` now folds a ramp in before the
-exponent, `NEAR_FADE_STEPS` steps deep and scaled by the depth travel so it is a
-fixed number of *frames* at any speed and goes to zero smoothly as the camera
-returns to the beam — a fixed width behind a flag would dim a tenth of the pool
-in the single frame the camera stopped being abeam. It is affordable because of
-the profile above: at `z²` the range it dims holds five percent of the pool
-rather than a third, and the measured cost to the sky's mean brightness is five
-percent.
+#### The transform chain
 
-The cockpit reaches the same profile by the same rule — `starfield::DepthRule`
-sends everything that leaves to the far plane, and the steady state of that *is*
-`z²`, which is most of why the cockpit reads as distance rather than as a
-curtain. The two are now one idea with two parameterisations, because out here
-the flow's direction is a camera control and the entering boundary has to be
-asked for rather than assumed. **The constants stay separate all the same** —
-see below.
+This is the subtlest part of the module and the place a bug will live.
 
-The two also carry **separate copies of the same-named constants** — `Z_NEAR`,
-`Z_FAR`, `SPAWN_MARGIN`, `DEPTH_FALLOFF` all exist in both modules with
-different values (0.9/260 in `starfield`, 18/320 in `exterior`). They are not
-duplication to be merged; they describe different volumes.
+```
+hull space     h = Aᵀ · (w − P)      A = ship.axes, P = ship.position
+cockpit        pos = h               the seat is bolted to the hull
+outside        pos = Eye::basis · h  rotation only
+```
 
-`MAGNITUDE_FLOOR` belongs on that list and is the one to watch, because it is
-the one where the argument is not self-evident: it stands at 0.14 in *both*
-modules, and `exterior` already imports `CLASSES` and `shift_color` from
-`starfield`, so there is an obvious-looking third import to be made and nothing
-in the code to argue against it. The argument is the same one as for the other
-four. It is a knob on how lopsided one volume's brightness distribution is, and
-the two volumes are different; that they were tuned to the same number is where
-they are, not what they are. `SPAWN_MARGIN` and `DEPTH_FALLOFF` were the same
-number once too.
+**`P` is `f64` and that is not a preference.** At impulse the ship covers 2.1e-5
+ly a sim step against stars a thousand light years out — a relative change of
+2e-8 where `f32` resolves 1.2e-7 — so a position carried on the stars and
+decremented in place would round the whole far sky to a standstill permanently
+rather than merely slowly. Holding the stars still and moving the ship puts the
+small number in the accumulator where it belongs.
 
-One thing *is* genuinely shared: `Camera`, and with it `Camera::project`, which
-clips against `starfield::Z_NEAR` in **both** views — including for the hull.
-`exterior::Z_NEAR` is the near wall of the band, where a star is allowed to be,
-not the plane the projection gives up at. So `starfield::Z_NEAR` looks like a
-cockpit-only number and is not one.
+**The outside camera's standoff is deliberately not applied to stars.**
+`Eye::to_camera` adds nine to fifteen *hull* units of it; a starship is a few
+hundred metres, so against a sky in light years that is a translation of about
+1e-13 of a star's range. Applying it would be a unit error, not a refinement.
+The hull still goes through `Eye::to_camera` with the standoff in it, because
+for the hull it is the whole of the framing.
 
-Coordinate frame, shared by the flight model and the hulls: **`+z` out the
-nose, `+x` to starboard, `+y` down** — right-handed. Camera sizes are in canvas
-subpixels, never in cells, and `Camera::focal` is derived from *height* alone,
-so horizontal field of view widens with the terminal. That is why the spawn
-bound is a rectangle rather than a disc: a circular bound spends most of the
-star budget on corners a wide terminal never shows.
+**The ship carries the attitude, so steering moves the sky from both cameras.**
+That is a change from the band, which took no steering argument at all on the
+argument that out there the camera rides with the ship. With one world-space sky
+and a real attitude that option is gone, and the honest answer is the better
+one: a chase camera locked to a turning hull does see the sky swing past.
+`Ship::bank` still reaches nothing either camera draws — it is a display
+affectation, posed only by `models::attitude` — and the two shipped-and-reverted
+bugs about it were both about putting a yaw-coupled angle into a *projection*.
+Nothing here does. See `Ship::steer`, which is that rotation moved off the sky
+and onto the hull and otherwise untouched.
+
+`Camera::project` clips at `camera::Z_NEAR`, which is a **hull** number: nine
+tenths of a unit where the ship is about one. Stars are asked for
+`project_beyond` with `STAR_NEAR` instead, because a star held to the hull's
+plane would be thrown away at nine tenths of a light year for a reason that has
+nothing to do with it. One projection, two near planes, and each caller says
+which it means.
 
 ### Where the camera outside is
 
@@ -864,11 +767,12 @@ a single turn *exactly* alone — and that guard is not an optimisation to be
 tidied away. `wrap_signed` goes through `rem_euclid` and back, which does not
 return an in-range angle bit for bit, and this is applied on every press and
 every eased step, so without it a notch and its opposite would not cancel. What
-turns on that cancelling is `ExteriorField`, which lays the whole star band out
-afresh whenever the orbit differs from the one it was last laid against: an
-angle that came back a hair off would rebuild the rotation path every frame of
-a flight nobody is touching the camera on. The band guards its own vertical
-fold for exactly the same reason and it is the same trap.
+turns on that cancelling used to be the star band, which laid itself out afresh
+whenever the orbit differed from the one it was last laid against — so an angle
+that came back a hair off rebuilt the rotation path every frame of a flight
+nobody was touching the camera on. The sky no longer cares, since a swing moves
+nothing, but the guard stays: `Orbit`'s equality is what `Flight::advance` eases
+against, and an angle that would not cancel is a camera that never settles.
 
 `Flight` keeps an eased value and a target for both the orbit and the zoom, and
 both are held on the **target**, not on the eased value — clamp the eased one
@@ -901,7 +805,7 @@ installed first would never be undone and the user is left in raw mode on the
 alternate screen with no cursor and no prompt. `Flight::new` is constructed
 before `RawGuard::new`; keep it that way. The same reasoning is why every
 number `cli.rs` accepts is bounded at parse time — `MAX_CELLS`, `MAX_DIM` and
-`MAX_STARS` for the ones that allocate, `MAX_COUNT` for `--frames` and
+`MAX_MAGNITUDE` for the one that allocates, `MAX_COUNT` for `--frames` and
 `--warmup`, which are spent rather than allocated, `MAX_SCALE` for `--scale`
 and `canvas::MAX_HULL_SAMPLES` for `--aa`, both of which enter *squared* — and
 why an ioctl answer is clamped rather than believed. `--orbit` is the one
@@ -909,14 +813,17 @@ exception and says why in its own parser: an angle has no end to run away past,
 so a preposterous one costs a picture rather than an allocation, and
 `Orbit::held` folds it with exactly the fold a keypress gets.
 
-`cli::MAX_STARS` is the one on that list that is *not* only a parse-time bound,
-and it is public for that reason. A pool is the one thing there that can still
-be resized after the command line has been read, so the `+` key clamps to the
-same constant rather than to a number of its own. It used to have one, and it
-sat *under* what `--stars` already allowed. There was a third door once — an
-automatic count in `app.rs` that sized the pool from the canvas whenever
-`--stars` was 0 — and it is gone; the flag is a literal count now, `0` included,
-and `cli::DEFAULT_STARS` is what it is when nobody says.
+`cli::MAX_MAGNITUDE` is the one on that list that is *not* only a parse-time
+bound, and it is public for that reason. A sky is the one thing there that can
+still be asked for again after the command line has been read, so the `+` key
+clamps to the same constant rather than to a number of its own — it used to have
+one, and it sat *under* what `--stars` already allowed.
+
+The bound is also one step further back than it looks. The pool grows as
+`10^(0.6 m)`, so what is held is the *observer* and what that holds is the
+allocation: 9.5 comes to 574 000 stars, which is under the million `--stars`
+used to allow. There was a third door once — an automatic count in `app.rs` that
+sized the pool from the canvas — and it is long gone.
 
 **`RawGuard::new` builds the guard value immediately after `enable_raw_mode`,
 before any other fallible call**, so an early `?` still restores. It installs a
@@ -1195,16 +1102,15 @@ carries one settles nothing except how often it is dimmed.
 **There is no depth buffer and none is needed.** Four things stand in for one,
 and all four have to keep holding:
 
-- `exterior::Z_NEAR` (18.0) is beyond the ship, so no star can come between the
-  camera and the hull. There is a `const _: () = assert!(...)` in
-  `src/exterior.rs` that fails the build if that stops being true. It is
-  measured against `view::MAX_SHIP_DISTANCE` — the *furthest* the zoom parks
-  the ship — because the standoff is no longer one number. Its opposite number
-  lives in `src/models.rs` and guards the other end: at
-  `view::MIN_SHIP_DISTANCE` the hull must still clear `starfield::Z_NEAR`, or
-  `plates` starts dropping faces whole and the ship comes apart a plate at a
-  time while going on looking like a ship. Widening `ZOOM_MIN` or `ZOOM_MAX` in
-  `src/view.rs` is what those two are there to stop.
+- No star can come between the camera and the hull, which used to need a
+  `const _: () = assert!(...)` against the star band's near wall at eighteen
+  units. `universe::NEAREST_STAR` is four *light years* against a hull that
+  reaches seventeen units, so the two are now twelve orders of magnitude apart
+  and there is no arithmetic left to check. Its opposite number is still real
+  and still in `src/models.rs`: at `view::MIN_SHIP_DISTANCE` the hull must clear
+  `camera::Z_NEAR`, or `plates` starts dropping faces whole and the ship comes
+  apart a plate at a time while going on looking like a ship. Widening
+  `ZOOM_MIN` or `ZOOM_MAX` in `src/view.rs` is what that one is there to stop.
 - Faces are wound anticlockwise seen from outside, so the **sign of a plate's
   projected area** is a complete answer to which way it points. This is only
   true because every hull is a closed solid with no zero-thickness plates — a
@@ -1239,46 +1145,43 @@ new canvas whenever `--stars` was 0, so dragging a window edge respawned the sky
 a few hundred stars at a time and the panel's own count walked about while
 nothing had asked it to. A count a window can overrule is not one.
 
-**The sky is a fixed size too**, `cli::DEFAULT_STARS`, 256 on every terminal.
-That replaced a density — stars per subpixel, 0.02 where it finished — which is
-worth knowing about because the numbers it gave are what this one has to be read
-against: 19 stars at 40x12, 76 at 80x24, 172 at 120x36, 480 at 200x60, 1080 at
-300x90. What the density bought was constant apparent density; what it cost was
-the same flight looking different on two machines, which is the one thing the
-rest of this tree is written to stop. It also pulled the wrong way while doing
-it — every star is drawn as the segment it swept, so a wider window got more
-stars *and* longer streaks at once, and the depth parallax that is most of what
-the view is for washed out precisely where there was most room for it. The
-constant was thinned three times chasing that and then partly walked back —
-0.05, 0.02, 0.01, 0.005, 0.02 — which is four moves of a knob answering the
-wrong question. `--stars 0` used to be the sentinel that asked for it and is a
-literal now: an empty sky, which the renderer draws quite happily and which is
-the only way to see the tunnel, the bubble and the hull with nothing streaming
-past them.
+**A sky is asked for by how faint a star it holds**, `--magnitude`, and the
+count follows. That is the third answer to this question and the first one that
+is about the sky rather than about the program. It was a *density* once — stars
+per subpixel, 0.02 where it finished — which bought constant apparent density
+and cost the one thing the rest of this tree is written to stop: the same flight
+looking different on two machines. Its own answers say how wide that spread was:
+19 stars at 40x12, 76 at 80x24, 172 at 120x36, 480 at 200x60, 1080 at 300x90. It
+also pulled the wrong way while doing it, since a wider window got more stars
+*and* longer streaks at once. Then it was a fixed count, `--stars 256`, which
+held the line by giving up on saying anything about what a window shows.
 
-**The `+`/`-` keys are held to the same ceiling `--stars` is**, `cli::MAX_STARS`,
-so they cannot walk the pool past what the command line would have accepted.
-They used to clamp to a separate 20 000 that sat *under* what `--stars` allowed,
-which meant `--stars 100000` and a single `+` shrank the pool by four fifths.
-Their *floor* is `POOL_FLOOR`, and the argument for it lost half its subject when
-the density went: 64 was chosen against an automatic minimum of 300, and a floor
-up there sat over the count on any window the density opened thin, so `-` *added*
-stars and landed both keys on the same number. Every window opens on the same
-count now. What is left is 8 rather than 1, because `+` multiplies by 1.25 and
-truncates, so below four stars the key gives the same number back and swallows
-the press — `the_star_keys_move_the_pool_the_way_they_point` holds that, and
-also that `-` leaned on *reaches* the floor and stops there, which is the only
-thing left saying a pool cannot be walked to nothing.
+A limiting magnitude says both at once: the same universe on every terminal, and
+as much of it on screen as the window can see. Two things follow that are worth
+knowing before the default is argued about again. The cockpit's field of view is
+fixed by `Camera::focal` following the canvas height, so **the on-screen count
+is the same on every terminal of the same aspect** — a bigger window is the same
+sky better resolved rather than more of it. And `cli::DEFAULT_MAGNITUDE` is 6.0
+rather than the 6.5 a dark sky really reaches, which is a half magnitude paid to
+the grid rather than to taste: at 6.5 a 120x36 canvas is asked for about a
+thousand stars across 8 640 subpixels, the faint end of the count law is most of
+them, and the picture comes out an even wash rather than a sky. Both were shot
+and looked at. If you move it, shoot it again.
 
-**The one pool the floor may not lift is the empty one.** `--stars 0` is a sky
-somebody asked for, so `Flight::resize_pool` returns early rather than letting
-`-` put eight stars into it — and the early return is the whole of the fix
-rather than a smaller number passed down, because `StarField::resize_pool` and
-`ExteriorField::resize_pool` each hold their argument at `count.max(1)` and that
-guard is theirs to keep. `+` is deliberately not caught by it: zero is a fixed
-point of a multiply, so a key that is not lifted to the floor swallows the press
-for the rest of the flight. That asymmetry is also what the two `is_empty` doc
-comments now say — a sky can be *started* empty and cannot be *emptied*.
+**The `+`/`-` keys reach the two ends `--magnitude` reaches** — `cli::MIN_MAGNITUDE`
+and `cli::MAX_MAGNITUDE` — so a sky the keys walk to can never be one the
+command line would have refused. That invariant is older than the flag it now
+guards: `+` used to carry a ceiling of 20 000 that sat *under* what `--stars`
+allowed, so `--stars 100000` and a single press shrank the pool by four fifths.
+
+The floor and the two special cases that went with it are gone, and the reason
+is worth keeping because it is the same shape of argument. A multiply has fixed
+points — zero and one — so the old keys needed a `POOL_FLOOR` of 8 to stop `+`
+swallowing the press below four stars, and an early return in `resize_pool` to
+stop `-` clamping a deliberately empty sky *up* to that floor. An addition on a
+magnitude has neither, so a sky can be emptied and refilled by the same two keys
+that set it, and `the_magnitude_keys_move_the_limit_the_way_they_point` says
+both ends are reached rather than approached.
 
 **The same six keys fly the ship inside and the camera outside, and the zoom is
 switched off inside.** `WASD` and `QE` are the stick from the pilot's seat and
@@ -1314,14 +1217,16 @@ cockpit leaves both where they were.
 **The zoom is a dolly, not a lens.** `Renderer::exterior_camera` keeps
 `cam.focal` at `h * SIDE_FOCAL` whatever the zoom is doing; what moves is the
 standoff carried on `view::Eye` and applied by `Eye::to_camera`. That is not a
-stylistic choice: `ExteriorField` caches `cam.focal` and lays its whole band out
-against it, so a zoom that touched the focal length would need `retarget` on
-every notch — and `retarget` drops every trail, which is a scratch across the
-frame. The dolly leaves the sky untouched, and
+stylistic choice, though the reason has softened: the star band cached
+`cam.focal` and laid its whole layout against it, so a zoom that touched the
+focal length needed a `retarget` on every notch — and that dropped every trail,
+which is a scratch across the frame. The sky is in the world now and would
+survive it, but a zoom is still a dolly because that is the honest picture. The
+dolly leaves the sky untouched, and
 `the_zoom_moves_the_ship_and_leaves_the_sky_alone` in `app.rs` fails the moment
 anything makes `exterior_camera` read the zoom. An *orbit* is the opposite case
 and deliberately so: it is meant to take the sky with it, so it is handed to
-`ExteriorField::update` separately rather than reaching the camera.
+`Universe` through the camera's own basis rather than through its focal length.
 
 **The wheel is the zoom and nothing else.** `handle_mouse` returns no `Action`,
 because a pointer wandering across the window must never be the thing that ends
@@ -1413,9 +1318,9 @@ hottest gates in the program.
 
 **The hull points along the track, and `models::attitude` is where that is
 kept.** Out there the direction of travel is the one thing that cannot move:
-the ship flies where its nose points, `ExteriorField` streams the sky along
-that track and takes no steering argument at all, and there is no horizon for
-an angle to be measured against. So `heading` and `pitch` are a *compass* — an
+the ship flies where its nose points, the sky is streamed along that track by
+the ship's own attitude, and there is no horizon for an angle to be measured
+against. So `heading` and `pitch` are a *compass* — an
 instrument reading, and the panel's business — not a bearing off some fixed
 frame, and posing the hull from either tips it off the track and leaves it
 there. That was a real bug: a few seconds of `W` inside, then `C`, and the ship
@@ -1451,7 +1356,8 @@ one the program least often opened in. Keeping `auto` as a non-default value
 was considered and rejected: with the default at truecolor it is a second
 answer to a question already answered, and it is the answer that guesses.
 `--color auto` is now a parse error naming the three that remain, which is
-`the_narrow_colour_modes_are_asked_for_by_name` in `cli.rs`, and the default
+`an_unknown_colour_mode_is_refused_and_the_message_says_what_there_is` in
+`cli.rs`, and the default
 itself is pinned in `defaults_are_sane` beside the frame rate and the star
 count. **Nothing in the tree reads an environment variable** — those two
 `env::var` calls were the only ones, so `grep -rn 'env::var' src/` finding
@@ -1580,6 +1486,21 @@ that a frame never re-sends a colour it is already using. Several iterate over
 `models::models()` or `ViewMode::ALL` so a new entry is covered automatically —
 keep that property when you add to either.
 
+The sky's own guards are the sharpest examples of that style in the tree and
+are worth reading before adding to them. Three of them are what the rebuild is
+warranted by: `a_camera_swing_moves_no_star` is bitwise over a full turn on all
+three axes, `no_direction_holds_a_thinner_sky_than_any_other` counts the pool
+inside a cone about two hundred directions and holds every one within five
+standard deviations of the mean, and `the_sky_holds_still_at_impulse` bounds how
+far a star may move in thirty seconds of full impulse. That last one has a
+margin of 3.3x and **deliberately not more**: a threshold a hundred times clear
+would go on passing a speed map that had regressed by an order of magnitude,
+which is exactly the fault it exists to catch. The isotropy test asks the *pool*
+rather than a rendered frame, and that is the point rather than convenience — a
+frame at any sane star count is Poisson-noisy at better than two to one between
+its fullest and emptiest corner, so a frame cannot tell an anisotropy from an
+ordinary evening.
+
 `models.rs` has a third list of that kind, and it is two lists on purpose.
 `orbits()` is a spread of camera angles chosen to cover the *basis* — both
 poles and past them, head-on, dead astern, and corners with all three angles off
@@ -1682,7 +1603,10 @@ blurb can go quietly, hiding whole ships cannot.
 
 **Adding a camera.** Add the variant to `ViewMode::ALL` in `src/view.rs` — the
 cycle and `label()` are written so a third costs one line — then the arm in
-`Flight::advance`/`draw`, the `ViewArg` in `src/cli.rs`, and, if the controls
+`Flight::draw` and a third `universe::Observer` constructor beside `cockpit` and
+`outside` (`Flight::advance` no longer branches on the view: there is one sky
+and it is stepped the same way whoever is watching), the `ViewArg` in
+`src/cli.rs`, and, if the controls
 differ, a *pair* of hint arrays in `src/hud.rs`, since every face is spelled
 twice over for the ASCII terminal. `hud::Readout` carries `view` for exactly
 this, and `Glyphs::hints_for` is where a third answer goes. Then decide what the
@@ -1742,12 +1666,31 @@ rather than a string, so an unknown ship or a malformed angle is a message at
 the command line rather than a silent fallback — and a flag whose range starts
 with a minus sign needs `allow_hyphen_values`, or clap reads `--orbit -75,10`
 as a flag it does not know. Degrees rather than radians, because this is the one
-place a person types the number.
+place a person types the number. `--magnitude` needed the second of those too,
+for the same reason and quite independently: its range runs down past zero, so
+`--magnitude -2` is an empty sky and without the attribute it is an error.
+
+**Taking a flag away.** Do it by name rather than by silence. Clap's answer to a
+flag it does not know is "unexpected argument", which is no use to a shell
+history or a script — so `--stars` is still declared, `hide = true`, with a
+`value_parser` that always fails and says what replaced it, and
+`the_star_count_flag_says_what_replaced_it` holds the message to naming
+`--magnitude`. `--color auto` is turned away the same way and for the same
+reason: the value that used to work is the one worth naming.
+
+**Changing the sky.** Beyond the hashes, three things are worth looking at
+directly because no test says anything about them. Shoot a frame with
+`--features snapshot` and look at it — the density that reads as a sky rather
+than as static is a judgement, and `cli::DEFAULT_MAGNITUDE` was settled by
+shooting 5.5, 6.0 and 6.5 and comparing. Re-derive `universe::ZERO_POINT` if the
+count law or the default limit moves, or `--exposure` stops meaning what it
+means. And reshoot `docs/` — the README's two images are the first thing anybody
+sees of this program and nothing will tell you they have gone stale.
 
 **Changing the renderer.** Expect the golden hashes to move, and regenerate
 them in the same commit with the reason written down. Run
 `cargo run --release --example bench` before and after if the change is in a
-hot loop — `draw_streak`, `resolve_into`, `ExteriorField::draw`.
+hot loop — `draw_streak`, `resolve_into`, `Universe::streaks`, `Bend::draw`.
 
 Two things about that instrument, because it is easy to trust further than it
 goes. **It does not measure `Screen::flush` at all**: the write column times

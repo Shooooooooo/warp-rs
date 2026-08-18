@@ -185,7 +185,15 @@ fn hint_row(rows: usize) -> usize {
 pub struct Readout<'a> {
     pub ship: &'a Ship,
     pub fps: f32,
+    /// How many stars the sky holds, over the whole celestial sphere. Not how
+    /// many are on screen — that is the field of view's business and is about a
+    /// tenth of this.
     pub stars: usize,
+    /// And how faint the faintest of them is, which is what was asked for and
+    /// what `+` and `-` move. The count is the consequence; both are shown
+    /// because a key that changes a number nobody can see is a key nobody
+    /// believes.
+    pub magnitude: f32,
     pub paused: bool,
     /// Whether to show the control hints. A screensaver quits on any key, so
     /// listing which keys do what would be a lie.
@@ -317,8 +325,12 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, 
     let col = cols.saturating_sub(text.chars().count()) / 2;
     screen.overlay(col, status_row(rows), &text, color);
 
-    // Right-hand corner: how hard the machine is working.
-    let stats = format!("STARS {:>5}   {:>3.0} FPS", r.stars, r.fps);
+    // Right-hand corner: what was asked of the sky, what that came to, and how
+    // hard the machine is working for it.
+    let stats = format!(
+        "MAG {:>4.1}  {:>6}  {:>3.0} FPS",
+        r.magnitude, r.stars, r.fps
+    );
     let col = cols.saturating_sub(stats.chars().count() + 2);
     screen.overlay(col, 1, &stats, DIM);
 }
@@ -405,6 +417,7 @@ mod tests {
             ship,
             fps: 60.0,
             stars: 4000,
+            magnitude: 6.0,
             paused: false,
             hints: true,
             view: ViewMode::Cockpit,
@@ -654,6 +667,7 @@ mod tests {
                     ship: &ship,
                     fps: 60.0,
                     stars: 900,
+                    magnitude: 6.0,
                     paused: false,
                     hints: true,
                     view,
@@ -714,6 +728,7 @@ mod tests {
                             ship: &ship,
                             fps: 60.0,
                             stars: 900,
+                            magnitude: 6.0,
                             paused,
                             hints: true,
                             view,
@@ -769,6 +784,7 @@ mod tests {
             ship: &ship,
             fps: 60.0,
             stars: 4000,
+            magnitude: 6.0,
             paused: false,
             hints: false,
             view: ViewMode::Cockpit,
@@ -920,6 +936,7 @@ mod tests {
                     ship: &ship,
                     fps: 60.0,
                     stars: 900,
+                    magnitude: 6.0,
                     paused: false,
                     hints,
                     view: ViewMode::Cockpit,
@@ -952,6 +969,7 @@ mod tests {
                     ship,
                     fps: 60.0,
                     stars: 900,
+                    magnitude: 6.0,
                     paused,
                     hints: true,
                     view: ViewMode::Cockpit,

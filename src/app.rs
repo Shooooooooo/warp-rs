@@ -401,6 +401,7 @@ impl Flight {
             ship: &self.ship,
             fps,
             stars: self.stars(),
+            magnitude: self.magnitude(),
             paused,
             hints,
             view: self.view,

@@ -321,6 +321,7 @@ mod tests {
             ship,
             fps: 60.0,
             stars: 1000,
+            magnitude: 6.0,
             paused: false,
             hints: true,
             view: crate::view::ViewMode::Cockpit,

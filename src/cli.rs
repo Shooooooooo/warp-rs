@@ -31,10 +31,19 @@ const MAX_DIM: u16 = 10_000;
 /// check against a sky; a limiting magnitude is how star counts have always
 /// been quoted, it is a property of the observer rather than of the window, and
 /// the number of stars on screen falls out of it and the field of view instead
-/// of being capped by anybody. 6.5 is the naked-eye limit under a dark sky —
-/// about 9 100 stars over the whole celestial sphere and a thousand of them in
-/// the cockpit's 89-degree window, against the 256 the old default drew
-/// everywhere.
+/// of being capped by anybody.
+///
+/// 6.0 rather than the 6.5 a dark sky really reaches, and the half magnitude is
+/// paid to the grid rather than to taste. The cockpit's window is 89 degrees
+/// across, so a true naked-eye sky puts about a thousand stars in it — which is
+/// honest, and which a terminal cannot resolve: at 120x36 that is a canvas of
+/// 8 640 subpixels, the faint end of the count law is most of the thousand, and
+/// the picture comes out an even wash rather than a sky. What makes a sky read
+/// as one is the contrast between a handful of standouts and a dust behind
+/// them, and half a magnitude of headroom is what leaves room for it. This is
+/// about 4 600 stars over the sphere and 550 in the window, against the 256 the
+/// old fixed count drew on every terminal alike. Both ends were shot and looked
+/// at before this was settled.
 ///
 /// The bounds are the allocation guard this file applies to every other number,
 /// moved one step back: the pool grows as `10^(0.6 m)`, so bounding the
@@ -45,7 +54,7 @@ const MAX_DIM: u16 = 10_000;
 /// `--stars 0` is gone — and an empty sky is worth asking for, being the only
 /// way to see the tunnel, the bubble and the hull with nothing streaming past
 /// them.
-pub const DEFAULT_MAGNITUDE: f32 = 6.5;
+pub const DEFAULT_MAGNITUDE: f32 = 6.0;
 pub const MIN_MAGNITUDE: f32 = -2.0;
 pub const MAX_MAGNITUDE: f32 = 9.5;
 /// So a default the parser would refuse is a compile error rather than a
