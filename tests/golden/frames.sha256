@@ -1,6 +1,6 @@
 # Reference output for the headless renderer.
 #
-# `--headless` runs on a fixed timestep with no terminal control, so a fixed
+# `--headless` renders on a fixed timestep with no terminal control, so a fixed
 # seed produces the same bytes every time. Checking those bytes against a
 # committed hash is what turns that property into a test with an opinion: the
 # run-to-run comparison beside it only says a flight is repeatable, and a
@@ -27,531 +27,89 @@
 #     steer.txt       --demo --fps 10 --color truecolor
 #     drift.txt       the same, --view side --orbit -60,0,0
 #
-# `drift.txt` is the newest, and it is `steer.txt`'s hole seen from outside. The
-# autopilot flies the camera as well as the ship — before it did, a screensaver
-# on the outside view was very nearly a still life — and not one of the eight
-# flights before this could have said anything about it: the four `--engage`
-# ones carry no autopilot at all, and the four `--demo` ones watch from the
-# cockpit, which reads neither the orbit nor the zoom. So the camera could have
-# been swung anywhere on an unattended flight with every hash here standing.
+# All nine moved when the sky stopped being a box in front of the camera and
+# became a volume the ship is inside, and most of what this block used to say
+# about them went with it. What each case was *for* had been written down in
+# terms of the star band's own machinery — the fast paths that reduced to
+# identities when the camera was abeam, the sign of the depth travel, the ramp
+# the near wall needed, the fold that carried a trail across the edge — and
+# there is no band any more, so none of those reasons survives its subject.
 #
-# It shares every flag with `steer.txt` but the view, which makes the pair the
-# same twelve seconds of flight watched from inside and from outside — the
-# relationship `truecolor.txt` and `ansi256.txt` have, applied to a camera
-# instead of to a colour mode. A change that moves both has landed in the
-# autopilot; a change that moves one has landed in a view. Six of those seconds
-# are sublight and six are at warp, so the cheap exterior path and the bent
-# streaks are both in it, and the hull, the drive and the bubble are all lit for
-# the second half.
+# What the spread is for now is simpler and mostly unchanged: nine flights over
+# one sky, at both speeds, from five camera angles, in three colour modes, with
+# and without a hand on the stick. Read it as a grid rather than as a list of
+# special cases.
 #
-# Parked aft of the beam rather than on it, and both halves of that matter. The
-# swing is *added* to where `--orbit` put the camera, so a flight that opened
-# where the flag asked and then flew off on its own would be indistinguishable
-# from one that ignored the flag entirely if the flag said zero. And starting
-# aft means the camera **crosses** the beam, at frame 72, with the drive lit
-# since frame 60: the ship's own vanishing point stops existing partway through
-# the flight, and the band the drive swaps sides over is traversed as a ramp
-# rather than sat on one side of. `orbit.txt` sits at a fixed 55 degrees and
-# `astern.txt` at a fixed -75; neither of them ever crosses. Elevation and roll
-# are parked at exactly zero, so anything off level here is the autopilot's own.
+#   Colour.       `truecolor.txt` and `ansi256.txt` are the same flight in two
+#                 spellings, so a change that moves one and not the other has
+#                 landed in the writer rather than in the renderer. Detection is
+#                 gone and nothing is handed the palette mode by default, which
+#                 makes `ansi256.txt` the only guard on `quantize_256` and the
+#                 palette-index path. `ascii.txt` is the third, and the only one
+#                 that says nothing outside printable ASCII was emitted.
 #
-# The angle is derived from `autopilot::CAMERA_TURN` and has to be re-derived
-# whenever that moves — it is how far the camera walks in the seconds before the
-# crossing should land, and the crossing has to land after the drive lights at
-# frame 60. It was -60,0,0 at a turn every 43 seconds and -20,0,0 at every 137.
+#   Speed.        The four `--demo` runs and the four `--engage` ones split the
+#                 sky's whole dynamic range, and that split is sharper than it
+#                 used to be: at impulse the stars now hold *still* — a full
+#                 impulse frame differs from a parked one only by the twinkle —
+#                 while at warp the exposure draws three seconds of each star's
+#                 own track. A change to the exposure moves the five flights
+#                 that light a drive and leaves the rest alone.
 #
-# `steer.txt` closed the widest hole the seven before it left: not
-# one of them ever put a hand on the stick. The four `--engage`
-# flights carry no autopilot, and the three `--demo` ones stop four seconds
-# short of the weave, because that cycle spends its opening six seconds easing
-# the throttle up and 120 frames at 60 fps is two of them. So the cockpit's
-# whole steering path — yaw, pitch, the lean they come with, and the branch that
-# swings a star out of the frame and back in the far side — sat outside this
-# file, and a change that repainted every turn ever flown could leave all seven
-# hashes standing. `--fps` in headless *is* the timestep, so at 10 the same 120
-# frames are twelve seconds of flight instead of two, and the last six of them
-# have the stick moving. The lean it reaches is small — the weave asks for a
-# few thousandths of a radian a frame — and it moves 62% of the bytes, which is
-# the reference doing its job rather than the flight being violent.
+#   Camera.       Four flights watch from outside and they are at four
+#                 different angles, which is now a question about which sky is
+#                 in front of the lens rather than about which arithmetic is
+#                 switched on. `side.txt` is abeam, where `Eye::to_camera` is an
+#                 exact swizzle and the hull's axis lies flat in the image
+#                 plane, so it is still the shot with no vanishing point at all
+#                 and still the one the engine lance's clamp cannot move.
 #
-# `orbit.txt` is the camera swung off the beam, and it is here for the reason
-# the two before it are: the outside view's whole geometry is written to reduce
-# *exactly* to the old arithmetic when the camera is abeam, which is where
-# `side.txt` has it. So a change that repainted every angle except that one
-# would have left the reference untouched. `--orbit 55,35,20` has all three
-# angles off zero at once, which is the only configuration that turns the
-# bubble's outline off the horizontal, and it puts the star band's depth travel,
-# its vertical fold and its wall recycle on the path as well.
+#   Stick.        The four `--demo` flights steer and the four `--engage` ones
+#                 hold every rate at an exact zero from the first frame to the
+#                 last. That distinction reaches further than it did: the ship
+#                 carries an attitude now, and the sky is projected through it,
+#                 so a turn moves the sky from *both* cameras rather than only
+#                 from the seat. `drift.txt` is the flight that sees it from
+#                 outside.
 #
-# `astern.txt` is here because the six recorded before it all watch
-# the ship from abeam or from in front of it. The camera goes all the way round;
-# the point the ship's own *track* vanishes at is on the screen from behind and
-# from nowhere else. So half the range of a control had no reference at all, and
-# it was the half where a trail stretched in screen space can be drawn clean
-# through a place the track only ever approaches. It is recorded at
-# `--orbit -75,6,20` — all three angles off zero, the nose receding, and the
-# point landing 24 subpixels from the ship and 20 from the nearest edge, which
-# are the two conditions that make the question askable at all and are the same
-# pair `models::forward_quarter()` picks its angles for.
+#   Autopilot.    `drift.txt` shares every flag with `steer.txt` but the view,
+#                 which makes the pair one flight watched from inside and from
+#                 outside — the relationship `ansi256.txt` has to
+#                 `truecolor.txt`, applied to a camera instead of to a colour
+#                 mode. It is parked aft of the beam rather than on it so the
+#                 camera *crosses* the beam mid-flight, at frame 72 with the
+#                 drive lit since frame 60, which is the band the drive swaps
+#                 sides over traversed as a ramp rather than sat beside.
 #
-# The three before it are here because the first two turned out to cover very
-# little.
-# `--demo` spends its opening six seconds easing the throttle up, and 120 frames
-# at 60 fps is two of them — so the pinned sky was sublight throughout, peaking
-# at a quarter of light speed with the drive cold. Every warp path in the
-# renderer sat outside it: the streak ramp, the tunnel glare, the flash, the
-# Doppler shift, and the whole view from outside with it — the star band, the
-# lens, the arcs and the hulls. A change to any of those could repaint the sky
-# and this file would not have noticed.
+#                 That angle is derived from `autopilot::CAMERA_TURN` and has to
+#                 be re-derived whenever that moves: it is how far the camera
+#                 walks in the seconds before the crossing should land, and the
+#                 crossing has to land after the drive lights at frame 60. It
+#                 was -60,0,0 at a turn every 43 seconds and -20,0,0 at every
+#                 137.
 #
-# What none of them covers, and it took a fix to find out: the fleet is one ship
-# deep. Not one of the flights with a hull in it passes `--ship`, so every one
-# of them flies the enterprise. Clearing the hull band over the span it is read
-# over rather than the span it is written to changed real frames for four of
-# the ships then in the hangar — three of five camera angles for two of them —
-# and left every hash below bit-identical, because the enterprise's
-# projected outline does not happen to expose it at any angle tried. So a
-# change to `Canvas::fill_hull` or `models::plates` that this file passes is
-# not thereby a change that draws every hull the way it drew it before, and the
-# guard for that one is the property test in `canvas.rs`, not this.
+# None of the nine names a sky, so all of them fly the default limiting
+# magnitude — which is a fixed number of stars over the whole celestial sphere
+# on every terminal, where `--stars` was a fixed number *drawn*. The reference
+# is also still one ship deep: no case passes `--ship`, so all three flights
+# with a hull in them fly the enterprise, and a fault that only some other
+# outline exposes wants a property test over `models()` rather than a tenth
+# flight.
 #
-# `ansi256.txt` is `truecolor.txt`'s flight in the other colour mode, and it is
-# the one case here recorded to be compared against another rather than against
-# itself: the two ask for the same sky and differ only in how a cell's colour is
-# spelled, so a change that moves one and not the other has landed in the writer
-# and not in the renderer. It arrived with the fix that made the mode send
-# `38;5;N` — before that it sent palette values inside a 24-bit sequence, which
-# the terminals the mode exists for cannot read — and it was recorded because
-# the mode had no reference at all while being the one detection handed to any
-# terminal with a `TERM` entry and no `COLORTERM`, which was most of them.
-# Detection is gone and `--color` opens at truecolor now, so nothing is handed
-# this mode; it is asked for. That makes this file the only guard left on
-# `quantize_256` and the palette-index path, since every other flight here is
-# truecolor or ascii and would not notice either of them repainted.
+# The hashes hold across build profiles and rustc versions but not across
+# platforms: `sin`, `cos`, `exp` and `powf` come from the system maths library,
+# and recycling the sky turns a one-ulp difference into a different universe.
+# So they are checked on `ubuntu-latest` only, and `tests/golden.rs` is gated to
+# Linux for the same reason.
 #
-# Regenerate deliberately, with the diff in hand to say what moved:
-#
-#     cargo build --release
-#     common="--headless --frames 120 --seed 1 --size 120x36"
-#     ./target/release/warp $common --demo --color truecolor > truecolor.txt
-#     ./target/release/warp $common --demo --color ascii     > ascii.txt
-#     ./target/release/warp $common --demo --color 256       > ansi256.txt
-#     ./target/release/warp $common --engage --throttle 1.0 --color truecolor > warp.txt
-#     ./target/release/warp $common --engage --throttle 1.0 --view side --color truecolor > side.txt
-#     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit 55,35,20 --color truecolor > orbit.txt
-#     ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
-#     ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
-#     ./target/release/warp $common --demo --fps 10 --view side --orbit -60,0,0 --color truecolor > drift.txt
-#     sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt drift.txt \
-#         > tests/golden/frames.sha256
-#     # and put this comment block back
-#
-#
-# One hash moved and eight did not, when the autopilot's camera was sped up by
-# about three — a turn round the ship every 43 seconds rather than every 137,
-# with the lift and the zoom shortened in proportion so no one axis runs away
-# from the others. The amplitudes are untouched: the camera covers the same
-# ground, sooner. At 2.6 degrees a second the shot did not read as moving at
-# all over the span anyone watches a screensaver for; it got a third of the way
-# round the hull per run to warp, which is only visible if you leave and come
-# back.
-#
-# One hash is the whole shape, and it is the sixth one CLAUDE.md lists: a change
-# to where the camera outside is pointed by nobody moves `drift.txt` and nothing
-# else. `warp.txt`, `side.txt`, `orbit.txt` and `astern.txt` carry no autopilot
-# at all. The other four run one, and their `orbit_target` and `zoom_target`
-# really did take different values every frame of this — but all four watch from
-# the cockpit, which reads neither, so they are bit for bit what they were. That
-# is what says the camera is still confined to the view that can see it.
-#
-# `drift.txt` moved twice over, and both were expected: the camera walks faster,
-# and its start angle was re-derived from the new rate. `--orbit` went from
-# -20,0,0 to -60,0,0 to keep the beam crossing after the drive lights — at the
-# new rate the old angle crossed at frame 24 with the drive still cold, which
-# would have quietly cost the flight the thing it was recorded for. The frame it
-# crosses on moved 76 to 72. Two things about the flight got better on the way:
-# the elevation now rises, peaks and starts back down inside the twelve seconds
-# where it used to only rise, and the zoom reaches its full 1.40 where it used
-# to stop at 1.23. The reference covers more of both axes than it did.
-#
-#
-# Four moved and four did not, and `drift.txt` arrived, when the autopilot was
-# rewritten to fly the same flight at any frame rate, to keep a hand on the
-# stick the whole cycle, and to fly the camera as well as the ship.
-#
-# The four that moved are the four that carry an autopilot at all, and that is
-# the whole of the shape: `render_headless` gates it on `args.demo.is_some()`,
-# so `warp.txt`, `side.txt`, `orbit.txt` and `astern.txt` are bit for bit what
-# they were. Two things moved the other four. The weave used to sit inside the
-# warp leg of the cycle, which left the run-up, the drop-out and the coast —
-# twenty of the forty-six seconds — with every rate decaying to nothing and the
-# sky perfectly still; it runs the whole cycle now, which is what reaches the
-# three flights that never leave the opening ramp. And the weave was an impulse
-# a *frame* against a decay a *second*, so its amplitude went with the frame
-# rate: forty seconds of it swept a sixth of its 60 fps arc at ten frames a
-# second and eight and a third times it at five hundred, and `steer.txt` flies
-# at ten. Scaled by the frame it sweeps 36.75 degrees of arc at every rate from
-# ten to five hundred, agreeing to five significant figures. The gains are sixty
-# times the per-frame ones they replace, so the flight at 60 fps is the flight
-# that was there before — which is why the three cockpit `--demo` hashes moved
-# for the phases the weave reached rather than for its width.
-#
-# The peak throttle a cycle climbs to now wanders between 0.78 and full, so
-# consecutive cycles run warp 7.3 to warp 9.8 rather than the same pass over
-# again. It cannot reach these hashes: the wave has a period of 71 seconds and
-# no flight here is longer than twelve.
-#
-#
-# `steer.txt` moved on its own when the lean came out of the cockpit picture,
-# and the entry below — one commit old — is what it supersedes. That commit
-# fixed a turn that lifted the nose by steering the sky in the frame the lean
-# had turned the picture to. It worked, and it bought a second fault with it:
-# the step became the steering with a roll of however much the lean moved in
-# front of it, and rotations do not commute, so working the stick round a closed
-# loop left a residue about the camera's own x. It goes as the *square* of the
-# yaw rate — the same way round whichever way the stick went — and it came to
-# about nine degrees a second of nose-down that nothing brought back. Parked and
-# working the stick left and right was enough to fly the sky off the top of the
-# frame.
-#
-# There is no way to put a yaw-coupled angle into the sky's orientation without
-# one of those two: rotate the picture and steer underneath it and the flow
-# tilts by the lean; steer in the leaning frame and the path stops closing. So
-# the picture is not rotated at all now. `Camera` has no bank, `Camera::project`
-# is a divide and a translation, and the lean is a fact about the *hull* —
-# `models::attitude` still poses it by `roll + bank`, which is where a lean can
-# be seen without also being flown.
-#
-# One hash, and it is the only shape this can have. `steer.txt` is the only
-# flight here with a hand on the stick and so the only one where the lean was
-# ever off zero; the other seven hold it at an exact zero from the first frame
-# to the last, so taking the arithmetic out had to be bit-identical for them —
-# `x·1 − y·0` is `x`, and `d·1` is `d`. All seven came back byte-identical,
-# including `orbit.txt` and `astern.txt`, which run the star band's fold where
-# the same rotation was being applied to a carried trail. Had one of them moved,
-# an "obviously equivalent" removal would not have been, and that would have
-# been the finding rather than a regeneration.
-#
-# Worth recording, since the entry below claims the opposite: taking the lean
-# out also settles a mismatch it papered over. `spawn` lays its rectangle out in
-# unrotated camera space and `escaped` tested the *rotated* projection against
-# the same rectangle, so past about eleven degrees of lean on an 80x24 terminal
-# the screen corners fell outside the seeded region and stopped being refilled
-# from the far plane. That commit said the screen was inside the spawn rectangle
-# at every angle the lean reaches. It is not, and now the question does not
-# arise: the two are in the same space again.
-#
-# `orbit.txt` and `astern.txt` moved when the band stopped taking stars out of
-# the picture. Two faults with one root: it moved stars about to keep its own
-# books straight and never asked whether anyone was looking at the one it moved.
-#
-# The near wall was the reported one. `Z_NEAR` is a flat plane in `z` while the
-# band is a fixed rectangle on the *screen*, so a star arriving at it can be
-# anywhere in the frame at all, and `depth` reaches 1.0 there — full brightness.
-# The far wall has had the mirror of that ramp for as long as this band has
-# existed and the near wall never got one, because abeam `travel[2]` is a hard
-# zero and nothing has ever crossed it. Measured astern at full warp it was
-# taking four stars a step out of a 256-star pool at a mean brightness of 0.36,
-# which is a bright star winking out mid-frame eight times a second; at sublight,
-# twenty-six a second. It has a ramp now, `NEAR_FADE_STEPS` deep and scaled by
-# the flow so it is a fixed number of *frames* at any speed and goes to zero
-# smoothly as the camera comes back to the beam.
-#
-# The larger one was the density machinery. Holding a flat count per unit range
-# against a flow that magnifies costs a relocation per star per step, and both
-# of them were visible: expanding, what the magnification carried out was
-# scattered back across the whole band, twenty of the pool a step landing on
-# screen out of nowhere; contracting, the rim was filled from whichever star a
-# counter landed on, fourteen a step taken *off* the screen from anywhere at all.
-# Neither can be fixed by fading — at a tenth of the pool a step there is no
-# fade long enough to hide it and short enough to finish — and neither can be
-# fixed by choosing better places, because under a magnification the deficit a
-# step leaves is uniform and a uniform refill is the only correct one. So the
-# band is not held at a flat profile any more. A star that leaves now comes back
-# in through a boundary the flow is entering by and nowhere else — the rule
-# `crate::starfield` has always used — and the profile settles at the only one a
-# flow leaves alone, `n ∝ z²`, an even sky seen through a frustum. Both ends of
-# every move are then off the screen or already faded. The worst star taken from
-# a visible position went from 6.5 times the mean sky to 0.28 of it.
-#
-# One thing that follows and reads like an off-by-one until it is measured: a
-# star is now left outside the band for the single frame that carries it off the
-# screen. One step of magnification can be worth more than the band's 1.15
-# margin — `z_prev / z` reaches 1.5 at full warp — so taking it the moment it
-# crosses makes it vanish a couple of cells short of the edge, which is the
-# reported fault in miniature. It is held still sideways for that frame, because
-# the sideways travel can otherwise pull it back inside the band it just left and
-# it lingers at the edge instead: that alone took the share of the pool on screen
-# from 0.76 to 0.60 at 45 degrees off the beam.
-#
-# The same two hashes, for the same reason as the entry below and read the same
-# way. Everything above is gated on `turns_z`, and the ramp on `travel[2]` being
-# non-zero, which at `Orbit::LEVEL` it is exactly not — so `side.txt` is
-# byte-identical, and a move in it would mean something had been reduced to an
-# identity that was meant to be switched off. The three cockpit flights and
-# `warp.txt` never build an `ExteriorField` at all.
-# All seven moved together when the star count stopped following the terminal.
-# `--stars` is a plain count now, defaulting to 256, where it used to default to
-# 0 for "suit the pool to the canvas" — stars per subpixel, 0.02 where it
-# finished. Not one of these seven passes the flag, so every one of them flew on
-# that density, and at 120x36 — 8 640 subpixels — that is 172 stars becoming
-# 256.
-#
-# Seven hashes, and this is the shape where the split between them carries
-# nothing whatever. Two things move in every frame of every flight for it, the
-# sky and the panel's STARS readout that names the number, so a hash standing
-# still would have been the thing wanting an explanation — it would mean some
-# flight was not sizing its pool from the default at all. This is the third time
-# this file has recorded that shape for the star count and it is the last: both
-# of the entries below it are the same constant being moved, and there is no
-# longer a constant there for a terminal to reach.
-#
-# `orbit.txt` and `astern.txt` moved together when the band stopped letting the
-# sky fall in on itself off the beam. A star's place in the frame is
-# `focal · pos / z`, so every change of range scales it, and the fold — which is
-# the right answer for the *translation* the flow applies — is no answer at all
-# for a scale.
-# Contracting, the band widened away from a pool shrinking inside it and nothing
-# refilled the frame edges; expanding, the fold put a star back on the very edge
-# it had just been carried over and the next step carried it over again, so the
-# pool piled into the off-screen margin and the middle drained. Two seconds on
-# `A` or `D` was enough to empty the top and bottom of the frame and leave a bar
-# of stars across the middle. The step now puts back `1 − λ²` of each range
-# shell on the rim a contraction vacates, and scatters what an expansion carried
-# out across the whole band rather than wrapping it, both of which are the
-# density it started with exactly rather than an approximation of it. The depth
-# recycle changed with it: a star crossing a wall now comes back just inside the
-# wall the flow is entering through instead of anywhere in the band, which is
-# the fold in `z` in distribution and holds the count per unit range flat where
-# seeding through the whole band had turned a one-way flow into a seven-to-one
-# ramp.
-#
-# Two hashes, and they are the two flights that have a `travel[2]` at all — a
-# sharper split than the entry below, which is the same pair of camera angles
-# read the other way round. Every new branch is gated on `turns_z`, which is
-# `swing.is_some() || travel[2] != 0.0`: at `Orbit::LEVEL` travel is exactly
-# `(-1, 0, 0)` and `--orbit` is snapped at startup, so nothing in a headless
-# `side.txt` step reaches any of it and the arithmetic is the old arithmetic to
-# the bit. The three cockpit flights and `warp.txt` never build an
-# `ExteriorField` at all. `orbit.txt` is at `--orbit 55,35,20`, where
-# `travel[2]` is `cos 35° · sin 55° = 0.671`, and `astern.txt` at
-# `--orbit -75,6,20`, where it is `cos 6° · sin −75° = −0.961` — one flight
-# contracting the sky and one expanding it, which is the pair of failure modes
-# the change is about. Both move for three reasons at once: the recycle draws
-# from a different range so the RNG stream diverges, the range profile goes from
-# a ramp to flat, and the transverse boundary is now maintained.
-#
-# Note what that means for this file again. Both were recorded *with* the
-# collapse in them, and neither could have caught it in any case, because both
-# are shot at `--throttle 1.0` where one step is longer than the whole
-# three-hundred-deep band and a star is recycled before it can drift anywhere.
-# It shows at ten c and not at two thousand — so a seventh flight was added for
-# a fault it could not see either, one commit before this one. The guard is
-# `the_sky_is_as_even_off_the_beam_as_it_is_abeam` in `exterior.rs`, which
-# measures the pool's spread across the frame rather than a hash of it, at the
-# speed the report was shot at.
-#
-# `astern.txt` arrived with the fix for a fault not one of the six could see,
-# and the useful half of that entry is that **no hash moved for it**. A trail is
-# stretched back along the track in *screen* space — the step the star swept,
-# multiplied by six at full warp — and a ray running away from the eye does not
-# project onto a screen-space ray. It projects onto the segment between the star
-# and the point its own direction vanishes at, approaching it and never
-# arriving, so the multiply drew trail past the place it had already gone. It is
-# `models::draw_trail`'s bug, in the star band, and it wears the same fix:
-# `Camera::vanishing_point`, and one division.
-#
-# Every one of the six answers `None` to that division and so cannot move.
-# Abeam the nose lies flat in the image plane; forward of the beam the track
-# runs toward the eye and its projection diverges rather than converging; and
-# the three cockpit flights are a different module. That is not a change
-# vindicated by six green hashes, it is a change that found the hole those six
-# leave — and the hole is a whole half of where the camera can be put. Hence
-# this flight, and hence `a_trail_never_runs_past_the_point_the_track_vanishes_at`
-# in `exterior.rs`, which is the guard at the level the fault lives at: it holds
-# every trail in the pool short of that point and no shorter than the step it
-# was stretched from. Recorded *after* the fix, so what it pins is the sky with
-# the cusp gone.
-#
-# `orbit.txt` moved on its own when a folded trail stopped being scaled by the
-# wrong range. The band wraps a star that runs off an edge round to the other
-# side and carries its trail with it, which means turning a world-space jump
-# into a screen-space one — a divide by the star's range. It was dividing by the
-# range the star *ends* the step at, where the trail had been projected through
-# the range it *started* it at, so the trail landed short or long by
-# `shift · focal · (1/z_new − 1/z_old)`, along the camera's own x for the
-# sideways fold and y for the vertical one. `streaks` then multiplies the whole
-# tail-to-head vector by six at full warp, and what reached the frame was a
-# lattice of long faint streaks lying across the flow instead of running with
-# it — faint because `draw_streak` divides a streak's light by its length, so a
-# streak several times longer than the motion it stands for is spread that much
-# thinner.
-#
-# One hash, and it is the only shape this change can have. Travel is exactly
-# `(-1, 0, 0)` at `Orbit::LEVEL`, so `travel[2]` is a hard zero, the two ranges
-# are the same bit for bit, and the correction was already exact where
-# `side.txt` has the camera. The three cockpit flights are a different module
-# again. Note which way round that leaves this file: `orbit.txt` was recorded
-# with the fault in it and pinned it for as long as it stood, which is what a
-# reference frame does with anything nobody has looked at — it was found by
-# looking at the README's own screenshot, not by anything here. The guard is
-# therefore a property test at the level the fault lives at,
-# `a_trail_carried_over_the_fold_is_scaled_by_the_range_it_was_drawn_at` in
-# `exterior.rs`, which holds every star's trail to the projection of where it
-# was one step back along the track — folded, recycled or merely flown — at
-# four camera angles and two speeds.
-#
-# `side.txt` and `orbit.txt` moved together when three measurements in the
-# outside view stopped being taken the expensive way. `hypot` is libm's
-# overflow-safe, correctly-rounded routine and every span it was measuring here
-# is a difference of two canvas coordinates, so it was buying a guarantee the
-# inputs could not need; `Lens::offsets` ended on a divide per axis by two
-# numbers fixed for the whole frame; and `draw_path` measured a segment's length
-# three more times after already having it. All three are the same arithmetic to
-# within a rounding, and none of them is the same arithmetic to the bit.
-#
-# Two hashes, and it is the shape this change has to have. Nothing in the
-# cockpit reaches `lens`, `exterior` or `draw_path` — the tunnel is streaks and
-# two glows — so the three `--demo` flights and `warp.txt` came back
-# byte-identical, and a hash moving outside these two would have meant the reach
-# was wider than the change claimed. It is the same split the hull changes below
-# have, arrived at from the other side: those two are the flights with a ship in
-# them, and they are also the only two that light a lens.
-#
-# Those two changes met in a merge, and the hashes below are what the merged
-# tree actually renders rather than one side's set kept and the other's
-# discarded. Both moved what is drawn, so neither branch's file was right for
-# the tree that has both: the density decides how many stars every one of these
-# six flights spawns, and the measurements decide where the two that light a
-# lens put them. Regenerated from the merge and read against `main` rather than
-# against the branch, which is the sharper baseline — `main` already carries the
-# density, so `side.txt` and `orbit.txt` differ from it and the other four are
-# byte-identical to it, exactly as the paragraph above says they must be.
-#
-# All six moved together when `AUTO_DENSITY` went from 0.005 to 0.02, and this
-# is the second time this file has recorded that shape for that constant — see
-# the halving below, which is the change this one partly walks back. The reading
-# is the same and it is inverted from the usual one: none of the six passes
-# `--stars`, so every one flies on the automatic count, and at 120x36 — 8 640
-# subpixels — that took the pool from 43 stars to 172. Two things move in every
-# frame for it, the sky and the panel's STARS readout that names the number, so
-# a hash standing still would have been the thing wanting an explanation. The
-# split between the six carries no information about this change at all; what it
-# would carry is news that some flight was not sizing its pool from the density.
-#
-# `orbit.txt` moved on its own when the drive stopped shining through the hull.
-# The bells and the exhaust they throw are light, the plates are opaque, and
-# `models::draw` laid the first over the second unconditionally — so from
-# anywhere forward of the beam the enterprise's nacelle bells burned as two blue
-# lamps in the middle of a saucer that was standing squarely in front of them.
-# The drive is now drawn on whichever side of the plates it belongs on, which is
-# a question about where the exhaust is pointed rather than about the camera.
-#
-# One hash and only one, and that is the shape this change has to have. The
-# three cockpit flights draw no hull and no bells at all. `side.txt` is the
-# abeam shot, where the ship's axis lies flat in the image plane and the nozzles
-# point across the eye rather than away from it: the depth the axis gains over a
-# unit of its length is a hard zero there — the standoff is on both sides of the
-# subtraction and cancels bit for bit — so the drive is drawn after the plates
-# exactly as it always was, in one call with its share at exactly 1.0. Only the
-# flight with the camera swung round to 55 degrees of azimuth is looking at a
-# ship whose drive it should not be able to see through.
-#
-# All five moved together when the automatic star count was halved and its floor
-# taken away, and this is the one change where the split between these hashes
-# carries no information at all. None of the five passes `--stars`, so every one
-# of them flies on the automatic count, and at 120x36 — 8 640 subpixels — that
-# went from the old floor of 300 stars to 43. Two things changed in every frame
-# for it: the sky, and the panel's STARS readout that names the number. So the
-# usual reading is inverted here — a hash that had *not* moved would have been
-# the thing needing an explanation, since it would mean a flight was not sizing
-# its pool from the density at all.
-#
-# Before that, `side.txt` and `orbit.txt` moved when the engine lance was given
-# a tail that fades to nothing, and was aimed at its vanishing point instead of
-# being stopped short of it. The lance used to give up 8% of the way out, and
-# that margin was never about the geometry: `draw_streak` ramps down to
-# `TAIL_BRIGHTNESS` rather than to nothing, and every bell on a ship shares one
-# vanishing point, so a lance ending *on* it left a third of full brightness
-# from every lane of every bell on a single subpixel — a bead hanging in the sky
-# exactly where the exhaust was meant to have gone. `draw_fading_streak` takes
-# the floor away, the sample that lands on the point carries a ramp of exactly
-# zero, and the margin had nothing left to buy.
-#
-# Two hashes and not one, which is a different shape from the clamp that went in
-# before it and the right one. That change only altered what happens off the
-# beam, so it could not reach `side.txt`; this one changes the ramp everywhere a
-# drive burns, and both of these flights have the drive lit. The three cockpit
-# flights draw no hull and so no plume, and they came back bit-for-bit — which
-# is also what says the star path is untouched, since the ramp there is the same
-# multiply and the same add on the same constants it always was.
-#
-# Before that, `orbit.txt` moved on its own when the lance stopped running
-# *through* the point its plume vanishes at. A lit drive's lance is stretched in
-# screen space to the frame diagonal, and a plume running away from the eye
-# projects onto a point that only ever *approaches* the vanishing point of its
-# own direction — so the stretch drew exhaust past the place it had already
-# gone, and a symmetric pair of bells swapped sides on the way through and
-# crossed. `side.txt` could not move for it: it is the abeam shot, where
-# `Eye::to_camera` is exactly `(x, y, z) -> (z, y, distance - x)`, the hull's
-# axis lies flat in the image plane, its depth term is exactly zero, there is no
-# vanishing point to clamp against, and the arithmetic was the old arithmetic to
-# the bit.
-#
-# Before that again, `side.txt` and `orbit.txt` moved together when the hull's
-# outline started being measured on a grid inside each subpixel rather than at
-# its centre. Those two
-# are the flights with a ship in them and the only two that moved for it: the
-# three cockpit flights came back bit-for-bit identical, which is what says the
-# change reached the hull and nothing else. Anything that moves a cockpit hash
-# for a hull change has leaked out of the rasteriser it was meant to be in.
-#
-# These two are recorded at `--aa`'s default. `--aa 1` measures the outline at
-# the subpixel's centre, which is what the rasteriser this replaced did, and it
-# reproduces all five of the *then*-committed hashes exactly — that reduction is
-# checked in `canvas.rs` against the old code kept there as its oracle, and it
-# is the reason this file could be regenerated with any confidence about what
-# had changed.
-#
-# And `warp.txt` moved when the cockpit's tunnel glare was spread out — both
-# glows widened by two to three times and dropped to about a quarter of their
-# strength, so the light arrives diffused rather than as a hard point inside a
-# veil. It was the only hash to move, twice running, and that is the whole
-# shape of such a change said back: the two `--demo` flights never leave
-# sublight, so the glare block does not run in them at all, and `side.txt` and
-# `orbit.txt` go through `add_glow_oval` rather than the cockpit call site. The
-# other four were regenerated alongside it both times and were byte-identical.
-#
-# Those two changes met in a merge, and the file below is what the merged tree
-# actually renders rather than one set of hashes pasted beside the other. All
-# five were regenerated from it, and each moved exactly where its own change
-# said it would: the glare reaches `add_glow` and the hull reaches `fill_hull`,
-# and no flight goes through both.
-#
-# Before all that, `side.txt` moved when the stick was given to the camera out
-# here. Only its hint line changed: with the old `QE roll` text restored and
-# every other part of that change still in place, all four of the
-# then-committed hashes matched, so the camera basis, the star band's vector
-# travel, the Doppler axis and the bubble's projected outline are bit-for-bit a
-# re-expression of what was there before. The panel names the controls, and the
-# controls changed.
-#
-# The case list lives here, in `tests/golden.rs` and in the `headless` CI job,
-# and the file names again in `.gitignore`. Adding a flight means adding it to
-# all four.
-#
-# The hashes hold across build profiles and rustc versions — checked against
-# 1.85 and 1.94, debug and release — but not across platforms: sin, cos, exp
-# and powf come from the system maths library, and recycling the star pool
-# turns a one-ulp difference into a different sky. So this is checked on
-# ubuntu-latest only, and a runner image moving to a new glibc may need it
-# regenerated once.
-9dd6f1906fb0176fa5be711107598a87543f78eeb418e60d435e9a3fc3e4800c  truecolor.txt
-2befe4ec8c1dcc9e7fbf042feaee4416e92ebddf9c7badadcbc5e27a8a1f1161  ascii.txt
-b6613a154e98755a04ee772dc96320920a26764689ed07be1bd40c835d0de340  ansi256.txt
-55b132cff11acac57e83b1425d4e2e7a43fb37d6493e8c009ed00f4a44f74a90  warp.txt
-ecb631ff6cef9044f4ee39260344723688d9ffdffb45ed02e2960ee22c0239e7  side.txt
-270fbc71ac18b3836bbb76d5275e93c68df3a8ce4c9412fa8972b9836ba35b63  orbit.txt
-b2acbe080940ece38fca6e736d44605d006ca1672079595e9c24d2b1b7c3c1c9  astern.txt
-ec59677a60ec43e12e8b8f82cb446897a409fb9f085c1ca6e411ea194e5610a7  steer.txt
-e7e0a1ba4acfc7e9d4b58108c947d61fd4486315b60d8e57fa194d1abe712ab5  drift.txt
+# Regenerating: build a release binary and run the nine commands in `CLAUDE.md`,
+# then put this block back. Say in the commit message which moved and why.
+b6530600e9d01a47409a85bb67d47f00ecc5ccd54200a6092ba93235b52e9cfd  truecolor.txt
+f71864f9c2abd4acd4a1d46a045933ae6a9518154c70093759b991259b79167a  ascii.txt
+185ac86930f39e83df9c836a62126483f7369014a13d95951ac4d24bb5fed1af  ansi256.txt
+595b63e1b9e8e051b1cea8616f2385a8f1bbe3bd7ecacd8221015cee4b1a3516  warp.txt
+195259f62bf54a247bdeaf008be9eeb2d7d723e60e89065e4d603845ed2c0c2f  side.txt
+30cac3e446f8e175ec74f1293a82d088cac724efb83c457d9a0ae9e8f6436787  orbit.txt
+213e82049e582b45def76c2b6de61ead489da9d229a740fd36fca84177ef3f39  astern.txt
+1e9c2b06b910346adb66d62bf095c5dfdd28c907359591f695819901a15d09fa  steer.txt
+efc545cb38ac9bc1b3bde026ffc0b384ea8f3e810d88752bb4acc5c0cb345f17  drift.txt

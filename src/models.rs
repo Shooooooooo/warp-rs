@@ -29,9 +29,9 @@
 //! which is the only light in the frame that can be on either side of a plate,
 //! is drawn on the side its exhaust is pointed toward.
 
+use crate::camera::{self, Camera, Streak};
 use crate::canvas::{Canvas, Facet};
 use crate::ship::{Ship, MAX_PITCH_RATE, MAX_YAW_RATE};
-use crate::starfield::{self, Camera, Streak};
 use crate::view::{Eye, HULL_REACH, MIN_SHIP_DISTANCE};
 use std::sync::OnceLock;
 
@@ -42,10 +42,13 @@ use std::sync::OnceLock;
 /// the sort of thing that goes unnoticed for a while, so the closest the zoom
 /// can get is a compile-time fact.
 ///
-/// Its opposite number — the ship not reaching *out* into the star band — is in
-/// [`crate::exterior`], beside the near wall it is about.
+/// It used to have an opposite number, beside the star band's near wall: the
+/// ship had to stay inside it, or a star could be drawn over a hull it was
+/// supposed to be behind. [`crate::universe`] holds its nearest star light
+/// years off, so that end of the sandwich is now twelve orders of magnitude
+/// clear and there is nothing left to assert.
 const _: () = assert!(
-    MIN_SHIP_DISTANCE - HULL_REACH > starfield::Z_NEAR,
+    MIN_SHIP_DISTANCE - HULL_REACH > camera::Z_NEAR,
     "the zoom can push a hull through the near plane, and a plate that cannot \
      be projected is simply not drawn"
 );
@@ -111,8 +114,8 @@ const TRAIL_PER_RADIUS: f32 = 12.0;
 /// superluminal and the warp ramp is still most of the way up. So this is what
 /// shapes the plume through the spin-down, and only through the spin-down.
 ///
-/// The same *shape* as the sky's `1.0 + warp * warp * 5.0` in
-/// [`crate::exterior`], and deliberately not the same number. Taken literally —
+/// The same *shape* as the ramp the sky's own exposure takes in
+/// [`crate::universe`], and deliberately not the same number. Taken literally —
 /// exhaust as a parcel of a certain age, streaming astern at the ship's own
 /// speed, the way a star's streak is one step of its own motion — a quarter
 /// second of it at full warp is 195 world units, some fourteen screen widths,
@@ -196,7 +199,7 @@ const PLUME_EDGE_FADE: f32 = 0.8;
 /// a point it cannot see rather than clipping it — so an uncut plume does not
 /// shorten as it swings toward the eye, it vanishes whole, and a drive that
 /// blinks out under hard yaw reads as a fault rather than as a lean.
-const PLUME_NEAR: f32 = starfield::Z_NEAR * 1.05;
+const PLUME_NEAR: f32 = camera::Z_NEAR * 1.05;
 /// How hard the flame gutters at impulse, and at warp.
 ///
 /// Not the same number, and the difference is the point: a flame burning in a
@@ -1102,7 +1105,7 @@ fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32), eye: &Eye) -> 
         // A plate with a vertex behind the near plane cannot be measured, let
         // alone drawn. Nothing should reach that — the whole hull sits clear of
         // it at every zoom, at `MIN_SHIP_DISTANCE` less at most `HULL_REACH`
-        // against a near plane of `starfield::Z_NEAR`, which is the `const`
+        // against a near plane of `camera::Z_NEAR`, which is the `const`
         // assertion at the top of this module — but `project` answers with an
         // `Option`, and a rolled fin is exactly the thing that would find out.
         // Stated as the constants rather than as the gap between them, which
@@ -1998,14 +2001,16 @@ mod tests {
                                 "{} lost a vertex through the near plane at zoom {zoom}: {at:?}",
                                 model.name
                             );
-                            // And the far end: the whole hull stays inside the
-                            // wall the star band starts at, or a star could be
-                            // drawn over it.
-                            assert!(
-                                at[2] < crate::exterior::Z_NEAR,
-                                "{} reached into the star band at zoom {zoom}: {at:?}",
-                                model.name
-                            );
+                            // The far end used to be checked here too: the
+                            // hull had to stay inside the wall the old star
+                            // band began at, eighteen units out, or a star
+                            // could be drawn over it. There is no wall now and
+                            // no arithmetic left to check — `crate::universe`
+                            // holds its nearest star light years off, against a
+                            // hull that reaches seventeen units, so the two are
+                            // twelve orders of magnitude apart and no zoom this
+                            // sweep can ask for brings them within sight of
+                            // each other.
                         }
                     }
                 }

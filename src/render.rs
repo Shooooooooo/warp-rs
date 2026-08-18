@@ -4,14 +4,15 @@
 //! warp ramp the streaks use, so the whole image tightens up together as the
 //! drive spools rather than each effect arriving on its own schedule.
 
+use crate::bend::Bend;
+use crate::camera::Camera;
 use crate::canvas::{Canvas, Tonemap};
-use crate::exterior::ExteriorField;
 use crate::hud::{self, Readout};
 use crate::lens::Lens;
 use crate::models::{self, ShipModel};
 use crate::ship::Ship;
-use crate::starfield::{Camera, StarField};
 use crate::term::{ColorMode, Screen};
+use crate::universe::{Observer, Universe};
 use crate::view::{self, Orbit, SIDE_FOCAL};
 use std::io::{self, Write};
 
@@ -29,10 +30,7 @@ const GAMMA: f32 = 2.2;
 /// be one past the point where clippy — which CI runs as an error — starts
 /// asking what all of them are for.
 pub struct Exterior<'a> {
-    /// Taken by mutable reference because bending a streak needs somewhere to
-    /// put it, and that scratch is kept with the field rather than allocated
-    /// afresh for every star of every frame.
-    pub field: &'a mut ExteriorField,
+    pub sky: &'a Universe,
     pub ship: &'a Ship,
     pub model: &'a ShipModel,
     pub time: f64,
@@ -45,9 +43,10 @@ pub struct Exterior<'a> {
     /// Which way round the ship the camera has been swung. It rides in here
     /// for the same reason the zoom does and with the opposite consequence:
     /// the [`Camera`] still has no pose, so this is the only thing that knows
-    /// the eye has moved — but unlike the dolly, an orbit is *meant* to take
-    /// the sky with it, and the star band is handed it separately in
-    /// `Flight::advance` so that it can.
+    /// the eye has moved — and unlike the dolly, an orbit is *meant* to take
+    /// the sky with it. It does that by re-projecting rather than by moving
+    /// anything: the sky is in the world, so a swing turns the eye and the
+    /// stars stay where they are.
     pub orbit: Orbit,
 }
 
@@ -58,6 +57,10 @@ pub struct Renderer {
     tonemap: Tonemap,
     /// Scratch buffer for resolved pixels, reused across frames.
     pixels: Vec<[u8; 3]>,
+    /// And the scratch a bent streak is assembled in, for the same reason and
+    /// on the same terms. It lives here rather than with the sky because the
+    /// sky is one thing both cameras look at and this belongs to one of them.
+    bend: Bend,
 }
 
 impl Renderer {
@@ -74,6 +77,7 @@ impl Renderer {
             screen: Screen::new(cols, rows, mode),
             tonemap: Tonemap::new(exposure, GAMMA),
             pixels: Vec::with_capacity(cols * rows * 2),
+            bend: Bend::default(),
         }
     }
 
@@ -149,18 +153,12 @@ impl Renderer {
     }
 
     /// Draw one frame into the cell grid. Nothing reaches the terminal yet.
-    pub fn render(
-        &mut self,
-        field: &StarField,
-        ship: &Ship,
-        cam: &Camera,
-        time: f64,
-        hud: &Readout,
-    ) {
+    pub fn render(&mut self, sky: &Universe, ship: &Ship, cam: &Camera, time: f64, hud: &Readout) {
         let warp = ship.warp_intensity();
+        let eye = Observer::cockpit(ship.axes, ship.position, warp, ship.velocity_ly_per_s());
 
         self.canvas.clear();
-        for streak in field.streaks(cam, warp, time) {
+        for streak in sky.streaks(cam, &eye, time) {
             self.canvas.draw_streak(&streak);
         }
 
@@ -228,7 +226,7 @@ impl Renderer {
     /// a wrong figure guarding an invariant reads exactly like a right one.
     pub fn render_exterior(&mut self, scene: Exterior<'_>, cam: &Camera, hud: &Readout) {
         let Exterior {
-            field,
+            sky,
             ship,
             model,
             time,
@@ -250,8 +248,18 @@ impl Renderer {
         // hull instead of leaving a fixed collar hanging in the middle.
         let lens = Lens::for_warp((cam.cx, cam.cy), warp, ship_half, orbit.nose_in_camera());
 
+        let watcher = Observer::outside(
+            ship.axes,
+            ship.position,
+            &eye,
+            orbit.nose_in_camera(),
+            warp,
+            ship.velocity_ly_per_s(),
+        );
+
         self.canvas.clear();
-        field.draw(&mut self.canvas, cam, warp, time, &lens);
+        self.bend
+            .draw(&mut self.canvas, &lens, sky.streaks(cam, &watcher, time));
 
         // A wash inside the shadow, so the region the lens has swept clear
         // reads as a bubble the ship is sitting in rather than as a hole
@@ -327,8 +335,7 @@ mod tests {
         assert_eq!((w, h), (80, 48), "two subpixel rows per terminal row");
 
         let mut ship = Ship::new();
-        let cam = renderer.camera(&ship, 0.0);
-        let mut field = StarField::new(600, 42, &cam);
+        let mut sky = Universe::new(6.0, 42);
         let mut time = 0.0;
 
         ship.throttle = 1.0;
@@ -337,15 +344,8 @@ mod tests {
             time += 1.0 / 60.0;
             ship.update(1.0 / 60.0);
             let cam = renderer.camera(&ship, time);
-            field.update(
-                1.0 / 60.0,
-                ship.speed,
-                ship.yaw_rate,
-                ship.pitch_rate,
-                ship.roll_rate,
-                &cam,
-            );
-            renderer.render(&field, &ship, &cam, time, &readout(&ship));
+            sky.advance(ship.position, ship.axes[2]);
+            renderer.render(&sky, &ship, &cam, time, &readout(&ship));
 
             if frame == 120 {
                 // Something must actually be lit up by now.
@@ -369,15 +369,14 @@ mod tests {
             if engaged {
                 ship.toggle_warp();
             }
-            let cam = renderer.camera(&ship, 0.0);
-            let mut field = StarField::new(1500, 11, &cam);
+            let mut sky = Universe::new(6.5, 11);
             let mut time = 0.0;
             for _ in 0..300 {
                 time += 1.0 / 60.0;
                 ship.update(1.0 / 60.0);
                 let cam = renderer.camera(&ship, time);
-                field.update(1.0 / 60.0, ship.speed, 0.0, 0.0, 0.0, &cam);
-                renderer.render(&field, &ship, &cam, time, &readout(&ship));
+                sky.advance(ship.position, ship.axes[2]);
+                renderer.render(&sky, &ship, &cam, time, &readout(&ship));
             }
             let (w, h) = renderer.canvas_dims();
             let px = renderer.pixels();
@@ -408,7 +407,7 @@ mod tests {
         model: usize,
         engaged: bool,
         frames: usize,
-        stars: usize,
+        magnitude: f32,
     ) -> Renderer {
         fly_outside_from(
             cols,
@@ -416,7 +415,7 @@ mod tests {
             model,
             engaged,
             frames,
-            stars,
+            magnitude,
             (view::ZOOM_DEFAULT, Orbit::LEVEL),
         )
     }
@@ -431,7 +430,7 @@ mod tests {
         model: usize,
         engaged: bool,
         frames: usize,
-        stars: usize,
+        magnitude: f32,
         (zoom, orbit): (f32, Orbit),
     ) -> Renderer {
         let mut renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
@@ -440,17 +439,16 @@ mod tests {
         if engaged {
             ship.toggle_warp();
         }
-        let cam = renderer.exterior_camera(&ship, 0.0);
-        let mut field = crate::exterior::ExteriorField::new(stars, 5, &cam, orbit);
+        let mut sky = Universe::new(magnitude, 5);
         let mut time = 0.0;
         for _ in 0..frames {
             time += 1.0 / 60.0;
             ship.update(1.0 / 60.0);
             let cam = renderer.exterior_camera(&ship, time);
-            field.update(1.0 / 60.0, ship.speed, &cam, orbit);
+            sky.advance(ship.position, ship.axes[2]);
             let readout = readout(&ship);
             let scene = Exterior {
-                field: &mut field,
+                sky: &sky,
                 ship: &ship,
                 model: &crate::models::models()[model],
                 time,
@@ -466,7 +464,7 @@ mod tests {
     fn the_outside_view_renders_end_to_end_for_every_ship() {
         for model in 0..crate::models::models().len() {
             for engaged in [false, true] {
-                let renderer = fly_outside(80, 24, model, engaged, 90, 800);
+                let renderer = fly_outside(80, 24, model, engaged, 90, 6.0);
                 assert!(
                     renderer.pixels().iter().any(|p| p.iter().any(|v| *v > 40)),
                     "ship {model} came out black"
@@ -490,53 +488,70 @@ mod tests {
         // and straight out through the bright rim above it. `Lens::offset` is
         // the bubble's own metric, so a band in it means the same thing at any
         // framing, any zoom and any shape the bubble is ever given.
-        let sample = |engaged: bool| -> (f32, f32) {
-            let renderer = fly_outside(120, 36, 0, engaged, 150, 2500);
-            let (w, h) = renderer.canvas_dims();
-            let px = renderer.pixels();
-            let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
-            let ship = view::ship_half_on_screen(h as f32, view::ZOOM_DEFAULT);
-            // The bubble a lit drive makes, used as the ruler for both frames:
-            // the point is to look at the same places in each, so this is built
-            // at full warp whether the drive in the frame is lit or not.
-            let bubble = Lens::for_warp((cx, cy), 1.0, ship, Orbit::LEVEL.nose_in_camera());
-            let mean = |lo: f32, hi: f32| {
-                let (mut total, mut n) = (0u64, 0u64);
-                for y in 0..h {
-                    for x in 0..w {
-                        let m = bubble.offset((x as f32, y as f32));
-                        if m >= lo && m < hi {
-                            let p = px[y * w + x];
-                            total += (p[0] as u64 + p[1] as u64 + p[2] as u64) / 3;
-                            n += 1;
-                        }
-                    }
-                }
-                total as f32 / n.max(1) as f32
-            };
-            // Inside the shadow, which is where the hull sits; and out past the
-            // ring, where the sky the bubble pushed aside has piled up. The
-            // shadow is 0.72 of the way out, so the first band is well inside
-            // it and the second starts beyond the ring entirely.
-            (mean(0.46, 0.63), mean(1.15, 1.55))
+        //
+        // And it measures the *starlight* rather than the frame, which is the
+        // change the world-space sky forced and is a sharper question anyway.
+        // The band inside the shadow is where the hull sits, and it also holds
+        // the drive's glow and the wash `render_exterior` deliberately lays
+        // inside the bubble so a swept-clear region reads as a bubble rather
+        // than as a hole punched in the sky. Comparing raw frames only ever
+        // worked while the sky outside was bright enough to beat all three at
+        // once — it wanted 2 500 stars on a 120x36 canvas, well past what any
+        // sky worth flying holds. Flying the same frame twice over an empty sky
+        // and taking the difference leaves the stars and nothing else, since
+        // the ship, the lens and the glass are identical between the two.
+        let starlight = |engaged: bool| -> (f32, f32) {
+            let lit = bands(engaged, 6.5);
+            let bare = bands(engaged, crate::cli::MIN_MAGNITUDE);
+            (lit.0 - bare.0, lit.1 - bare.1)
         };
 
-        let (near_hull, far_out) = sample(true);
+        let (near_hull, far_out) = starlight(true);
         assert!(
             near_hull < far_out * 0.7,
             "warp did not clear the sky around the ship: {near_hull} against {far_out}"
         );
-        let (near_hull, far_out) = sample(false);
+        let (near_hull, far_out) = starlight(false);
         assert!(
             near_hull > far_out * 0.7,
             "impulse should not bend anything: {near_hull} against {far_out}"
         );
     }
 
+    /// Mean brightness inside the lens shadow and out past its ring, for one
+    /// flight. The shadow is 0.72 of the way out, so the first band is well
+    /// inside it and the second starts beyond the ring entirely.
+    fn bands(engaged: bool, magnitude: f32) -> (f32, f32) {
+        let renderer = fly_outside(120, 36, 0, engaged, 150, magnitude);
+        let (w, h) = renderer.canvas_dims();
+        let px = renderer.pixels();
+        let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+        let ship = view::ship_half_on_screen(h as f32, view::ZOOM_DEFAULT);
+        // The bubble a lit drive makes, used as the ruler for both frames: the
+        // point is to look at the same places in each, so this is built at full
+        // warp whether the drive in the frame is lit or not.
+        let bubble = Lens::for_warp((cx, cy), 1.0, ship, Orbit::LEVEL.nose_in_camera());
+        let mean = |lo: f32, hi: f32| {
+            let (mut total, mut n) = (0u64, 0u64);
+            for y in 0..h {
+                for x in 0..w {
+                    let m = bubble.offset((x as f32, y as f32));
+                    if m >= lo && m < hi {
+                        let p = px[y * w + x];
+                        total += (p[0] as u64 + p[1] as u64 + p[2] as u64) / 3;
+                        n += 1;
+                    }
+                }
+            }
+            total as f32 / n.max(1) as f32
+        };
+        (mean(0.46, 0.63), mean(1.15, 1.55))
+    }
+
     #[test]
     fn a_zero_sized_terminal_does_not_crash_from_outside() {
         for (cols, rows) in [(0usize, 0usize), (80, 0), (0, 24), (1, 0), (2, 3)] {
-            let renderer = fly_outside(cols, rows, 0, true, 5, 200);
+            let renderer = fly_outside(cols, rows, 0, true, 5, 5.0);
             let (w, h) = renderer.canvas_dims();
             assert_eq!(renderer.pixels().len(), w * h);
         }
@@ -561,11 +576,11 @@ mod tests {
             let mut ship = Ship::new();
             ship.throttle = 1.0;
             let cam = renderer.camera(&ship, 0.0);
-            let mut field = StarField::new(50, 1, &cam);
+            let mut sky = Universe::new(4.0, 1);
             for _ in 0..5 {
                 ship.update(1.0 / 60.0);
-                field.update(1.0 / 60.0, ship.speed, 0.0, 0.0, 0.0, &cam);
-                renderer.render(&field, &ship, &cam, 0.0, &readout(&ship));
+                sky.advance(ship.position, ship.axes[2]);
+                renderer.render(&sky, &ship, &cam, 0.0, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();
 
@@ -585,8 +600,7 @@ mod tests {
         let mut renderer = Renderer::new(80, 24, ColorMode::Truecolor, 1.25);
         let mut ship = Ship::new();
         ship.throttle = 0.8;
-        let cam = renderer.camera(&ship, 0.0);
-        let mut field = StarField::new(400, 5, &cam);
+        let mut sky = Universe::new(5.5, 5);
 
         for (i, (cols, rows)) in [(80, 24), (200, 60), (12, 4), (1, 1), (120, 40)]
             .into_iter()
@@ -596,11 +610,11 @@ mod tests {
             let (w, h) = renderer.canvas_dims();
             assert_eq!((w, h), (cols.max(1), (rows * 2).max(1)));
             let cam = renderer.camera(&ship, i as f64);
-            field.retarget(&cam);
             for _ in 0..30 {
+                ship.nudge_yaw(0.2);
                 ship.update(1.0 / 60.0);
-                field.update(1.0 / 60.0, ship.speed, 0.2, 0.0, 0.0, &cam);
-                renderer.render(&field, &ship, &cam, i as f64, &readout(&ship));
+                sky.advance(ship.position, ship.axes[2]);
+                renderer.render(&sky, &ship, &cam, i as f64, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();
         }

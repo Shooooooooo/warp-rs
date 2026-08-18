@@ -39,7 +39,7 @@ fn fly(argv: &[&str], cols: usize, rows: usize, frames: usize) -> Vec<u8> {
 
 #[test]
 fn a_flight_needs_nothing_but_the_library() {
-    let out = fly(&["--seed", "5", "--stars", "600"], 60, 20, 20);
+    let out = fly(&["--seed", "5", "--magnitude", "4.5"], 60, 20, 20);
     assert!(!out.is_empty());
     // Twenty frames of twenty rows, each row ending in a newline.
     assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 20 * 20);
@@ -69,8 +69,8 @@ fn a_flight_can_be_left_to_fly_itself() {
         "side",
         "--seed",
         "5",
-        "--stars",
-        "300",
+        "--magnitude",
+        "4",
     ])
     .expect("arguments should parse");
     let mut flight = Flight::new(&args, 60, 20);
@@ -99,9 +99,9 @@ fn a_flight_can_be_left_to_fly_itself() {
 
 #[test]
 fn the_seed_is_the_whole_of_the_state() {
-    let a = fly(&["--seed", "5", "--stars", "600"], 60, 20, 20);
-    let b = fly(&["--seed", "5", "--stars", "600"], 60, 20, 20);
-    let c = fly(&["--seed", "6", "--stars", "600"], 60, 20, 20);
+    let a = fly(&["--seed", "5", "--magnitude", "4.5"], 60, 20, 20);
+    let b = fly(&["--seed", "5", "--magnitude", "4.5"], 60, 20, 20);
+    let c = fly(&["--seed", "6", "--magnitude", "4.5"], 60, 20, 20);
     assert_eq!(a, b, "a seeded flight has to be reproducible");
     assert_ne!(a, c, "two seeds should not give the same sky");
 }
@@ -112,7 +112,14 @@ fn the_view_from_outside_can_be_flown_from_the_library_alone() {
     // nothing but the surface any other program would have to use.
     let out = fly(
         &[
-            "--seed", "5", "--stars", "600", "--view", "side", "--ship", "normandy",
+            "--seed",
+            "5",
+            "--magnitude",
+            "4.5",
+            "--view",
+            "side",
+            "--ship",
+            "normandy",
         ],
         60,
         20,
@@ -135,7 +142,13 @@ fn the_view_from_outside_can_be_flown_from_the_library_alone() {
 fn the_seed_is_still_the_whole_of_the_state_from_outside() {
     let flags = |seed: &'static str| -> Vec<&'static str> {
         vec![
-            "--seed", seed, "--stars", "600", "--view", "side", "--engage",
+            "--seed",
+            seed,
+            "--magnitude",
+            "4.5",
+            "--view",
+            "side",
+            "--engage",
         ]
     };
     let a = fly(&flags("5"), 60, 20, 20);
@@ -158,7 +171,14 @@ fn every_ship_can_be_flown_from_the_command_line() {
     for ship in warp_rs::models::models().iter().map(|m| m.name) {
         let out = fly(
             &[
-                "--seed", "1", "--stars", "200", "--view", "side", "--ship", ship,
+                "--seed",
+                "1",
+                "--magnitude",
+                "3.5",
+                "--view",
+                "side",
+                "--ship",
+                ship,
             ],
             60,
             20,
@@ -181,8 +201,8 @@ fn a_flight_survives_a_step_the_caller_should_not_have_asked_for() {
         "truecolor",
         "--seed",
         "5",
-        "--stars",
-        "600",
+        "--magnitude",
+        "4.5",
         "--throttle",
         "1.0",
     ])
@@ -227,7 +247,7 @@ fn a_frame_does_not_repeat_a_colour_it_is_already_using() {
     // A cell carries about 40 bytes of escape codes, and a starfield is mostly
     // long runs of black, so this is most of the size of a frame. Checked from
     // out here because it is a property of the bytes, not of the buffers.
-    let out = fly(&["--seed", "5", "--stars", "600"], 60, 20, 1);
+    let out = fly(&["--seed", "5", "--magnitude", "4.5"], 60, 20, 1);
     let text = String::from_utf8_lossy(&out);
 
     for (row, line) in text.lines().enumerate() {

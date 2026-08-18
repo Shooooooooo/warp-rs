@@ -5,7 +5,6 @@
 
 use crate::autopilot::Autopilot;
 use crate::cli::{self, resolved_size, Args};
-use crate::exterior::ExteriorField;
 use crate::hud::Readout;
 use crate::menu::{self, Menu};
 use crate::models::{self, ShipModel};
@@ -13,8 +12,8 @@ use crate::render::{Exterior, Renderer};
 use crate::ship::{wrap_signed, Ship};
 #[cfg(feature = "snapshot")]
 use crate::snapshot;
-use crate::starfield::StarField;
 use crate::term::RawGuard;
+use crate::universe::Universe;
 use crate::view::{self, Orbit, ViewMode};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -39,34 +38,17 @@ const MAX_FRAME_DT: f32 = 0.25;
 /// would grind through a hundred and twenty simulation steps for every second
 /// of it.
 const MAX_STEP_DT: f32 = 1.0;
-/// The smallest pool the `-` key will leave behind.
+/// How much fainter or brighter one press of `+` or `-` asks the sky to go.
 ///
-/// Low enough to sit under any pool worth pressing `-` on, and deliberately not
-/// lower: `+` multiplies by 1.25 and truncates, so at one, two and three stars
-/// the answer is the same number back and the key swallows the press without
-/// moving anything. Four is where growth starts; this stands clear of it.
-/// Making `+` grow by at least one star instead would let this go to one, and
-/// it rewrites the growth arithmetic to fix a floor that is easier to move.
-///
-/// It was 64 once, chosen against an automatic minimum of 300 that is as gone
-/// as the density that replaced it. A floor up there sat *over* the count on
-/// any window the old density opened thin — 40x12 started with nineteen stars —
-/// so `-` added forty-five of them and landed both keys on the same number,
-/// which is a control doing the opposite of what it is labelled. Nothing opens
-/// under this one now that [`cli::DEFAULT_STARS`] is a fixed 256, but it is not
-/// thereby unreachable: `-` walks that pool down to nine and then onto this,
-/// where it stops, and `+` climbs back off it to ten.
-const POOL_FLOOR: usize = 8;
-/// So the clamp in [`Flight::resize_pool`] cannot be made to panic by a later
-/// edit to either end of it: `Ord::clamp` requires its minimum below its
-/// maximum, and these are the two ends.
-const _: () = assert!(
-    POOL_FLOOR <= cli::MAX_STARS,
-    "the star keys have a floor past their own ceiling"
-);
-/// Mixed into `--seed` for the outside view's sky, so the two fields are
-/// independent of each other and of when either was built.
-const EXTERIOR_SEED: u64 = 0x51DE_0000_0000_0000;
+/// Half a magnitude, which is about a factor of two in how many stars there
+/// are: a visible change on a single tap and a couple of seconds of auto-repeat
+/// across the whole range, the bargain the zoom's 1.12 and the orbit's turn in
+/// sixty strike. It replaced a multiply of 1.25 on a literal pool, which had to
+/// carry a floor of its own because zero and one are fixed points of a multiply
+/// and the key would swallow the press. An addition has no fixed points, so the
+/// floor is gone and the two ends of the flag are the two ends of the key —
+/// which is the invariant `cli::MAX_STARS` used to hold, one door further back.
+const MAGNITUDE_STEP: f32 = 0.5;
 
 /// Fly, in whichever of the three modes the arguments asked for.
 pub fn run(args: &Args) -> io::Result<()> {
@@ -84,11 +66,12 @@ pub fn run(args: &Args) -> io::Result<()> {
 /// The shape of a flight: everything except where the frames end up.
 pub struct Flight {
     ship: Ship,
-    field: StarField,
-    /// The band of sky the outside view flies alongside, built the first time
-    /// that view is asked for. A cockpit-only run pays nothing for it — not the
-    /// pool, and not a single draw from its generator.
-    exterior: Option<ExteriorField>,
+    /// The sky, and there is one of it. Both cameras look at the same volume
+    /// from different places, which is what a universe is and what the two
+    /// screen-space fields this replaced could never be: they were laid out in
+    /// front of whichever eye was flying, so swinging the camera round the ship
+    /// showed the sky it had already been showing.
+    sky: Universe,
     renderer: Renderer,
     autopilot: Autopilot,
     /// Which camera is flying, which ship is being flown, and whether the
@@ -130,8 +113,6 @@ pub struct Flight {
     /// It cannot reach a reference frame: headless and snapshot flights take no
     /// input at all, so nothing there ever sets it.
     hands_on: bool,
-    /// Kept so a field built later gets the sky the seed asked for.
-    seed: u64,
     /// Wall time since launch, in seconds. `f64` because it only ever grows and
     /// a screensaver is expected to be left running: as an `f32` accumulator it
     /// stopped advancing altogether after about six days, freezing the twinkle
@@ -151,14 +132,12 @@ impl Flight {
 
         let renderer = Renderer::new(cols, rows, args.color.resolve(), args.exposure)
             .with_hull_samples(args.aa);
-        let cam = renderer.camera(&ship, 0.0);
         let seed = seed(args);
-        let field = StarField::new(args.stars, seed, &cam);
+        let sky = Universe::new(args.magnitude, seed);
 
         let mut flight = Self {
             ship,
-            field,
-            exterior: None,
+            sky,
             renderer,
             autopilot: Autopilot::default(),
             view: ViewMode::Cockpit,
@@ -169,12 +148,11 @@ impl Flight {
             orbit: args.orbit,
             orbit_target: args.orbit,
             hands_on: false,
-            seed,
             time: 0.0,
             accumulator: 0.0,
         };
         if args.view.resolve() == ViewMode::Side {
-            flight.set_view(ViewMode::Side, args);
+            flight.set_view(ViewMode::Side);
         }
         flight
     }
@@ -190,8 +168,8 @@ impl Flight {
     /// The zoom is left alone. It belongs to the outside camera, and going in
     /// to look at something and coming back out to find the shot re-framed
     /// would be its own small annoyance; `R` is the way to put it back.
-    pub fn cycle_view(&mut self, args: &Args) {
-        self.set_view(self.view.next(), args);
+    pub fn cycle_view(&mut self) {
+        self.set_view(self.view.next());
     }
 
     /// How far the outside camera has been pushed in or out.
@@ -304,20 +282,15 @@ impl Flight {
         self.zoom_target = (view::ZOOM_DEFAULT * zoom).clamp(view::ZOOM_MIN, view::ZOOM_MAX);
     }
 
-    fn set_view(&mut self, view: ViewMode, args: &Args) {
+    /// Change camera.
+    ///
+    /// It used to build the outside view's sky here, the first time that view
+    /// was asked for, from a seed of its own so the cockpit's stream stayed
+    /// untouched. There is one sky now and it is already built, so a view is a
+    /// question about where to stand and nothing else — which is also why the
+    /// `C` key can no longer show two different universes.
+    fn set_view(&mut self, view: ViewMode) {
         self.view = view;
-        if view == ViewMode::Side && self.exterior.is_none() {
-            let cam = self.renderer.exterior_camera(&self.ship, self.time);
-            // Its own generator, from a seed of its own, so the cockpit's
-            // stream is untouched whenever this happens — and so the two skies
-            // are not the same pattern seen twice.
-            self.exterior = Some(ExteriorField::new(
-                args.stars,
-                self.seed ^ EXTERIOR_SEED,
-                &cam,
-                self.orbit,
-            ));
-        }
     }
 
     pub fn menu_open(&self) -> bool {
@@ -326,9 +299,9 @@ impl Flight {
 
     /// Put the picker up, and go outside to look at what it is offering: a list
     /// of ship names is a poor way to choose a ship.
-    pub fn open_menu(&mut self, args: &Args) {
+    pub fn open_menu(&mut self) {
         self.menu = Some(Menu::new(self.model));
-        self.set_view(ViewMode::Side, args);
+        self.set_view(ViewMode::Side);
     }
 
     /// Take it down, keeping the ship that was being flown when it went up.
@@ -412,25 +385,12 @@ impl Flight {
                 roll: chase(self.orbit.roll, self.orbit_target.roll),
             }
             .held();
-            match self.view {
-                ViewMode::Cockpit => {
-                    let cam = self.renderer.camera(&self.ship, self.time);
-                    self.field.update(
-                        SIM_STEP,
-                        self.ship.speed,
-                        self.ship.yaw_rate,
-                        self.ship.pitch_rate,
-                        self.ship.roll_rate,
-                        &cam,
-                    );
-                }
-                ViewMode::Side => {
-                    let cam = self.renderer.exterior_camera(&self.ship, self.time);
-                    if let Some(field) = &mut self.exterior {
-                        field.update(SIM_STEP, self.ship.speed, &cam, self.orbit);
-                    }
-                }
-            }
+            // One sky, and it is stepped whichever camera is flying — there
+            // is no longer a second one to be kept warm or skipped. What the
+            // step does is take away whatever has fallen past the limit and
+            // put it back where the flow is bringing stars in from; the ship
+            // does all the moving, in `Ship::coast`.
+            self.sky.advance(self.ship.position, self.ship.axes[2]);
             self.accumulator -= SIM_STEP;
         }
     }
@@ -446,11 +406,11 @@ impl Flight {
             view: self.view,
             model: model.name,
         };
-        match (self.view, &mut self.exterior) {
-            (ViewMode::Side, Some(field)) => {
+        match self.view {
+            ViewMode::Side => {
                 let cam = self.renderer.exterior_camera(&self.ship, self.time);
                 let scene = Exterior {
-                    field,
+                    sky: &self.sky,
                     ship: &self.ship,
                     model,
                     time: self.time,
@@ -459,10 +419,10 @@ impl Flight {
                 };
                 self.renderer.render_exterior(scene, &cam, &readout);
             }
-            _ => {
+            ViewMode::Cockpit => {
                 let cam = self.renderer.camera(&self.ship, self.time);
                 self.renderer
-                    .render(&self.field, &self.ship, &cam, self.time, &readout);
+                    .render(&self.sky, &self.ship, &cam, self.time, &readout);
             }
         }
         // Over the top of everything, panel included: it is a dialogue, and it
@@ -473,48 +433,35 @@ impl Flight {
         }
     }
 
-    /// How many stars are currently in flight, in the view being flown.
+    /// How many stars are in flight — over the whole sphere, not on screen.
+    ///
+    /// It no longer depends on which camera is flying, because there is no
+    /// longer a sky per camera.
     pub fn stars(&self) -> usize {
-        match (self.view, &self.exterior) {
-            (ViewMode::Side, Some(field)) => field.len(),
-            _ => self.field.len(),
-        }
+        self.sky.len()
     }
 
-    /// Grow or shrink the sky being looked at.
+    /// The faintest star this sky holds.
+    pub fn magnitude(&self) -> f32 {
+        self.sky.limit()
+    }
+
+    /// Ask the sky for a fainter or a brighter limit.
     ///
-    /// Held at the top to the ceiling `--stars` is held to, so a pool these
-    /// keys walk to can never be one the command line would have refused. It
-    /// used to be a separate 20 000 that sat *under* what `--stars` allowed,
-    /// which made `+` shrink a pool the flag had asked for.
+    /// Held to the two ends `--magnitude` is held to, so a sky these keys walk
+    /// to can never be one the command line would have refused. That invariant
+    /// is older than the flag it now guards: the `+` key used to carry a
+    /// ceiling of its own, 20 000, which sat *under* what `--stars` allowed, so
+    /// `--stars 100000` and a single press shrank the pool by four fifths.
     ///
-    /// An empty sky is the one pool the floor may not lift, and answering that
-    /// takes an early return rather than a smaller number. `--stars 0` is a
-    /// thing to ask for rather than a mistake to correct, and taken through the
-    /// clamp below it comes out at [`POOL_FLOOR`] for *both* keys — so `-` would
-    /// put eight stars into a sky somebody emptied on purpose, which is the
-    /// exact fault this floor came down from 64 to stop, arriving by the other
-    /// door. There is also no count that could be passed down instead: both
-    /// fields hold whatever they are handed at one star or more, and that guard
-    /// is theirs to keep. `+` is deliberately *not* caught by it and climbs to
-    /// the floor, because zero is a fixed point of a multiply and a key that
-    /// swallows the press for the rest of the flight is worse than one plainly
-    /// not connected.
-    fn resize_pool(&mut self, scale: f32) {
-        if scale < 1.0 && self.stars() == 0 {
-            return;
-        }
-        let wanted = |len: usize| ((len as f32 * scale) as usize).clamp(POOL_FLOOR, cli::MAX_STARS);
-        match (self.view, &mut self.exterior) {
-            (ViewMode::Side, Some(field)) => {
-                let n = wanted(field.len());
-                field.resize_pool(n);
-            }
-            _ => {
-                let n = wanted(self.field.len());
-                self.field.resize_pool(n);
-            }
-        }
+    /// An empty sky used to need an early return here and no longer does. It
+    /// was a fixed point of the old multiply — `-` would clamp a deliberately
+    /// empty pool up to a floor and `+` could never climb off zero — and an
+    /// addition has neither problem, so a sky can be emptied and refilled by
+    /// the same two keys that set it.
+    fn step_magnitude(&mut self, delta: f32) {
+        let limit = (self.sky.limit() + delta).clamp(cli::MIN_MAGNITUDE, cli::MAX_MAGNITUDE);
+        self.sky.set_limit(limit);
     }
 
     /// Write the last drawn frame out as a self-contained block of text.
@@ -537,18 +484,11 @@ impl Flight {
         }
 
         self.renderer.resize(cols, rows);
-        let cam = self.renderer.camera(&self.ship, self.time);
-        self.field.retarget(&cam);
-        let side = self.renderer.exterior_camera(&self.ship, self.time);
-        if let Some(field) = &mut self.exterior {
-            field.retarget(&side);
-        }
-        // And the pool is not touched. It used to be re-derived from the new
-        // canvas whenever `--stars` was 0, which was the density's whole
-        // mechanism seen from here: a window dragged wider grew the sky under a
-        // flight already under way. `--stars` is a plain count now, so a resize
-        // is a question about geometry only — which is what the two `retarget`
-        // calls above answer, and they answer all of it.
+        // And the sky is not told. It is laid out in the world rather than in
+        // front of the camera, so a wider window is more of the same sky rather
+        // than a differently-shaped pool — which is what the two `retarget`
+        // calls that used to stand here existed to paper over, each of them
+        // dropping every trail in the field to hide the seam.
         true
     }
 }
@@ -665,8 +605,8 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
             flight.reset_orbit(args.orbit);
             *paused = false;
         }
-        KeyCode::Char('+' | '=') => flight.resize_pool(1.25),
-        KeyCode::Char('-' | '_') => flight.resize_pool(0.8),
+        KeyCode::Char('+' | '=') => flight.step_magnitude(MAGNITUDE_STEP),
+        KeyCode::Char('-' | '_') => flight.step_magnitude(-MAGNITUDE_STEP),
 
         // The outside camera, in and out. Shifted as well as plain for the
         // same reason `+` is paired with `=` and `-` with `_`: which of the
@@ -675,8 +615,8 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char(']' | '}') if zooms => flight.nudge_zoom(1.0),
 
         // The camera, and the hangar.
-        KeyCode::Char('c' | 'C') => flight.cycle_view(args),
-        KeyCode::Char('m' | 'M') => flight.open_menu(args),
+        KeyCode::Char('c' | 'C') => flight.cycle_view(),
+        KeyCode::Char('m' | 'M') => flight.open_menu(),
         _ => {}
     }
     Action::Continue
@@ -970,7 +910,7 @@ mod tests {
         // stopped moving entirely at t = 524288 s — a little over six days —
         // taking the twinkle and the shake with it, which is precisely the
         // situation a tmux screensaver is left in.
-        let args = args_for(&["--seed", "3", "--stars", "400"]);
+        let args = args_for(&["--seed", "3", "--magnitude", "4"]);
         let mut flight = Flight::new(&args, 60, 20);
         let dt = 1.0 / 60.0;
 
@@ -1002,7 +942,7 @@ mod tests {
         // so the flight went on drawing and never simulated another step. The
         // interactive loop clamps before it calls in, which is the only reason
         // the binary never met this; nothing else in the tree was covered.
-        let args = args_for(&["--seed", "3", "--stars", "300", "--size", "60x20"]);
+        let args = args_for(&["--seed", "3", "--magnitude", "4", "--size", "60x20"]);
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, -0.0] {
             let mut flight = Flight::new(&args, 60, 20);
             flight.ship.throttle = 1.0;
@@ -1038,7 +978,7 @@ mod tests {
         // `advance(10_000.0)` was five seconds of work inside a frame that had
         // sixteen milliseconds. Asserted on the clock rather than on a
         // stopwatch, which is the same property without the flake.
-        let args = args_for(&["--stars", "100", "--size", "40x12"]);
+        let args = args_for(&["--magnitude", "3", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         for huge in [1.0e3f32, 1.0e9, f32::MAX] {
             let before = flight.time;
@@ -1058,51 +998,58 @@ mod tests {
 
     #[test]
     fn the_sky_a_flight_opens_with_does_not_depend_on_the_window() {
-        // The point of the fixed count, stated as the property it is for. The
-        // pool used to be the canvas area times a density, so these two windows
-        // opened on 19 stars and 1080 and no two terminals flew the same sky.
-        // Asked of the real pool rather than of `args.stars`, since what the
-        // flag says and what gets spawned were two different numbers for as
-        // long as the sentinel existed.
+        // The point of asking for a sky by its limiting magnitude, stated as
+        // the property it is for. The pool used to be the canvas area times a
+        // density, so these two windows opened on 19 stars and 1080 and no two
+        // terminals flew the same sky; then it was a fixed count, which held
+        // that line by giving up on saying anything about what a window shows.
+        // A limit says both at once: the same universe on every terminal, and
+        // as much of it on screen as the window can see.
         for (cols, rows) in [(40usize, 12usize), (300, 90)] {
             let size = format!("{cols}x{rows}");
             let args = args_for(&["--size", &size]);
             let flight = Flight::new(&args, cols, rows);
             assert_eq!(
-                flight.field.len(),
-                cli::DEFAULT_STARS,
-                "a {cols}x{rows} window opened on its own count"
+                flight.stars(),
+                Universe::population(cli::DEFAULT_MAGNITUDE),
+                "a {cols}x{rows} window opened on its own sky"
             );
         }
 
-        // And the band outside is built from the same number, which matters
-        // because it is a second call site that used to carry its own copy of
-        // the density — and read it at whatever size the renderer happened to be
-        // when the view was first switched to, so a terminal resized before `C`
-        // was pressed left the two skies on different counts.
+        // And there is only one of it. The outside view used to build a second
+        // pool of its own, from a seed of its own, the first time that camera
+        // was asked for — so `C` really did show two different universes.
         let args = args_for(&["--size", "40x12"]);
         let mut outside = Flight::new(&args, 40, 12);
-        outside.set_view(ViewMode::Side, &args);
-        assert_eq!(outside.stars(), outside.field.len(), "the two skies differ");
+        let inside = outside.stars();
+        outside.set_view(ViewMode::Side);
+        assert_eq!(
+            outside.stars(),
+            inside,
+            "the two views hold different skies"
+        );
 
-        let explicit = args_for(&["--stars", "1234"]);
-        assert_eq!(Flight::new(&explicit, 300, 90).field.len(), 1234);
+        let explicit = args_for(&["--magnitude", "5.0"]);
+        assert_eq!(
+            Flight::new(&explicit, 300, 90).stars(),
+            Universe::population(5.0)
+        );
     }
 
     #[test]
-    fn an_empty_sky_is_a_count_like_any_other() {
-        // `--stars 0` was the sentinel that asked for a count off the canvas
-        // and now means what it says, which puts a genuinely empty pool through
-        // `StarField::new` and `ExteriorField::new` for the first time — the
-        // old floor of one in the automatic count meant nothing could reach
-        // them empty. Flown in both views because the band and the cone are
-        // separate pools reached by separate paths.
-        let args = args_for(&["--stars", "0", "--size", "60x20"]);
+    fn an_empty_sky_is_a_limit_like_any_other() {
+        // There is a magnitude below which the whole celestial sphere holds no
+        // star at all, and asking for it is the way to see the tunnel, the
+        // bubble and the hull with nothing streaming past them — which is what
+        // `--stars 0` used to be for. Flown in both views because they used to
+        // be separate pools reached by separate paths and the empty one is
+        // exactly where that showed.
+        let args = args_for(&["--magnitude", "-2", "--size", "60x20"]);
         let mut paused = false;
         let mut flight = Flight::new(&args, 60, 20);
 
         for view in [ViewMode::Cockpit, ViewMode::Side] {
-            flight.set_view(view, &args);
+            flight.set_view(view);
             for _ in 0..30 {
                 flight.advance(1.0 / 60.0);
                 flight.draw(60.0, false, true);
@@ -1111,76 +1058,66 @@ mod tests {
             flight.renderer.present(&mut Vec::new()).unwrap();
         }
 
-        // And the two keys answer it differently, which is the one place they
-        // are not each other's inverse. `+` has to lift it off zero or the
-        // multiply is a fixed point and the key is dead for the rest of the
-        // flight; `-` must not, because a key labelled *fewer* that hands back
-        // eight stars is the fault `POOL_FLOOR` came down from 64 to fix.
-        flight.set_view(ViewMode::Cockpit, &args);
+        // And the two keys are each other's inverse here, where they used not
+        // to be. A multiply on a literal pool has zero for a fixed point, so
+        // `+` could never climb off an empty sky and `-` had to be stopped from
+        // clamping one up to a floor; an addition on a magnitude has neither
+        // problem and neither special case.
+        flight.set_view(ViewMode::Cockpit);
         handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
         assert_eq!(flight.stars(), 0, "`-` put stars into an empty sky");
-        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
-        assert_eq!(
-            flight.stars(),
-            POOL_FLOOR,
-            "`+` swallowed the press on an empty sky"
+        for _ in 0..14 {
+            handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+        }
+        assert!(
+            flight.stars() > 0,
+            "`+` cannot fill a sky it was able to empty"
         );
     }
 
     #[test]
-    fn the_star_keys_move_the_pool_the_way_they_point() {
-        // Regression. The keys clamped up to a floor of 64, chosen under an
-        // automatic minimum of 300 and sitting over the count on any window the
-        // density that replaced it opened thin: `-` added stars rather than
-        // taking them away, and both keys landed on the same number. The other
-        // half is the fixed point — `(n as f32 * 1.25) as usize` is `n` again
-        // below four — so the floor could not simply go to one either.
-        //
-        // One window now rather than two. It was flown at 80x24 and 40x12
-        // because *which* of them the density opened under the floor moved with
-        // the density itself; both open on the same fixed count today, so the
-        // second window was asking the first one's question twice.
+    fn the_magnitude_keys_move_the_limit_the_way_they_point() {
+        // Regression, twice over. The keys used to scale a literal pool and
+        // clamped up to a floor of 64 chosen under an automatic minimum of 300,
+        // so on a thin window `-` *added* stars and both keys landed on the
+        // same number; and `+` carried a ceiling of 20 000 that sat under what
+        // `--stars` already allowed, so one press could shrink a pool the flag
+        // had asked for by four fifths. Both ends are the flag's ends now.
         let args = args_for(&["--size", "40x12"]);
         let mut paused = false;
 
         let mut flight = Flight::new(&args, 40, 12);
-        let opened = flight.field.len();
+        let opened = flight.magnitude();
         handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
         assert!(
-            flight.field.len() < opened,
-            "`-` took a pool of {opened} to {}",
-            flight.field.len()
+            flight.magnitude() < opened && flight.stars() < Universe::population(opened),
+            "`-` took a sky of {opened} to {}",
+            flight.magnitude()
         );
 
         let mut flight = Flight::new(&args, 40, 12);
-        let opened = flight.field.len();
-        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
-        assert!(flight.field.len() > opened, "`+` left the pool at {opened}");
-
-        // The floor is reached rather than approached, and with the automatic
-        // count's own floor of one gone this is the only thing left saying a
-        // pool cannot be walked to nothing. `-` multiplies by 0.8, which has
-        // nowhere to stop on its own: 0.8 of a pool is a pool, all the way down.
-        let mut flight = Flight::new(&args, 40, 12);
-        for _ in 0..40 {
-            handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
-        }
-        assert_eq!(
-            flight.field.len(),
-            POOL_FLOOR,
-            "`-` walked the pool to {}",
-            flight.field.len()
-        );
-
-        // And `+` climbs back off it, which is why the floor is not 1: the
-        // growth truncates, so below four stars the key gives the same number
-        // back and swallows the press. Asked through the key rather than of a
-        // second copy of the step.
+        let opened = flight.magnitude();
         handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
         assert!(
-            flight.field.len() > POOL_FLOOR,
-            "`+` cannot climb off its own floor of {POOL_FLOOR}"
+            flight.magnitude() > opened && flight.stars() > Universe::population(opened),
+            "`+` left the sky at {opened}"
         );
+
+        // Both ends are reached rather than approached, and they are the two
+        // the command line is held to — so a sky these keys walk to can never
+        // be one the flag would have refused.
+        for (key, want) in [('-', cli::MIN_MAGNITUDE), ('+', cli::MAX_MAGNITUDE)] {
+            let mut flight = Flight::new(&args, 40, 12);
+            for _ in 0..200 {
+                handle_key(press(KeyCode::Char(key)), &mut flight, &args, &mut paused);
+            }
+            assert_eq!(
+                flight.magnitude(),
+                want,
+                "`{key}` leaned on walked the limit to {}",
+                flight.magnitude()
+            );
+        }
     }
 
     #[test]
@@ -1193,7 +1130,7 @@ mod tests {
     #[test]
     fn the_same_seed_produces_the_same_flight() {
         let render = || {
-            let args = args_for(&["--seed", "7", "--stars", "500", "--size", "40x12"]);
+            let args = args_for(&["--seed", "7", "--magnitude", "4.5", "--size", "40x12"]);
             let mut flight = Flight::new(&args, 40, 12);
             let mut out = Vec::new();
             for _ in 0..30 {
@@ -1209,7 +1146,7 @@ mod tests {
     #[test]
     fn different_seeds_produce_different_skies() {
         let render = |seed: &str| {
-            let args = args_for(&["--seed", seed, "--stars", "500", "--size", "40x12"]);
+            let args = args_for(&["--seed", seed, "--magnitude", "4.5", "--size", "40x12"]);
             let mut flight = Flight::new(&args, 40, 12);
             let mut out = Vec::new();
             for _ in 0..30 {
@@ -1224,7 +1161,7 @@ mod tests {
 
     #[test]
     fn keys_do_what_they_say() {
-        let args = args_for(&["--stars", "200", "--size", "40x12"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         let mut paused = false;
 
@@ -1241,11 +1178,11 @@ mod tests {
         handle_key(press(KeyCode::Char('p')), &mut flight, &args, &mut paused);
         assert!(paused);
 
-        let stars = flight.field.len();
+        let stars = flight.stars();
         handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
-        assert!(flight.field.len() > stars);
+        assert!(flight.stars() > stars);
         handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
-        assert!(flight.field.len() < stars * 2);
+        assert!(flight.stars() < stars * 2);
 
         // Reset has to take the attitude with it, roll included — a ship left
         // inverted after an `R` would be a reset in name only.
@@ -1262,7 +1199,7 @@ mod tests {
     fn the_stick_is_wasd_and_qe() {
         // Every axis, in both directions, on both cases of the letter — and on
         // the arrows that share the yaw axis with A and D.
-        let args = args_for(&["--stars", "200", "--size", "40x12"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         let mut paused = false;
 
@@ -1320,7 +1257,7 @@ mod tests {
     fn a_roll_turns_the_sky_and_stays_where_it_is_put() {
         // The pilot's roll is attitude, not a transient: it holds after the
         // impulse has decayed, which is what makes flying inverted possible.
-        let args = args_for(&["--stars", "300", "--size", "60x20"]);
+        let args = args_for(&["--magnitude", "4", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
 
@@ -1354,12 +1291,12 @@ mod tests {
         // And the flight is still flyable afterwards — nothing has gone NaN and
         // the sky has not emptied.
         flight.draw(60.0, false, true);
-        assert!(flight.ship.roll.is_finite() && !flight.field.is_empty());
+        assert!(flight.ship.roll.is_finite() && !flight.sky.is_empty());
     }
 
     #[test]
     fn c_cycles_the_camera_and_ctrl_c_still_quits() {
-        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
         assert_eq!(flight.view(), ViewMode::Cockpit, "a flight starts inside");
@@ -1409,7 +1346,7 @@ mod tests {
         // The ship is what this checks, because the ship is what would go
         // wrong: a camera control that also nudged the flight model would fly
         // the ship from a seat that is not in it.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
 
@@ -1523,10 +1460,20 @@ mod tests {
         //
         // Stated as the property that was broken: once the stick has been let
         // go and the rates have decayed, a flight that pitched about draws the
-        // same outside frame as one that never touched it. Compared on the
-        // pixels rather than the cells, because the *panel* is meant to differ
-        // — the compass has genuinely moved, and it should say so.
-        let args = args_for(&["--seed", "6", "--stars", "300", "--size", "80x24"]);
+        // same *hull* as one that never touched it. Compared on the pixels
+        // rather than the cells, because the panel is meant to differ — the
+        // compass has genuinely moved, and it should say so.
+        //
+        // Flown under an empty sky, and that is the change this needed rather
+        // than a loosened bound. It used to compare whole frames, which worked
+        // while the outside sky took no steering at all: the band streamed
+        // along a track a turn of the hull could not move. The sky is in the
+        // world now and the camera rides the hull, so a ship that really has
+        // turned really does see it swing past — that is the honest picture and
+        // not a regression. What the bug was about is the hull, so the hull is
+        // what is left in the frame, which makes this a sharper test than the
+        // one it replaces: a difference can no longer hide among the stars.
+        let args = args_for(&["--seed", "6", "--magnitude", "-2", "--size", "80x24"]);
         let frames = |pitched: bool| {
             let mut flight = Flight::new(&args, 80, 24);
             let mut paused = false;
@@ -1574,90 +1521,88 @@ mod tests {
     }
 
     #[test]
-    fn the_outside_sky_is_only_built_when_it_is_asked_for() {
-        // A cockpit-only run must pay nothing for the view it never opens —
-        // not the pool, and not a draw from a generator that would have to come
-        // from somewhere.
-        let args = args_for(&["--stars", "500", "--size", "60x20"]);
+    fn both_views_are_looking_at_the_same_universe() {
+        // What replaced three tests about two skies: one that the outside pool
+        // was built lazily, one that building it did not disturb the cockpit's
+        // generator, and one that whichever sky was not being flown stayed put
+        // while nobody was in it. All three were bookkeeping for a design where
+        // `C` genuinely showed two different universes.
+        let args = args_for(&["--seed", "4", "--magnitude", "5.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
-        assert!(
-            flight.exterior.is_none(),
-            "the outside sky was built anyway"
-        );
-
-        flight.cycle_view(&args);
-        assert!(
-            flight.exterior.is_some(),
-            "C did not build a sky to look at"
-        );
-        assert_eq!(flight.field.len(), 500, "the cockpit pool was disturbed");
-    }
-
-    #[test]
-    fn the_two_skies_are_independent_of_one_another() {
-        // The cockpit field's generator is the one the reference frames were
-        // recorded from. Building a second field must not touch it, whenever
-        // that happens, and the two skies must not be the same pattern twice.
-        let args = args_for(&["--seed", "4", "--stars", "300", "--size", "60x20"]);
-        let sky = |side: bool| {
-            let mut flight = Flight::new(&args, 60, 20);
-            if side {
-                flight.cycle_view(&args);
-            }
-            let cam = flight.renderer.camera(&flight.ship, 0.0);
-            flight
-                .field
-                .streaks(&cam, 0.0, 0.0)
-                .map(|s| s.to)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(sky(false), sky(true), "going outside moved the cockpit sky");
-    }
-
-    #[test]
-    fn switching_views_leaves_the_other_sky_where_it_was() {
-        // Only the view being flown is stepped, which is safe because both
-        // fields work out where a star *was* from where it is. Nothing may
-        // freeze, and coming back must not draw a scratch across the frame.
-        let args = args_for(&["--seed", "8", "--stars", "400", "--size", "80x24"]);
-        let mut flight = Flight::new(&args, 80, 24);
         flight.ship.throttle = 1.0;
         for _ in 0..60 {
             flight.advance(1.0 / 60.0);
         }
-        let cam = flight.renderer.camera(&flight.ship, flight.time);
-        let parked: Vec<(f32, f32)> = flight.field.streaks(&cam, 0.0, 0.0).map(|s| s.to).collect();
+        let inside: Vec<[f32; 3]> = flight.sky.positions();
 
-        flight.cycle_view(&args);
+        flight.cycle_view();
         for _ in 0..120 {
             flight.advance(1.0 / 60.0);
             flight.draw(60.0, false, true);
         }
-        let cam = flight.renderer.camera(&flight.ship, flight.time);
-        let after: Vec<(f32, f32)> = flight.field.streaks(&cam, 0.0, 0.0).map(|s| s.to).collect();
-        assert_eq!(
-            parked, after,
-            "the cockpit sky moved while nobody was in it"
-        );
+        flight.cycle_view();
+        let after: Vec<[f32; 3]> = flight.sky.positions();
 
-        // Back inside, and the first frame is a normal one rather than a smear
-        // of two seconds' travel.
-        flight.cycle_view(&args);
-        flight.advance(1.0 / 60.0);
-        let cam = flight.renderer.camera(&flight.ship, flight.time);
-        let longest = flight
-            .field
-            .streaks(&cam, 0.0, 0.0)
-            .map(|s| (s.to.0 - s.from.0).hypot(s.to.1 - s.from.1))
-            .fold(0.0f32, f32::max);
-        assert!(longest < 40.0, "coming back drew a scratch {longest} long");
+        assert_eq!(inside.len(), after.len(), "the sky changed size out there");
+        // Not equality: the flight went on, so stars that crossed their own
+        // limit came back somewhere else. What must hold is that going outside
+        // and coming back is the same flight as staying put — which it is
+        // trivially now, because there is one pool and one `advance`.
+        let moved = inside.iter().zip(&after).filter(|(a, b)| a != b).count();
+        assert!(
+            moved < inside.len() / 4,
+            "{moved} of {} stars moved while the camera was elsewhere",
+            inside.len()
+        );
+    }
+
+    #[test]
+    fn a_camera_swing_moves_no_star() {
+        // The sharp statement of what the rebuild is for. The band this
+        // replaced was laid out in the side camera's own space and re-laid
+        // whenever the orbit differed from the one it was last laid against, so
+        // swinging the camera rotated the whole pool — and the fold, the rim
+        // and the entering-surface sampler existed to patch the seams that
+        // tore. A world-space sky has nothing to re-lay, so this is bitwise.
+        let args = args_for(&["--seed", "9", "--magnitude", "5.5", "--size", "80x24"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        flight.cycle_view();
+        flight.ship.throttle = 1.0;
+        for _ in 0..30 {
+            flight.advance(1.0 / 60.0);
+        }
+        let parked = flight.sky.positions();
+
+        // All the way round, on every axis, drawing each frame so nothing can
+        // be said to have been skipped.
+        for _ in 0..90 {
+            flight.nudge_orbit(view::ORBIT_STEP, view::ORBIT_STEP, view::ORBIT_STEP);
+            flight.draw(60.0, true, true);
+        }
+        // And then flown on, because `advance` is what eases the orbit toward
+        // where the keys put it — and what would step the sky, if a swing were
+        // still something the sky had to be told about.
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+            flight.draw(60.0, false, true);
+        }
+        assert_ne!(
+            flight.orbit(),
+            args.orbit,
+            "the camera did not actually move"
+        );
+        assert_eq!(
+            parked,
+            flight.sky.positions(),
+            "a camera swing moved the sky it was swinging past"
+        );
     }
 
     #[test]
     fn m_opens_the_ship_picker_and_escape_closes_it_without_quitting() {
         // The nastiest bug this feature could have: reaching for the key that
         // dismisses a dialogue and losing the terminal instead.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
 
@@ -1682,7 +1627,7 @@ mod tests {
 
     #[test]
     fn the_picker_takes_the_keyboard_while_it_is_up() {
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
@@ -1707,7 +1652,7 @@ mod tests {
 
     #[test]
     fn choosing_a_ship_previews_it_and_keeps_it() {
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
         let flown = |f: &Flight| f.drawn_model().name;
@@ -1764,16 +1709,25 @@ mod tests {
     }
 
     #[test]
-    fn the_star_keys_grow_whichever_sky_is_being_looked_at() {
-        let args = args_for(&["--stars", "500", "--size", "80x24"]);
-        let mut flight = Flight::new(&args, 80, 24);
+    fn the_magnitude_keys_reach_the_sky_from_either_view() {
+        // It used to matter *which* sky the keys grew — there were two, and
+        // the answer was whichever one was being looked at. There is one now,
+        // so what is left to say is that both cameras reach it.
+        let args = args_for(&["--magnitude", "5.0", "--size", "80x24"]);
         let mut paused = false;
-
-        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
-        let outside = flight.stars();
-        handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
-        assert!(flight.stars() > outside, "+ did not grow the outside sky");
-        assert_eq!(flight.field.len(), 500, "it grew the wrong one");
+        for outside in [false, true] {
+            let mut flight = Flight::new(&args, 80, 24);
+            if outside {
+                handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+            }
+            let opened = flight.stars();
+            handle_key(press(KeyCode::Char('+')), &mut flight, &args, &mut paused);
+            assert!(
+                flight.stars() > opened,
+                "`+` did not reach the sky from {}",
+                if outside { "outside" } else { "the seat" }
+            );
+        }
     }
 
     #[test]
@@ -1806,7 +1760,7 @@ mod tests {
 
     #[test]
     fn quit_keys_quit() {
-        let args = args_for(&["--stars", "100", "--size", "20x8"]);
+        let args = args_for(&["--magnitude", "3", "--size", "20x8"]);
         let mut flight = Flight::new(&args, 20, 8);
         let mut paused = false;
         for key in [
@@ -1838,7 +1792,7 @@ mod tests {
     fn q_flies_the_ship_rather_than_ending_the_flight() {
         // Regression in waiting: `q` quit before it was a control. Now it rolls
         // to port, and a pilot reaching for it must not lose the terminal.
-        let args = args_for(&["--stars", "100", "--size", "20x8"]);
+        let args = args_for(&["--magnitude", "3", "--size", "20x8"]);
         let mut flight = Flight::new(&args, 20, 8);
         let mut paused = false;
         for key in ['q', 'Q'] {
@@ -1856,7 +1810,7 @@ mod tests {
 
     #[test]
     fn key_releases_are_ignored() {
-        let args = args_for(&["--stars", "100", "--size", "20x8"]);
+        let args = args_for(&["--magnitude", "3", "--size", "20x8"]);
         let mut flight = Flight::new(&args, 20, 8);
         let mut paused = false;
         let before = flight.ship.throttle;
@@ -1902,7 +1856,7 @@ mod tests {
                 "the resolved pixel buffer is stale at {cols}x{rows}"
             );
             assert!(
-                !flight.field.is_empty(),
+                !flight.sky.is_empty(),
                 "the star pool emptied at {cols}x{rows}"
             );
             assert!(flight.ship.speed.is_finite());
@@ -1921,14 +1875,14 @@ mod tests {
     fn a_forced_size_ignores_the_terminal_moving_underneath_it() {
         // Regression: `--size` was honoured at startup and then discarded by
         // the first resize event, so the flag meant "until the window moves".
-        let args = args_for(&["--size", "120x40", "--stars", "200"]);
+        let args = args_for(&["--size", "120x40", "--magnitude", "3.5"]);
         let mut flight = Flight::new(&args, 120, 40);
         assert!(!flight.resize(&args, 80, 24), "a forced size must not move");
         assert_eq!(flight.renderer.canvas_dims(), (120, 80));
 
         // Without the flag the terminal is the authority — but only when it
         // actually says something new.
-        let args = args_for(&["--stars", "200"]);
+        let args = args_for(&["--magnitude", "3.5"]);
         let mut flight = Flight::new(&args, 120, 40);
         assert!(
             flight.resize(&args, 80, 24),
@@ -1947,20 +1901,28 @@ mod tests {
         // from the new canvas whenever `--stars` was 0, so dragging a window
         // edge respawned the sky a few hundred stars at a time and the panel's
         // own count walked about while nothing had asked it to. A count a window
-        // can overrule is not one. Both skies, because the retune reached both.
-        for extra in [vec![], vec!["--stars", "777"]] {
+        // can overrule is not one.
+        //
+        // It is now true for a stronger reason than the flag being literal: the
+        // sky is laid out in the world rather than in front of the camera, so a
+        // resize has nothing to say to it at all and the two `retarget` calls
+        // that used to stand in `resize` — each dropping every trail in a field
+        // to hide the seam — are gone. The pool must not move by so much as a
+        // star, from either view.
+        for extra in [vec![], vec!["--magnitude", "5.5"]] {
             let args = args_for(&extra);
-            let want = args.stars;
             let mut flight = Flight::new(&args, 40, 12);
-            flight.set_view(ViewMode::Side, &args);
+            flight.set_view(ViewMode::Side);
+            let want = flight.stars();
+            let parked = flight.sky.positions();
             for (cols, rows) in [(300usize, 90usize), (1, 1), (80, 24)] {
                 flight.resize(&args, cols, rows);
+                assert_eq!(flight.stars(), want, "{cols}x{rows} retuned the sky");
                 assert_eq!(
-                    flight.field.len(),
-                    want,
-                    "{cols}x{rows} retuned the cockpit pool"
+                    parked,
+                    flight.sky.positions(),
+                    "{cols}x{rows} moved a star that was already out there"
                 );
-                assert_eq!(flight.stars(), want, "{cols}x{rows} retuned the band");
             }
         }
     }
@@ -1971,7 +1933,7 @@ mod tests {
         // `handle_key`, one through `handle_mouse` — so nothing but a test says
         // they agree, and a wheel that zoomed the opposite way to the key it
         // shares a job with would be a very tiresome bug to live with.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         for (code, kind) in [
             (KeyCode::Char(']'), MouseEventKind::ScrollUp),
             (KeyCode::Char('['), MouseEventKind::ScrollDown),
@@ -2007,7 +1969,7 @@ mod tests {
         // out past the end while the camera sits at the limit, and the first
         // notch back does nothing at all — a control that has to be pressed
         // fifteen times before it answers reads as broken.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = outside(&args);
         let mut paused = false;
 
@@ -2033,7 +1995,7 @@ mod tests {
     fn a_notch_and_its_opposite_land_back_where_they_started() {
         // Geometric steps, so this is a multiply and a divide rather than a
         // pair of `powf`s that would each land an ulp or two off.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = outside(&args);
         let mut paused = false;
         for _ in 0..6 {
@@ -2054,7 +2016,7 @@ mod tests {
         // The mirror of `the_stick_loses_pitch_and_yaw_outside_the_cockpit`:
         // from the pilot's seat there is no ship to be looking at, so the keys
         // are plainly not wired rather than quietly swallowing the press.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
         assert_eq!(flight.view(), ViewMode::Cockpit);
@@ -2091,7 +2053,7 @@ mod tests {
         // not merely close but identical — which is what stepping the ease
         // inside the fixed-step loop buys, and what moving it outside to run on
         // the frame's own `dt` would throw away.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let settled = |dt: f32, steps: usize| {
             let mut flight = outside(&args);
             let mut paused = false;
@@ -2129,7 +2091,7 @@ mod tests {
         // the lens is off and an exactly identical sky is the whole claim:
         // every subpixel that differs between two zooms has to be one the ship
         // and its bubble could have reached.
-        let args = args_for(&["--seed", "5", "--stars", "1200", "--size", "80x24"]);
+        let args = args_for(&["--seed", "5", "--magnitude", "5", "--size", "80x24"]);
         let frame = |zoom: f32| {
             let mut flight = outside(&args);
             flight.zoom = zoom;
@@ -2177,7 +2139,7 @@ mod tests {
         // angle and its target is the only thing that gets back to an exact
         // zero, and a camera that settled to `1e-9` instead would take every
         // slow path for the rest of the flight.
-        let args = args_for(&["--seed", "9", "--stars", "900", "--size", "80x24"]);
+        let args = args_for(&["--seed", "9", "--magnitude", "5", "--size", "80x24"]);
         let mut paused = false;
 
         let mut plain = Flight::new(&args, 80, 24);
@@ -2223,7 +2185,7 @@ mod tests {
         // — in here the six keys fly the ship, so none of them may move the
         // camera, and the camera survives a round trip through `C` because it
         // is state rather than a mode.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
 
@@ -2258,7 +2220,7 @@ mod tests {
         // cross. A flight nobody is at flies its own camera; a flight somebody
         // is at is left exactly where `--orbit` parked it, to the bit, however
         // long it runs.
-        let args = args_for(&["--view", "side", "--stars", "40", "--size", "60x20"]);
+        let args = args_for(&["--view", "side", "--magnitude", "2.5", "--size", "60x20"]);
         let mut flown = Flight::new(&args, 60, 20);
         for frame in 0..600 {
             flown.advance(1.0 / 60.0);
@@ -2297,7 +2259,7 @@ mod tests {
         //
         // The throttle and the camera are closed forms of the clock, so they
         // are unaffected and the paragraph about `P` stays true of them.
-        let args = args_for(&["--demo", "--stars", "40", "--size", "60x20"]);
+        let args = args_for(&["--demo", "--magnitude", "2.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         for frame in 0..(30 * 60) {
             // Exactly what the loop does while `paused` is set: wall clock goes
@@ -2324,7 +2286,13 @@ mod tests {
         // somebody swings the camera themselves — and `R`, which is the key for
         // putting the view back, hands it over again.
         let args = args_for(&[
-            "--demo", "--view", "side", "--stars", "40", "--size", "60x20",
+            "--demo",
+            "--view",
+            "side",
+            "--magnitude",
+            "2.5",
+            "--size",
+            "60x20",
         ]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
@@ -2358,7 +2326,7 @@ mod tests {
         // Stronger than the zoom's version of this, and worth stating because
         // it is why the step is additive: `x + s - s` is exactly `x` where a
         // geometric step has to settle for very nearly.
-        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let mut flight = outside(&args);
         let mut paused = false;
 
@@ -2387,7 +2355,7 @@ mod tests {
         // And none of them parks. `W` used to stop dead at the quarter turn,
         // which is what a clamp does and is not what a hand holding the key is
         // asking for; over the top and round is.
-        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let mut flight = outside(&args);
         let mut paused = false;
 
@@ -2444,7 +2412,7 @@ mod tests {
         // not depend on how the frames happened to land. Rewriting one of these
         // as `k * dt` is the classic simplification and it makes the answer a
         // function of the frame rate.
-        let args = args_for(&["--stars", "200", "--size", "60x20"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let settle = |frames: usize, dt: f32| {
             let mut paused = false;
             let mut flight = outside(&args);
@@ -2466,7 +2434,7 @@ mod tests {
 
     #[test]
     fn resetting_puts_the_zoom_back_where_it_started() {
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = outside(&args);
         let mut paused = false;
         for _ in 0..5 {
@@ -2489,7 +2457,7 @@ mod tests {
         // It is modal, and the wheel is no exception: while a list is up,
         // scrolling is how a list is read. The brackets go nowhere at all,
         // like every other flight key.
-        let args = args_for(&["--stars", "200", "--size", "80x24"]);
+        let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
@@ -2515,7 +2483,13 @@ mod tests {
     #[test]
     fn a_long_flight_stays_finite() {
         let args = args_for(&[
-            "--seed", "3", "--stars", "800", "--size", "60x20", "--engage",
+            "--seed",
+            "3",
+            "--magnitude",
+            "4.5",
+            "--size",
+            "60x20",
+            "--engage",
         ]);
         let mut flight = Flight::new(&args, 60, 20);
         for frame in 0..3000 {

@@ -16,17 +16,18 @@
 
 pub mod app;
 pub mod autopilot;
+pub mod bend;
+pub mod camera;
 pub mod canvas;
 pub mod cli;
-pub mod exterior;
 pub mod hud;
 pub mod lens;
 pub mod menu;
 pub mod models;
 pub mod render;
 pub mod ship;
-pub mod starfield;
 pub mod term;
+pub mod universe;
 pub mod view;
 
 #[cfg(feature = "snapshot")]

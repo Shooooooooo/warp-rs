@@ -41,30 +41,41 @@ const FRAMES: usize = 240;
 /// once the drive has spooled up, and that is the case worth measuring.
 const WARMUP: usize = 300;
 
+/// One row of the sweep: a canvas, how faint a sky over it, whether the drive
+/// is lit, and which camera in which colour mode. A named type because six
+/// fields in a tuple is where clippy stops reading, and because the third one
+/// stopped being a plain count.
+type Case<'a> = (usize, usize, Option<f32>, bool, &'a str, &'a str);
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let cases: Vec<(usize, usize, usize, bool, &str, &str)> = if argv.len() >= 3 {
+    let cases: Vec<Case<'_>> = if argv.len() >= 3 {
         let n = |i: usize| {
             argv[i]
                 .parse()
-                .expect("expected: [cols] [rows] [stars] [view] [color]")
+                .expect("expected: [cols] [rows] [magnitude] [view] [color]")
         };
         let view = argv
             .get(3)
             .map_or("cockpit", |v| if v == "side" { "side" } else { "cockpit" });
         let color = argv.get(4).map_or("truecolor", String::as_str);
-        vec![(n(0), n(1), n(2), true, view, color)]
+        // The third argument is a limiting magnitude now rather than a count,
+        // and it is a *column* rather than an assumption for the reason the
+        // colour mode is: a sweep that rides the default measures something
+        // else the day the default moves.
+        let mag: Option<f32> = argv.get(2).and_then(|a| a.parse().ok());
+        vec![(n(0), n(1), mag, true, view, color)]
     } else {
         vec![
-            (80, 24, 0, false, "cockpit", "truecolor"),
-            (80, 24, 0, true, "cockpit", "truecolor"),
-            (200, 60, 0, true, "cockpit", "truecolor"),
-            (200, 60, 20_000, true, "cockpit", "truecolor"),
+            (80, 24, None, false, "cockpit", "truecolor"),
+            (80, 24, None, true, "cockpit", "truecolor"),
+            (200, 60, None, true, "cockpit", "truecolor"),
+            (200, 60, Some(8.0), true, "cockpit", "truecolor"),
             // The outside view at warp is the expensive frame in the program:
             // every streak near the ship is chopped into arcs and drawn twice,
             // once for each image the lens forms of it.
-            (200, 60, 0, true, "side", "truecolor"),
-            (200, 60, 20_000, true, "side", "truecolor"),
+            (200, 60, None, true, "side", "truecolor"),
+            (200, 60, Some(8.0), true, "side", "truecolor"),
             // And the cockpit at the same size and pool in the palette
             // spelling — the fourth row's flight, not the two `side` ones
             // directly above, which is what this comment claimed for as long as
@@ -75,7 +86,7 @@ fn main() {
             // terminals fell into and keeps it now that none do: the quantiser
             // is still on the frame path of everyone who asks for it, and a
             // column nobody times is a column nobody notices regressing.
-            (200, 60, 20_000, true, "cockpit", "256"),
+            (200, 60, Some(8.0), true, "cockpit", "256"),
         ]
     };
 
@@ -83,12 +94,12 @@ fn main() {
         "{:>9}  {:>8}  {:>9}  {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>6}",
         "size", "view", "color", "stars", "sim ms", "draw ms", "write ms", "total ms", "fps"
     );
-    for (cols, rows, stars, warp, view, color) in cases {
-        run(cols, rows, stars, warp, view, color);
+    for (cols, rows, magnitude, warp, view, color) in cases {
+        run(cols, rows, magnitude, warp, view, color);
     }
 }
 
-fn run(cols: usize, rows: usize, stars: usize, warp: bool, view: &str, color: &str) {
+fn run(cols: usize, rows: usize, magnitude: Option<f32>, warp: bool, view: &str, color: &str) {
     let mut argv = vec![
         "warp".to_string(),
         "--seed".into(),
@@ -99,8 +110,8 @@ fn run(cols: usize, rows: usize, stars: usize, warp: bool, view: &str, color: &s
         "--color".into(),
         color.into(),
     ];
-    if stars > 0 {
-        argv.extend(["--stars".to_string(), stars.to_string()]);
+    if let Some(mag) = magnitude {
+        argv.extend(["--magnitude".to_string(), mag.to_string()]);
     }
     if warp {
         argv.extend(["--engage".to_string(), "--throttle".into(), "1.0".into()]);

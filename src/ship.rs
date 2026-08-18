@@ -269,7 +269,7 @@ impl Ship {
 
     /// Turn the hull by this step's rates.
     ///
-    /// This is the rotation `starfield::StarField::update` used to apply to
+    /// This is the rotation the cockpit star field used to apply to
     /// every star, moved off the sky and onto the ship and otherwise untouched
     /// — same three axes, same order, same sines. It has to be the same one:
     /// the sky used to turn the opposite way from the ship, so a star was
