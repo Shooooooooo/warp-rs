@@ -30,6 +30,18 @@ const WARP_MAX_C: f32 = 2000.0;
 const TIME_COMPRESSION: f32 = 86_400.0;
 const SECONDS_PER_YEAR: f32 = 31_557_600.0;
 
+/// How far one multiple of c carries the ship in a second at the stick, in
+/// light years.
+///
+/// The two constants above have only ever been read by the odometer, which
+/// meant the distance the panel reported and the distance the sky was moved by
+/// were separate inventions — [`Ship::speed`] is in world units and ran the
+/// stars, and this ran the readout, and nothing made them agree. They are one
+/// scale now: [`crate::universe`] measures its volume in light years and moves
+/// it by [`Ship::velocity_ly_per_s`], so a flight that reads 3 ly on the panel
+/// really has put 3 ly of sky behind it.
+pub const LY_PER_C_SECOND: f32 = TIME_COMPRESSION / SECONDS_PER_YEAR;
+
 const ACCEL_K: f32 = 1.6;
 const DECEL_K: f32 = 2.4;
 /// Dropping out of warp bleeds speed much harder than a normal throttle-down.
@@ -57,6 +69,12 @@ const SHAKE_DECAY: f32 = 3.4;
 const FLASH_DECAY: f32 = 5.5;
 /// How far the pitch axis can be pushed before it stops, in radians.
 const PITCH_LIMIT: f32 = FRAC_PI_2 * 0.85;
+
+/// The attitude a ship launches at: starboard along `+x`, down along `+y`, the
+/// nose along `+z`. Every entry is an exact zero or an exact one, so a flight
+/// that never touches the stick projects the sky through a transform that is
+/// the identity to the bit.
+const LEVEL_AXES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// The player's ship: everything about how it is currently moving.
 #[derive(Debug, Clone)]
@@ -89,6 +107,33 @@ pub struct Ship {
     pub flash: f32,
     /// Odometer, in light years.
     pub distance_ly: f64,
+    /// The hull's own axes in the inertial world frame: starboard, down, and
+    /// the nose, in that order and in the ship's own `+z` out the nose, `+x`
+    /// to starboard, `+y` down convention.
+    ///
+    /// The attitude lives here rather than in the sky because there is only
+    /// one sky now and two cameras looking at it, so a rotation applied to the
+    /// stars would have to be undone for whichever camera did not want it.
+    /// Stepped by exactly the arithmetic the cockpit's field used to apply to
+    /// every star — see [`Ship::steer`] — so the view from the seat is the one
+    /// it always was.
+    ///
+    /// Note what this is *not*: [`Self::heading`], [`Self::pitch`] and
+    /// [`Self::roll`] stay where they are and go on being what they were, which
+    /// is instrument readings. A compass is not an attitude, and deriving one
+    /// from the other is the bug the sky already shipped twice.
+    pub axes: [[f32; 3]; 3],
+    /// Where the ship is, in light years, in that same inertial frame.
+    ///
+    /// `f64`, and not as a matter of taste. At full impulse the ship covers
+    /// 2.1e-5 ly in a sim step against stars a thousand light years out, which
+    /// is a relative change of 2e-8 where `f32` resolves 1.2e-7 — so a position
+    /// carried on the stars themselves and decremented in place would round the
+    /// whole far sky to a standstill permanently rather than merely slowly.
+    /// Holding the stars still and moving the ship puts the small number in the
+    /// accumulator where it belongs, and the subtraction is done here before
+    /// anything is handed to the renderer.
+    pub position: [f64; 3],
     /// Set while the drive is spinning down after a disengage.
     dropping_out: bool,
 }
@@ -115,6 +160,8 @@ impl Ship {
             shake: 0.0,
             flash: 0.0,
             distance_ly: 0.0,
+            axes: LEVEL_AXES,
+            position: [0.0; 3],
             dropping_out: false,
         }
     }
@@ -214,12 +261,67 @@ impl Ship {
         self.shake *= (-SHAKE_DECAY * dt).exp();
         self.flash *= (-FLASH_DECAY * dt).exp();
 
+        self.steer(dt);
+        self.coast(dt);
+
         self.distance_ly += (self.velocity_c() * dt * TIME_COMPRESSION / SECONDS_PER_YEAR) as f64;
+    }
+
+    /// Turn the hull by this step's rates.
+    ///
+    /// This is the rotation `starfield::StarField::update` used to apply to
+    /// every star, moved off the sky and onto the ship and otherwise untouched
+    /// — same three axes, same order, same sines. It has to be the same one:
+    /// the sky used to turn the opposite way from the ship, so a star was
+    /// rotated by `S` while the hull it is seen from was implicitly rotated by
+    /// `Sᵀ`, and a star's place in the seat is `Aᵀ(w − P)`. Substituting the
+    /// axes for the coordinates gives `A ← A·Sᵀ`, which is the same three lines
+    /// with a vector where each scalar was.
+    ///
+    /// Yaw about the vertical, pitch about the horizontal, roll about the nose,
+    /// each a rotation of the ship's *own* frame — so roll ninety degrees and
+    /// the pitch axis has come round to where the yaw axis was, exactly as it
+    /// would in something with wings.
+    fn steer(&mut self, dt: f32) {
+        let (sy, cy) = (self.yaw_rate * dt).sin_cos();
+        let (sp, cp) = (self.pitch_rate * dt).sin_cos();
+        // Negated to match the sky's own spelling, where dropping the starboard
+        // wing swung the stars anticlockwise.
+        let (sr, cr) = (-self.roll_rate * dt).sin_cos();
+
+        let [right, down, nose] = self.axes;
+        let (right, nose) = (mix(right, cy, nose, -sy), mix(right, sy, nose, cy));
+        let (down, nose) = (mix(down, cp, nose, -sp), mix(down, sp, nose, cp));
+        let (right, down) = (mix(right, cr, down, -sr), mix(right, sr, down, cr));
+        self.axes = orthonormalise([right, down, nose]);
+    }
+
+    /// Move the ship along its nose by this step.
+    ///
+    /// In light years, from [`Self::velocity_ly_per_s`], and accumulated in
+    /// `f64` — see [`Self::position`] for why that is the whole point.
+    fn coast(&mut self, dt: f32) {
+        let step = (self.velocity_ly_per_s() * dt) as f64;
+        for (place, nose) in self.position.iter_mut().zip(self.axes[2]) {
+            *place += nose as f64 * step;
+        }
     }
 
     /// Current velocity as a multiple of the speed of light.
     pub fn velocity_c(&self) -> f32 {
         speed_to_c(self.speed)
+    }
+
+    /// The same velocity in the units the sky is measured in.
+    ///
+    /// One spelling, deliberately, because this is the number that used to have
+    /// two: the panel's odometer ran on the compressed clock and the stars ran
+    /// on [`Self::speed`], which is 42 world units at 0.9 c and 780 at 2000 c —
+    /// so the sky at impulse streamed at a twentieth of its warp rate while the
+    /// dial read a two-thousandth of it, and the stars had to be parked a
+    /// ship's length from the canopy for that to look like anything at all.
+    pub fn velocity_ly_per_s(&self) -> f32 {
+        self.velocity_c() * LY_PER_C_SECOND
     }
 
     /// Warp factor on the TNG scale, where v = w^(10/3) · c. Zero below light.
@@ -236,6 +338,76 @@ impl Ship {
     pub fn warp_intensity(&self) -> f32 {
         ((self.speed - CRUISE_MAX) / (WARP_MAX - CRUISE_MAX)).clamp(0.0, 1.0)
     }
+}
+
+/// A basis pulled back to orthonormal and right-handed, and sent home to
+/// [`LEVEL_AXES`] if it cannot be.
+///
+/// Run every step rather than every so often, because "every so often" is a
+/// second thing to get right and this costs three square roots against a sim
+/// step that touches the whole sky. What it is for is the standard this tree
+/// holds everything else to: a screensaver is left up for days, a step is three
+/// rotations each rounding at about 1e-7, and a random walk over the ten
+/// million steps in a day arrives at 3e-4 of skew — small, and it does not stop
+/// growing. It is also exact where it matters most: at [`LEVEL_AXES`] every dot
+/// product is a hard zero and every norm a hard one, so a flight nobody steers
+/// is projected through the identity to the bit.
+///
+/// The nose is taken as the cross product rather than orthogonalised in its own
+/// right, which is what keeps the determinant at `+1`. A basis that drifted
+/// into its own mirror image would look very nearly right and invert every
+/// facing test in [`crate::models`].
+fn orthonormalise(a: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let [right, down, _] = a;
+    let Some(right) = unit(right) else {
+        return LEVEL_AXES;
+    };
+    let along = dot(down, right);
+    let down = [
+        down[0] - along * right[0],
+        down[1] - along * right[1],
+        down[2] - along * right[2],
+    ];
+    let Some(down) = unit(down) else {
+        return LEVEL_AXES;
+    };
+    let nose = [
+        right[1] * down[2] - right[2] * down[1],
+        right[2] * down[0] - right[0] * down[2],
+        right[0] * down[1] - right[1] * down[0],
+    ];
+    [right, down, nose]
+}
+
+/// `u·p + v·q`, componentwise — one plane of a rotation applied to a pair of
+/// axes rather than to a pair of coordinates.
+///
+/// Spelled with a negated multiplier rather than a subtraction at the call
+/// sites above, which is the same number: `a + (-b)` is `a - b` exactly, and so
+/// is `v·(-q)` against `-(v·q)`.
+fn mix(u: [f32; 3], p: f32, v: [f32; 3], q: f32) -> [f32; 3] {
+    [
+        u[0] * p + v[0] * q,
+        u[1] * p + v[1] * q,
+        u[2] * p + v[2] * q,
+    ]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// `v` scaled to unit length, or `None` if it has no direction to report.
+fn unit(v: [f32; 3]) -> Option<[f32; 3]> {
+    let len = dot(v, v).sqrt();
+    if !len.is_finite() || len <= f32::MIN_POSITIVE {
+        return None;
+    }
+    // Multiplied by the reciprocal rather than divided three times, and the
+    // reciprocal of an exact one is an exact one, so a basis already unit long
+    // comes back bit for bit.
+    let inv = 1.0 / len;
+    Some([v[0] * inv, v[1] * inv, v[2] * inv])
 }
 
 /// Fold an angle into `[-PI, PI)` — the range a bank indicator reads in, and
@@ -470,5 +642,157 @@ mod tests {
             ship.nudge_throttle(-1.0);
         }
         assert_eq!(ship.throttle, 0.0);
+    }
+
+    /// Fly `steps` of `dt` with the stick worked on all three axes, so the
+    /// basis is composed out of rotations that do not commute rather than out
+    /// of one repeated turn.
+    fn flown(steps: usize, dt: f32) -> Ship {
+        let mut ship = Ship::new();
+        ship.warp_engaged = true;
+        ship.throttle = 1.0;
+        for i in 0..steps {
+            match i % 7 {
+                0 | 3 => ship.nudge_yaw(1.0),
+                1 | 4 => ship.nudge_pitch(-1.0),
+                2 => ship.nudge_roll(1.0),
+                5 => ship.nudge_yaw(-1.0),
+                _ => {}
+            }
+            ship.update(dt);
+        }
+        ship
+    }
+
+    #[test]
+    fn the_attitude_stays_orthonormal_and_right_handed() {
+        // A screensaver is left up for days, and a step is three rotations each
+        // rounding at about 1e-7 — so this is about the drift, not about the
+        // first turn. Right-handedness is checked as well as orthogonality
+        // because a basis that walked into its own mirror image would look very
+        // nearly right and invert every facing test in `crate::models`.
+        let ship = flown(200_000, 1.0 / 120.0);
+        let [right, down, nose] = ship.axes;
+        for (name, axis) in [("right", right), ("down", down), ("nose", nose)] {
+            let len = dot(axis, axis).sqrt();
+            assert!(
+                (len - 1.0).abs() < 1e-5,
+                "the {name} axis is {len} long after a long flight"
+            );
+        }
+        for (a, b, name) in [
+            (right, down, "right and down"),
+            (right, nose, "right and the nose"),
+            (down, nose, "down and the nose"),
+        ] {
+            assert!(
+                dot(a, b).abs() < 1e-5,
+                "{name} have drifted {} out of square",
+                dot(a, b)
+            );
+        }
+        let cross = [
+            right[1] * down[2] - right[2] * down[1],
+            right[2] * down[0] - right[0] * down[2],
+            right[0] * down[1] - right[1] * down[0],
+        ];
+        assert!(
+            dot(cross, nose) > 0.99,
+            "the basis has turned into its own mirror image"
+        );
+    }
+
+    #[test]
+    fn a_ship_nobody_steers_is_pointed_exactly_where_it_started() {
+        // Exactly, not nearly. The whole sky is projected through this, so an
+        // ulp here is a repainted frame — and the reference flights that carry
+        // no autopilot hold every rate at a hard zero from the first frame to
+        // the last, which is what makes them able to say a change was the
+        // identity it looked like.
+        let mut ship = Ship::new();
+        ship.warp_engaged = true;
+        for _ in 0..600 {
+            ship.update(1.0 / 120.0);
+        }
+        assert_eq!(ship.axes, LEVEL_AXES, "a straight flight has turned");
+    }
+
+    #[test]
+    fn a_ship_flies_where_its_nose_points() {
+        let ship = flown(400, 1.0 / 120.0);
+        let nose = ship.axes[2];
+        let travelled = dot(
+            [
+                ship.position[0] as f32,
+                ship.position[1] as f32,
+                ship.position[2] as f32,
+            ],
+            nose,
+        );
+        let straight = (ship.position[0] * ship.position[0]
+            + ship.position[1] * ship.position[1]
+            + ship.position[2] * ship.position[2])
+            .sqrt() as f32;
+        assert!(travelled > 0.0, "the ship has flown backwards");
+        // Not equal: the track curves while the stick is being worked, so the
+        // straight-line distance from the start is shorter than the odometer.
+        // What is asserted is that the two are the same order of thing, which
+        // is what fails if the nose and the travel ever come apart.
+        assert!(
+            straight <= ship.distance_ly as f32 * 1.001,
+            "the ship has covered more ground than it has flown"
+        );
+    }
+
+    #[test]
+    fn the_odometer_and_the_sky_agree_about_a_light_year() {
+        // The panel's distance and the distance the stars are moved by used to
+        // be separate inventions, and this is the test that says they are not.
+        // Flown straight, so the track is the odometer.
+        let mut ship = Ship::new();
+        ship.warp_engaged = true;
+        ship.throttle = 1.0;
+        for _ in 0..1200 {
+            ship.update(1.0 / 120.0);
+        }
+        let flown = (ship.position[0] * ship.position[0]
+            + ship.position[1] * ship.position[1]
+            + ship.position[2] * ship.position[2])
+            .sqrt();
+        let drift = (flown - ship.distance_ly).abs() / ship.distance_ly;
+        assert!(
+            drift < 1e-3,
+            "the panel says {} ly and the sky has moved {flown}",
+            ship.distance_ly
+        );
+    }
+
+    #[test]
+    fn full_impulse_is_a_crawl_and_full_warp_is_not() {
+        // The numbers the whole rebuild turns on. A star ten light years out —
+        // which is where the nearest one in a magnitude-limited catalogue sits
+        // — subtends `focal · v / d` subpixels a second, and on the 48-subpixel
+        // canvas an 80x24 terminal gives that is 0.01 at impulse against 22 at
+        // warp. Frozen, and then not.
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        for _ in 0..1200 {
+            ship.update(1.0 / 120.0);
+        }
+        let impulse = ship.velocity_ly_per_s();
+        ship.warp_engaged = true;
+        for _ in 0..1200 {
+            ship.update(1.0 / 120.0);
+        }
+        let warp = ship.velocity_ly_per_s();
+        assert!(
+            (0.0022..0.0025).contains(&impulse),
+            "full impulse is {impulse} ly/s"
+        );
+        assert!((5.0..5.6).contains(&warp), "full warp is {warp} ly/s");
+        assert!(
+            warp / impulse > 2000.0,
+            "the sky's answer to the throttle is flatter than the dial's"
+        );
     }
 }
