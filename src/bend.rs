@@ -16,7 +16,7 @@
 //! skies.
 
 use crate::camera::Streak;
-use crate::canvas::Canvas;
+use crate::canvas::{Canvas, Trace};
 use crate::lens::{Image, Lens};
 
 /// Subpixels of arc per piece when a streak is chopped up to be bent. A curve
@@ -40,8 +40,8 @@ const FAINTEST_COUNTER_IMAGE: f32 = 0.03;
 /// its hull band.
 #[derive(Debug, Default)]
 pub struct Bend {
-    source: Vec<(f32, f32)>,
-    bent: Vec<(f32, f32)>,
+    source: Vec<Trace>,
+    bent: Vec<Trace>,
 }
 
 impl Bend {
@@ -57,7 +57,7 @@ impl Bend {
         &mut self,
         canvas: &mut Canvas,
         lens: &Lens,
-        points: &[(f32, f32)],
+        points: &[Trace],
         color: [f32; 3],
         intensity: f32,
     ) {
@@ -67,8 +67,8 @@ impl Bend {
         if !lens.bends(points) {
             if points.len() == 2 {
                 canvas.draw_streak(&Streak {
-                    from: *tail,
-                    to: *head,
+                    from: (tail.0, tail.1),
+                    to: (head.0, head.1),
                     color,
                     intensity,
                 });
@@ -88,7 +88,7 @@ impl Bend {
                 // two-thirds of an Einstein radius lands inside the shadow, so
                 // without this check the great majority of the sky is
                 // subdivided, mapped and then thrown away.
-                let bent = lens.map(*head, image);
+                let bent = lens.map((head.0, head.1), image);
                 if bent.gain < FAINTEST_COUNTER_IMAGE || lens.shadowed(bent.at) {
                     continue;
                 }
@@ -96,7 +96,7 @@ impl Bend {
                 self.bent.clear();
                 let mut swallowed = false;
                 for p in &self.source {
-                    let at = lens.map(*p, image).at;
+                    let at = lens.map((p.0, p.1), image).at;
                     // A counter-image that dips inside the bubble is dropped
                     // whole rather than being cut into the runs that survive.
                     // What that costs is a slightly soft inner edge to the
@@ -106,6 +106,18 @@ impl Bend {
                         swallowed = true;
                         break;
                     }
+                    // The pace is *dropped*, and the zero is what says so.
+                    // A pace is how fast the star's image was moving because
+                    // the ship moved, and the bubble has just re-imaged the
+                    // track it was moving along — stretching it by an amount
+                    // that varies down its length and that the magnification
+                    // below already answers for. Carrying the star's own pace
+                    // across the bend charges the stretch to the star and
+                    // repaints seventy percent of an exterior frame; measuring
+                    // the bent path instead is what `draw_path` has always
+                    // done, and it is right here for the same reason it was
+                    // right before there were paces at all.
+                    let at = (at.0, at.1, 0.0);
                     match self.bent.last() {
                         // Follow the sweep around the ring rather than cutting
                         // the chord across it.
@@ -132,7 +144,7 @@ impl Bend {
 /// exposure the ship turned through arrives already cut into as many as
 /// twenty-three pieces, so a per-leg ceiling would let one star cost five
 /// hundred and the constant would stop meaning what it says.
-fn subdivide(points: &[(f32, f32)], lens: &Lens, out: &mut Vec<(f32, f32)>) {
+fn subdivide(points: &[Trace], lens: &Lens, out: &mut Vec<Trace>) {
     out.clear();
     let budget = (MAX_ARCS / points.len().saturating_sub(1).max(1)).max(1);
     for (leg, pair) in points.windows(2).enumerate() {
@@ -141,7 +153,7 @@ fn subdivide(points: &[(f32, f32)], lens: &Lens, out: &mut Vec<(f32, f32)>) {
         let length = crate::canvas::length_of(dx, dy);
         // The far end of the leg, which for the first one is where the star
         // actually is, speaks for it.
-        let bend = lens.curvature(b).max(lens.curvature(a));
+        let bend = lens.curvature((b.0, b.1)).max(lens.curvature((a.0, a.1)));
         let pieces = if length.is_finite() {
             ((length * bend / ARC_STEP).ceil() as usize).clamp(1, budget)
         } else {
@@ -154,7 +166,10 @@ fn subdivide(points: &[(f32, f32)], lens: &Lens, out: &mut Vec<(f32, f32)>) {
         let first = usize::from(leg > 0);
         for i in first..=pieces {
             let t = i as f32 * inv;
-            out.push((a.0 + dx * t, a.1 + dy * t));
+            // Every piece keeps the pace of the leg it came from, so the
+            // falloff cannot notice the chopping — which is the property this
+            // primitive has always had to have.
+            out.push((a.0 + dx * t, a.1 + dy * t, a.2));
         }
     }
 }

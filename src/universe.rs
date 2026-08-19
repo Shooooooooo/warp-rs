@@ -443,6 +443,11 @@ struct Station {
     turn: [[f32; 3]; 3],
     /// Where the ship went in between, in this pose's own frame.
     offset: [f32; 3],
+    /// How far through the exposure this pose stands, 1 at the star and 0 at
+    /// the oldest end. It is carried onto every point the walk lays down,
+    /// because [`crate::canvas::spread`] needs to know how long the star's
+    /// image dwelt on a stretch and not merely how far it went.
+    moment: f32,
 }
 
 impl Station {
@@ -451,6 +456,7 @@ impl Station {
     const HELD: Self = Self {
         turn: crate::ship::LEVEL_AXES,
         offset: [0.0; 3],
+        moment: 1.0,
     };
 }
 
@@ -674,7 +680,7 @@ impl Universe {
         cam: &Camera,
         eye: &Observer,
         time: f64,
-        mut draw: impl FnMut(&[(f32, f32)], [f32; 3], f32),
+        mut draw: impl FnMut(&[crate::canvas::Trace], [f32; 3], f32),
     ) {
         // How far back along the track the exposure reaches, as a displacement
         // in the camera's own space. Exactly zero at sublight, where there is
@@ -705,7 +711,7 @@ impl Universe {
         // eventually static — once the process has been up for days.
         let twinkle_phase = (time * 2.3).rem_euclid(std::f64::consts::TAU) as f32;
 
-        let mut points = [(0.0f32, 0.0f32); MAX_STATIONS];
+        let mut points = [(0.0f32, 0.0f32, 0.0f32); MAX_STATIONS];
         for star in &self.stars {
             let pos = eye.place(star.pos);
             let Some(to) = cam.project_beyond(pos, STAR_NEAR) else {
@@ -747,7 +753,7 @@ impl Universe {
             // is written out here rather than as the one-station case of the
             // walk below, because the walk composes the same rotation out of a
             // matrix product and would land an ulp away from it.
-            let path: &[(f32, f32)] = if legs == 0 {
+            let path: &[crate::canvas::Trace] = if legs == 0 {
                 let from = if reach > 0.0 {
                     let Some(tail) = tail_of(pos, back) else {
                         continue;
@@ -759,8 +765,15 @@ impl Universe {
                 } else {
                     to
                 };
-                points[0] = from;
-                points[1] = to;
+                // The whole exposure in one leg, so the pace the falloff is
+                // asked for is the streak's own length and the arithmetic is
+                // what it always was. It is measured here rather than left for
+                // the canvas to work out because [`crate::bend`] may chop this
+                // into pieces before it gets there, and every piece has to keep
+                // the pace of the leg it came from.
+                let pace = crate::canvas::length_of(to.0 - from.0, to.1 - from.1);
+                points[0] = (from.0, from.1, pace);
+                points[1] = (to.0, to.1, pace);
                 &points[..2]
             } else {
                 let lo = walk_back(&stations[..legs], pos, to, cam, &mut points);
@@ -868,7 +881,11 @@ impl Universe {
             for (place, row) in offset.iter_mut().zip(then) {
                 *place = gone[0] * row[0] + gone[1] * row[1] + gone[2] * row[2];
             }
-            *station = Station { turn, offset };
+            *station = Station {
+                turn,
+                offset,
+                moment: 1.0 - back / reach,
+            };
         }
         legs
     }
@@ -1157,12 +1174,19 @@ fn walk_back(
     pos: [f32; 3],
     head: (f32, f32),
     cam: &Camera,
-    points: &mut [(f32, f32); MAX_STATIONS],
+    points: &mut [crate::canvas::Trace; MAX_STATIONS],
 ) -> usize {
     let legs = stations.len();
-    points[legs] = head;
+    points[legs] = (head.0, head.1, 1.0);
+    // The moment each point sits at, kept beside the path while it is walked
+    // and spent at the end on the pace of every leg. Only the walk knows both
+    // halves: the canvas is handed a pace because a pace is what survives being
+    // bent, and the arithmetic that turns one into the other belongs here.
+    let mut moments = [0.0f32; MAX_STATIONS];
+    moments[legs] = 1.0;
     let mut lo = legs;
     let mut previous = pos;
+    let mut held = 1.0f32;
     for station in stations {
         let [r, d, f] = station.turn;
         let at = [
@@ -1174,9 +1198,11 @@ fn walk_back(
         if at[2] > TAIL_NEAR && at[2] * at[2] > TAIL_COS * TAIL_COS * square {
             if let Some(p) = cam.project_beyond(at, STAR_NEAR) {
                 lo -= 1;
-                points[lo] = p;
+                points[lo] = (p.0, p.1, 0.0);
+                moments[lo] = station.moment;
             }
             previous = at;
+            held = station.moment;
             continue;
         }
         // The leg left the picture. The cone is the boundary that matters and
@@ -1193,13 +1219,42 @@ fn walk_back(
         });
         if let Some(cut) = cut {
             if let Some(p) = cam.project_beyond(cut, STAR_NEAR) {
+                // Where along the leg the cut landed, so the stump keeps the
+                // share of the exposure it really stands for rather than the
+                // whole leg's.
+                let span = length_of_3(previous, at);
+                let t = if span > f32::MIN_POSITIVE {
+                    (length_of_3(previous, cut) / span).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 lo -= 1;
-                points[lo] = p;
+                points[lo] = (p.0, p.1, 0.0);
+                moments[lo] = held + (station.moment - held) * t;
             }
         }
         break;
     }
+    // What the exposure spent on each leg, as the length the whole of it would
+    // have covered at that leg's pace. A leg that took none of the exposure
+    // caught none of the light, and infinity is how the falloff says so.
+    for i in lo..legs {
+        let span =
+            crate::canvas::length_of(points[i + 1].0 - points[i].0, points[i + 1].1 - points[i].1);
+        let share = moments[i + 1] - moments[i];
+        points[i].2 = if share > f32::MIN_POSITIVE {
+            span / share
+        } else {
+            f32::INFINITY
+        };
+    }
     lo
+}
+
+/// How far apart two camera-space points are.
+fn length_of_3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (x, y, z) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    (x * x + y * y + z * z).sqrt()
 }
 
 /// How far a world-space star is from a world-space ship, squared.
@@ -1267,15 +1322,21 @@ mod tests {
     /// an exposure is a slice of a buffer the frame reuses — so a test that
     /// wants to look at all of them at once has to copy them out, and this is
     /// the one place that does it.
-    fn swept(sky: &Universe, cam: &Camera, eye: &Observer, time: f64) -> Vec<Vec<(f32, f32)>> {
+    fn swept(
+        sky: &Universe,
+        cam: &Camera,
+        eye: &Observer,
+        time: f64,
+    ) -> Vec<Vec<crate::canvas::Trace>> {
         let mut out = Vec::new();
         sky.sweep(cam, eye, time, |points, _, _| out.push(points.to_vec()));
         out
     }
 
     /// The two ends of an exposure: where the star is, and where it was.
-    fn ends(path: &[(f32, f32)]) -> ((f32, f32), (f32, f32)) {
-        (path[0], path[path.len() - 1])
+    fn ends(path: &[crate::canvas::Trace]) -> ((f32, f32), (f32, f32)) {
+        let (a, b) = (path[0], path[path.len() - 1]);
+        ((a.0, a.1), (b.0, b.1))
     }
 
     fn seated(ship: &Ship) -> Observer {

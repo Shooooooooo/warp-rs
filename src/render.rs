@@ -167,8 +167,8 @@ impl Renderer {
         sky.sweep(cam, &eye, time, |points, color, intensity| {
             if let [from, to] = *points {
                 canvas.draw_streak(&Streak {
-                    from,
-                    to,
+                    from: (from.0, from.1),
+                    to: (to.0, to.1),
                     color,
                     intensity,
                 });

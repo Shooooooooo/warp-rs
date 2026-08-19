@@ -414,12 +414,12 @@ impl Lens {
     /// the ship turned through is a curve and its middle can pass the bubble
     /// while neither end does. At two points it is the two comparisons it
     /// always was, in the order it always made them.
-    pub fn bends(&self, points: &[(f32, f32)]) -> bool {
+    pub fn bends(&self, points: &[crate::canvas::Trace]) -> bool {
         if !self.is_on() {
             return false;
         }
         let reach = REACH * REACH;
-        points.iter().any(|p| self.offset_sq(*p) <= reach)
+        points.iter().any(|p| self.offset_sq((p.0, p.1)) <= reach)
     }
 
     /// Whether the straight line between two points passes inside the ring.
@@ -573,7 +573,12 @@ impl Lens {
     /// turned ellipse, since the way back out of that frame has to undo the
     /// same turn [`Self::offsets`] applied on the way in. Two points on the
     /// ring stay on the ring the whole way round.
-    pub fn arc_to(&self, from: (f32, f32), to: (f32, f32), out: &mut Vec<(f32, f32)>) {
+    pub fn arc_to(
+        &self,
+        from: crate::canvas::Trace,
+        to: crate::canvas::Trace,
+        out: &mut Vec<crate::canvas::Trace>,
+    ) {
         // The expensive part of this is two `atan2`s and a `sin_cos` per point,
         // and the great majority of pairs do not need it: two samples of a
         // streak that is merely passing by are a fraction of a radian apart and
@@ -581,7 +586,7 @@ impl Lens {
         // What has to be caught is the pair that *straddles* the sweep, and
         // that shows up as a chord cutting inside the ring — where no primary
         // image can be, so nothing legitimate is ever there to be cut.
-        if !self.crosses_the_ring(from, to) {
+        if !self.crosses_the_ring((from.0, from.1), (to.0, to.1)) {
             out.push(to);
             return;
         }
@@ -590,8 +595,8 @@ impl Lens {
             let (ex, ey) = self.offsets(p);
             (crate::canvas::length_of(ex, ey), ey.atan2(ex))
         };
-        let (r0, th0) = polar(from);
-        let (r1, th1) = polar(to);
+        let (r0, th0) = polar((from.0, from.1));
+        let (r1, th1) = polar((to.0, to.1));
         // The short way round: the image sweeps, it does not jump.
         let mut sweep = th1 - th0;
         while sweep > std::f32::consts::PI {
@@ -610,9 +615,13 @@ impl Lens {
             let s = i as f32 / steps as f32;
             let (r, th) = (r0 + (r1 - r0) * s, th0 + sweep * s);
             let (along, across) = (a * r * th.cos(), b * r * th.sin());
+            // The pace is carried across the points the sweep fills in: a
+            // bend moves where a star's light lands, never how fast it got
+            // there.
             out.push((
                 self.center.0 + along * self.turn.0 - across * self.turn.1,
                 self.center.1 + across * self.turn.0 + along * self.turn.1,
+                from.2,
             ));
         }
         out.push(to);
@@ -843,12 +852,15 @@ mod tests {
         // And the reach, which is what decides whether a streak is bent at all.
         let far = (c.0 + small.radius * 9.5, c.1);
         assert!(
-            small.bends(&[far, far]),
+            small.bends(&[(far.0, far.1, 0.0), (far.0, far.1, 1.0)]),
             "the reach must scale with the ring"
         );
         let further = (c.0 + small.radius * 19.0, c.1);
-        assert!(!small.bends(&[further, further]));
-        assert!(large.bends(&[further, further]), "the larger reach did not");
+        assert!(!small.bends(&[(further.0, further.1, 0.0), (further.0, further.1, 1.0)]));
+        assert!(
+            large.bends(&[(further.0, further.1, 0.0), (further.0, further.1, 1.0)]),
+            "the larger reach did not"
+        );
     }
 
     #[test]
@@ -957,6 +969,7 @@ mod tests {
         // supposed to be.
         let lens = lens();
         let (from, to) = (at(&lens, (1.0, 0.0), 1.0), at(&lens, (-1.0, 0.0), 1.0));
+        let (from, to) = ((from.0, from.1, 0.0), (to.0, to.1, 1.0));
         let mut path = vec![from];
         lens.arc_to(from, to, &mut path);
         assert!(
@@ -965,10 +978,18 @@ mod tests {
             path.len()
         );
         for p in &path {
-            let m = lens.offset(*p);
+            let m = lens.offset((p.0, p.1));
             assert!(
                 (m - 1.0).abs() < 1e-3,
                 "the arc left the ring, at {m} rings out"
+            );
+        }
+        // And the moment travels with the place: the sweep fills in time as
+        // well as space, so the pace a leg was flown at survives being bent.
+        for pair in path.windows(2) {
+            assert!(
+                pair[1].2 >= pair[0].2,
+                "the arc ran backwards through the exposure"
             );
         }
         assert_eq!(*path.last().unwrap(), to, "the arc has to arrive");
@@ -976,8 +997,9 @@ mod tests {
         // Two points a hair apart, out beyond the ring where a streak passing
         // by actually is: no filling in at all.
         let outside = at(&lens, (1.0, 0.0), 1.05);
+        let outside = (outside.0, outside.1, 0.0);
         let mut path = vec![outside];
-        lens.arc_to(outside, (outside.0 + 0.2, outside.1 + 0.1), &mut path);
+        lens.arc_to(outside, (outside.0 + 0.2, outside.1 + 0.1, 1.0), &mut path);
         assert_eq!(path.len(), 2, "a straight run should not be subdivided");
     }
 

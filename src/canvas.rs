@@ -54,6 +54,29 @@ const _: () = assert!(
     "the default sample count is outside the range the command line admits"
 );
 
+/// One point of a streak's track: where it is on the canvas, and how fast the
+/// star's image was moving on the leg that *leaves* it.
+///
+/// The pace is what makes a streak an exposure rather than a shape, and it is
+/// there because [`spread`] needs it: a star lays its light down in proportion
+/// to how long its image dwelt on a place, and dwelling is a fact about pace.
+/// It is measured as the length the whole exposure would have covered had the
+/// image kept this pace throughout — so for a streak flown straight through it
+/// is simply the streak's own length, which is the number the falloff always
+/// took.
+///
+/// Carried per point rather than worked out from the points, and that is the
+/// decision here. It could be derived by handing each vertex the *moment* it
+/// sits at and dividing, and that was tried: it is the same number for a star
+/// and the wrong one the instant [`crate::lens`] re-images the streak, because
+/// the bubble's own stretching would then be charged to the star's motion —
+/// where it belongs to the magnification the bend already applies. Measured, it
+/// repainted seventy percent of every exterior frame. A pace travels through a
+/// bend unchanged, which is the honest thing for it to do.
+///
+/// The last point's pace is never read: a path of `n` points has `n - 1` legs.
+pub type Trace = (f32, f32, f32);
+
 /// What a leg of a streak needs that does not vary along it.
 ///
 /// A bundle rather than six more arguments to [`Canvas::draw_leg`], which is
@@ -65,15 +88,47 @@ struct Ramp {
     /// Reciprocal of the whole streak's length, so a leg can say where along it
     /// it sits without a division per sample.
     inv_total: f32,
+    /// That length itself, which is the pace a leg falls back on when it has
+    /// not been given one — see [`Trace`]. It is the right answer for a streak
+    /// that is one leg, and the only answer available for a path whose pace
+    /// nobody knows.
+    total: f32,
     /// Brightness at the tail, and how much of the way it climbs to the head.
     floor: f32,
     lift: f32,
-    /// Light per sample, already divided by the whole streak's [`spread`].
-    per_sample: f32,
+    /// The star's whole light. It is divided down per *leg* rather than once
+    /// for the path, because how far the light is spread depends on how fast
+    /// the image was moving there — see [`spread`].
+    intensity: f32,
     color: [f32; 3],
 }
 
-/// The curve `LENGTH_FALLOFF` describes, in one place.
+/// The curve `LENGTH_FALLOFF` describes, asked of how fast the image was moving
+/// rather than of how far it went.
+///
+/// The argument it is handed is a *pace*: the length the whole exposure would
+/// have covered had the image moved this fast for all of it. For a streak flown
+/// straight through that is simply its length, and this is the number it always
+/// was. For one the ship turned through it is not, and the difference is the
+/// whole of why this takes a pace now.
+///
+/// A star lays its light down in proportion to how long its image dwelt on a
+/// place. Dividing by the *total* length instead says the light is spread
+/// evenly along the track, which is only true at a constant pace — and a
+/// turning exposure is the opposite of that. Its tail swings toward the near
+/// plane, where the projection accelerates hyperbolically, so the image spends
+/// almost no time out there and should leave almost nothing behind it. Measured
+/// against the even model, over a sweep from the axis out to
+/// `universe::TAIL_COS`: the visible near-axis part of the track was being
+/// drawn 4.6 times too dim on the axis and about 3 times at the frame edge,
+/// with the light that belonged there charged to an excursion five canvas
+/// heights off the side of the picture. Worse, the size of the error was set by
+/// where that cut happens to sit rather than by anything about the star.
+///
+/// It reduces to what it replaced exactly when the pace is even, at any
+/// subdivision — a path cut into 1, 2, 5 or 23 equal-paced legs lays down
+/// identical bytes — which is what keeps every straight streak, every sublight
+/// frame and every piece [`crate::bend`] chops a streak into where they were.
 ///
 /// Every caller measures the *whole* streak here, before any clipping, and the
 /// two used to disagree: `draw_path` measured the polyline it was handed and
@@ -509,12 +564,20 @@ impl Canvas {
         };
         let ramp = Ramp {
             inv_total: 1.0 / total,
+            total,
             floor,
             lift,
-            per_sample: streak.intensity / spread(total),
+            intensity: streak.intensity,
             color: streak.color,
         };
-        self.draw_leg(streak.from, streak.to, 0.0, &ramp, &mut None);
+        // A straight streak is one leg and the whole exposure, so its pace is
+        // its own length and the falloff comes out at exactly the number it
+        // always did.
+        let (from, to) = (
+            (streak.from.0, streak.from.1, total),
+            (streak.to.0, streak.to.1, total),
+        );
+        self.draw_leg(from, to, 0.0, &ramp, &mut None);
     }
 
     /// Lay one leg of a streak down, with the ramp and the falloff evaluated
@@ -533,14 +596,25 @@ impl Canvas {
     /// subdivided curve is a dotted line.
     fn draw_leg(
         &mut self,
-        a: (f32, f32),
-        b: (f32, f32),
+        a: Trace,
+        b: Trace,
         travelled: f32,
         ramp: &Ramp,
         resume_at: &mut Option<(f32, f32)>,
     ) {
         let (max_x, max_y) = (self.max_x(), self.max_y());
         let span = length_of(b.0 - a.0, b.1 - a.1);
+        // How thinly this leg spreads what it caught, from the pace the image
+        // was moving at rather than from the length of the whole track. A leg
+        // handed no pace at all falls back to its own length, which is what a
+        // single-leg streak's pace is anyway.
+        let pace = if a.2 > 0.0 && a.2.is_finite() {
+            a.2
+        } else {
+            ramp.total
+        };
+        let per_sample = ramp.intensity / spread(pace);
+        let (a, b) = ((a.0, a.1), (b.0, b.1));
         // Clipping moves the endpoints, so the ramp has to be evaluated
         // against where they ended up along the *original* segment — not
         // against the clipped one, which would stretch the ramp back out
@@ -582,7 +656,7 @@ impl Canvas {
             // a hair outside the box its endpoints were clipped to.
             let x = (from.0 + dx * s).clamp(0.0, max_x);
             let y = (from.1 + dy * s).clamp(0.0, max_y);
-            self.splat_inside(x, y, ramp.color, ramp.per_sample * level);
+            self.splat_inside(x, y, ramp.color, per_sample * level);
         }
     }
 
@@ -590,12 +664,16 @@ impl Canvas {
     /// [`Canvas::draw_streak`] would lay down, following a polyline instead of
     /// a straight segment.
     ///
-    /// The ramp and the length falloff are measured over the *whole* path
-    /// rather than per segment. Doing it per segment would scallop the streak —
-    /// every joint would restart at the tail brightness — and would dim a
-    /// finely subdivided curve far more than a coarsely subdivided one, so the
-    /// picture would change with the subdivision rather than with the physics.
-    pub fn draw_path(&mut self, points: &[(f32, f32)], color: [f32; 3], intensity: f32) {
+    /// The *ramp* is measured over the whole path rather than per segment.
+    /// Doing it per segment would scallop the streak — every joint would
+    /// restart at the tail brightness — and would dim a finely subdivided curve
+    /// far more than a coarsely subdivided one, so the picture would change
+    /// with the subdivision rather than with the physics.
+    ///
+    /// The *falloff* is per leg, and that is not the same mistake: it is asked
+    /// of each leg's own pace, which subdividing a leg does not change. See
+    /// [`spread`].
+    pub fn draw_path(&mut self, points: &[Trace], color: [f32; 3], intensity: f32) {
         if intensity.is_nan() || intensity <= 0.0 || points.is_empty() {
             return;
         }
@@ -607,8 +685,8 @@ impl Canvas {
         if !total.is_finite() || total < 0.75 {
             let head = points[points.len() - 1];
             self.draw_streak(&Streak {
-                from: head,
-                to: head,
+                from: (head.0, head.1),
+                to: (head.0, head.1),
                 color,
                 intensity,
             });
@@ -617,9 +695,10 @@ impl Canvas {
 
         let ramp = Ramp {
             inv_total: 1.0 / total,
+            total,
             floor: TAIL_BRIGHTNESS,
             lift: 1.0 - TAIL_BRIGHTNESS,
-            per_sample: intensity / spread(total),
+            intensity,
             color,
         };
         let mut travelled = 0.0f32;
@@ -1777,7 +1856,7 @@ mod tests {
                 intensity: 1.3,
             });
             let mut path = Canvas::new(128, 64);
-            path.draw_path(&[a, b], [0.8, 0.9, 1.0], 1.3);
+            path.draw_path(&[(a.0, a.1, 0.0), (b.0, b.1, 1.0)], [0.8, 0.9, 1.0], 1.3);
             assert_eq!(
                 straight.buf, path.buf,
                 "the two primitives disagree on {a:?} to {b:?}"
@@ -1834,14 +1913,17 @@ mod tests {
         // Subdividing a streak more finely must not change how it looks. If the
         // ramp restarted at every joint the curve would come out scalloped, and
         // the picture would depend on the subdivision instead of the physics.
-        let ends = [(8.0, 32.0), (120.0, 32.0)];
+        // One pace throughout, which is what a subdivision must not disturb:
+        // the star did not speed up, it was merely asked about more often.
+        let pace = 112.0;
+        let ends = [(8.0, 32.0, pace), (120.0, 32.0, pace)];
         let mut coarse = Canvas::new(128, 64);
         coarse.draw_path(&ends, [1.0; 3], 1.0);
 
-        let fine: Vec<(f32, f32)> = (0..=16)
+        let fine: Vec<Trace> = (0..=16)
             .map(|i| {
                 let t = i as f32 / 16.0;
-                (ends[0].0 + (ends[1].0 - ends[0].0) * t, 32.0)
+                (ends[0].0 + (ends[1].0 - ends[0].0) * t, 32.0, pace)
             })
             .collect();
         let mut subdivided = Canvas::new(128, 64);
@@ -1861,14 +1943,132 @@ mod tests {
     }
 
     #[test]
+    fn a_path_flown_at_one_pace_is_the_streak_it_always_was() {
+        // The reduction the whole change rests on, and what every reference
+        // frame rests on through it: a track crossed at an even pace is the
+        // streak this replaced, bit for bit, however finely it is cut up. Only
+        // a track whose pace *varies* may come out differently.
+        let (a, b) = ((9.0, 17.0), (103.0, 44.0));
+        let pace = length_of(b.0 - a.0, b.1 - a.1);
+        let mut straight = Canvas::new(128, 64);
+        straight.draw_streak(&Streak {
+            from: a,
+            to: b,
+            color: [0.7, 0.85, 1.0],
+            intensity: 1.1,
+        });
+        for cuts in [1usize, 2, 5, 23] {
+            let path: Vec<Trace> = (0..=cuts)
+                .map(|i| {
+                    let t = i as f32 / cuts as f32;
+                    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, pace)
+                })
+                .collect();
+            let mut cut = Canvas::new(128, 64);
+            cut.draw_path(&path, [0.7, 0.85, 1.0], 1.1);
+            if cuts == 1 {
+                // One leg is the same arithmetic in the same order, so this
+                // half is exact — and it is the half every reference frame
+                // rests on, since not one of them bends an exposure past a
+                // single leg.
+                assert_eq!(straight.buf, cut.buf, "one leg was not the streak");
+                continue;
+            }
+            // Past one leg the sampling is per leg — `ceil` of each piece's
+            // own length — and the ramp is measured against a total summed
+            // piece by piece rather than taken in one. Neither is something
+            // this change introduced or touches, and they are why the joint
+            // test beside this one carries the same tolerance. What has to
+            // hold exactly is the falloff, and it does: the pace is one number
+            // on every piece, so `spread` is asked the same question whatever
+            // the subdivision.
+            for (i, (want, got)) in straight.buf.iter().zip(&cut.buf).enumerate() {
+                assert!(
+                    (want[0] - got[0]).abs() < 0.02,
+                    "cutting an evenly paced track into {cuts} moved subpixel {i}: \
+                     {} against {}",
+                    want[0],
+                    got[0]
+                );
+            }
+        }
+        assert!(total_light(&straight) > 0.0, "the comparison drew nothing");
+    }
+
+    #[test]
+    fn a_leg_is_lit_by_how_fast_the_star_crossed_it() {
+        // The falloff asks how fast the image was moving, not how far it went.
+        // Two legs of the same length, one crossed ten times as fast as the
+        // other, must not come out equally bright — which is exactly what
+        // measuring the whole track instead would give.
+        let mut canvas = Canvas::new(160, 32);
+        let slow = 40.0;
+        canvas.draw_path(
+            &[
+                (10.0, 16.0, slow),
+                (70.0, 16.0, slow * 10.0),
+                (130.0, 16.0, 0.0),
+            ],
+            [1.0; 3],
+            2.0,
+        );
+        let (near, far) = (canvas.buf[16 * 160 + 40][0], canvas.buf[16 * 160 + 100][0]);
+        assert!(near > 0.0 && far > 0.0, "one of the legs drew nothing");
+        // The ramp climbs toward the head, so the fast leg is favoured by it
+        // and still has to come out the dimmer of the two.
+        assert!(
+            near > far * 2.0,
+            "the slow leg is {near} against the fast one's {far}"
+        );
+    }
+
+    #[test]
+    fn an_excursion_off_the_frame_leaves_what_is_on_it_alone() {
+        // The regression this fixes, as the property that rules it out. A star
+        // whose exposure swings far off the canvas spends almost no time out
+        // there — the projection accelerates as the track nears the eye — so
+        // what it leaves on the visible stretch must not depend on how far the
+        // invisible one ran.
+        let visible = [(20.0, 16.0, 40.0), (60.0, 16.0, 40.0)];
+        let mut alone = Canvas::new(80, 32);
+        alone.draw_path(&visible, [1.0; 3], 2.0);
+
+        // The same visible stretch, with a tail that tears off the side of the
+        // frame at a hundred times the pace.
+        let with_tail = [
+            (-4000.0, 16.0, 4000.0),
+            (20.0, 16.0, 40.0),
+            (60.0, 16.0, 40.0),
+        ];
+        let mut trailed = Canvas::new(80, 32);
+        trailed.draw_path(&with_tail, [1.0; 3], 2.0);
+
+        let mut compared = 0;
+        for x in 25..58 {
+            let (a, b) = (alone.buf[16 * 80 + x][0], trailed.buf[16 * 80 + x][0]);
+            assert!(a > 0.0, "nothing was drawn at {x}");
+            // Not equality: the ramp is still measured over the whole track, so
+            // the visible stretch sits further up it. What must not happen is
+            // the twenty-three-fold collapse measuring the whole length gave.
+            assert!(
+                b > a * 0.25,
+                "the excursion dimmed subpixel {x} from {a} to {b}"
+            );
+            compared += 1;
+        }
+        assert!(compared > 30, "only {compared} subpixels were compared");
+    }
+
+    #[test]
     fn a_curved_path_bends_where_it_is_told_to() {
         // The whole point of the primitive: light lands on the arc, not on the
         // chord between its ends.
-        let arc: Vec<(f32, f32)> = (0..=12)
+        let arc: Vec<Trace> = (0..=12)
             .map(|i| {
                 let t = i as f32 / 12.0;
                 let angle = std::f32::consts::PI * t;
-                (64.0 + 40.0 * angle.cos(), 60.0 - 40.0 * angle.sin())
+                let along = std::f32::consts::PI * 40.0;
+                (64.0 + 40.0 * angle.cos(), 60.0 - 40.0 * angle.sin(), along)
             })
             .collect();
         let mut canvas = Canvas::new(128, 64);
@@ -1886,15 +2086,20 @@ mod tests {
         assert_eq!(total_light(&canvas), 0.0, "an empty path is not a point");
 
         for path in [
-            vec![(10.0, 10.0)],
-            vec![(f32::NAN, 2.0), (5.0, 5.0)],
-            vec![(1e9, 1e9), (-1e9, 4.0), (2.0, 2.0)],
-            vec![(3.0, 3.0), (3.0, 3.0), (3.0, 3.0)],
+            vec![(10.0, 10.0, 0.0)],
+            vec![(f32::NAN, 2.0, 0.0), (5.0, 5.0, 1.0)],
+            vec![(1e9, 1e9, 0.0), (-1e9, 4.0, 0.5), (2.0, 2.0, 1.0)],
+            vec![(3.0, 3.0, 0.0), (3.0, 3.0, 0.5), (3.0, 3.0, 1.0)],
+            // A leg that took none of the exposure, and one that took all of it
+            // twice over: neither is a thing the sky can hand over, and neither
+            // may put a NaN in the buffer.
+            vec![(4.0, 4.0, 0.5), (40.0, 20.0, 0.5)],
+            vec![(4.0, 4.0, f32::NAN), (40.0, 20.0, 1.0)],
         ] {
             canvas.draw_path(&path, [1.0; 3], 1.0);
         }
         for intensity in [0.0, -1.0, f32::NAN] {
-            canvas.draw_path(&[(4.0, 4.0), (40.0, 20.0)], [1.0; 3], intensity);
+            canvas.draw_path(&[(4.0, 4.0, 0.0), (40.0, 20.0, 1.0)], [1.0; 3], intensity);
         }
         assert_eq!(canvas.buf.len(), 64 * 32, "the buffer must not have grown");
         assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
