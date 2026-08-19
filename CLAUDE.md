@@ -69,8 +69,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 281 unit + 8 flight + 3 golden, ~20s
-cargo test --locked --all-features      # 282 unit — adds the snapshot-gated one
+cargo test                              # 299 unit + 9 flight + 3 golden, ~20s
+cargo test --locked --all-features      # 300 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -277,6 +277,24 @@ the identity it looked like. Note that this shape now reaches the side view too
 — the ship carries an attitude and both cameras are projected through it — so a
 steering change that leaves `drift.txt` alone has probably missed something.
 
+It also reaches the exposure's own geometry, and there it is sharper than four
+against four. A streak is the track a star swept while the shutter was open, so
+one the ship flew straight through is a segment and one it turned through is a
+curve — and whether a flight bends one is a question about what it *did*, not
+about whether `--demo` is on the command line. Only `steer.txt` and `drift.txt`
+qualify: they are the two whose drive lights at frame 60 of a twelve-second run
+with the weave still going. The three 60 fps `--demo` flights never leave
+sublight, so their exposure is an exact zero, and the five `--engage` ones hold
+`LEVEL_AXES` to the bit, so theirs never reaches back past a turn. A change to
+the track the sky is drawn along moves those two and leaves eight byte for byte,
+which is a control rather than a contrast — drawing the exposure along the flown
+track is the worked example, and `warp.txt` moving is what caught the fast path
+choosing itself by comparing two accumulations instead of asking about turns.
+What the pair do *not* cover is the shape of a curve: the weave turns about a
+twentieth of what a hand on the stick does, which asks for one leg. That is a
+variant rather than a region, so it is pinned by property tests in
+`universe.rs`.
+
 **By which way the nose points.** The sign of
 `Orbit::nose_in_camera`'s depth component, `-cos(elevation)·sin(azimuth)`,
 decides whether the exposure recedes from the eye or runs at it, so a change to
@@ -440,6 +458,26 @@ before, with 72 000 stars against 20 000, because a streak that is a few
 subpixels long costs a few samples where one across the frame costs a hundred.
 The default cockpit frame at 200x60 went from 1.1 ms to 2.7.
 
+**What a turn costs is a column of its own, and it is the one figure here worth
+knowing before touching the exposure.** An exposure the ship flew straight
+through is two points and the arithmetic it always was, so the seven rows above
+measure a renderer with the curve switched off. `examples/bench.rs` has two
+rows with the stick buried, which is the most curve it can be asked for — the
+autopilot's weave sweeps about a twentieth of it. At 200x60 on this machine:
+the default sky draws in 1.43 ms straight and 4.06 turning, comfortably inside
+the frame budget either way; `--magnitude 8` draws in 8.19 and 50.76, and the
+outside view in 11.99 and 59.90.
+
+That last pair is a sixfold cost and it was accepted rather than capped, on two
+grounds. It is self-limiting — the steering rates decay in under a second and
+the exposure forgets in three, so a hard turn costs a few seconds and cannot be
+held. And the light is spread along the arc it was smeared over, so what a
+hammered turn does is wash the sky out rather than blind it, which is both the
+honest picture and the reason nothing is saturating while it happens. If it ever
+wants bounding, the shape to reach for is not a shorter exposure but fewer poses
+for the *far* stars: the count follows the worst parallax in the sky, which is
+the nearest star there is, and most of the pool needs a fraction of it.
+
 ## Layout
 
 ```
@@ -461,6 +499,8 @@ src/canvas.rs     f32 RGB accumulation buffer, rasterisers, tonemap
 src/render.rs     assembling a frame: sky, then what is lit, then the glass
 src/hud.rs        the instrument panel
 src/term.rs       Screen (double-buffered cells), ColorMode, RawGuard
+src/track.rs      where the ship has been: the flown track an exposure is
+                  drawn along, and how far back it is straight
 src/snapshot.rs   PNG writer, behind `--features snapshot`
 
 tests/flight.rs   a whole flight through the public surface, and nothing else
@@ -482,8 +522,9 @@ private; new state that another module needs comes with an accessor.
 `SIM_STEP` of 1/120 s**, so the flight model behaves the same whether the
 terminal keeps up or not. There is one sky and it is stepped whichever camera
 is flying — there is no longer a second one to be kept warm or skipped, and
-`Universe::advance` is one distance test per star because the *ship* does all
-the moving. The one thing it carries between steps is the exposure's length —
+`Universe::advance` is one sample and one distance test per star, because the
+*ship* does all the moving and [`track::Track`] is what remembers it having done
+so. The one thing it carries between steps is the exposure's length —
 see the long-exposure section below, where a length recomputed afresh each frame
 is the bug it exists to have fixed — which is why it is handed the step, the
 warp ramp and the speed rather than only the ship's position.
@@ -499,8 +540,12 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
 `draw` runs, per view:
 
 1. `canvas.clear()` — the f32 buffer, at `cols × 2·rows` subpixels.
-2. Streaks: `sky.streaks(cam, &observer, time)` → `canvas.draw_streak` in the
-   cockpit. The same sky, through a different `Observer`, and the side view
+2. Streaks: `sky.sweep(cam, &observer, time, draw)` hands each star's exposure
+   to a closure as the track it swept — two points where the ship flew straight
+   through the shutter's whole reach, and a path of up to twenty-four where it
+   turned. Two points go to `canvas.draw_streak` in the cockpit and anything
+   longer to `draw_path`; the two share `draw_leg`, so which one runs decides
+   nothing about the picture. The same sky, through a different `Observer`, and the side view
    hands the result to `bend::Bend::draw`, which bends the ones
    the lens actually reaches — chopping each into arcs and drawing both images
    — and leaves the rest, which at sublight is all of them, on the ordinary
@@ -689,20 +734,30 @@ sim step at full warp moves a ten-light-year star **0.19 subpixels**, and the
 renderer used to draw. Multiplying harder is not the answer; saying what the
 streak *is* is.
 
-It is the track the star actually flew over the last `TRAIL_SECONDS`, and the
-tail is computed rather than remembered: the ship was at `P − n·v·T`, so the
-tail is that star projected from there. Three things follow, and all three are
-why this replaced `prev` rather than joining it.
+It is the track the star actually flew over the last `TRAIL_SECONDS`, and it is
+**remembered rather than computed** — which is the second correction to this
+paragraph and the one that made it true. The first said the ship was at
+`P − n·v·T`, so the tail is that star projected from there, and that is exact
+for a straight run and a chord across a curve for anything else. `src/track.rs`
+records where the ship has been and how it was pointed while it was there, and
+`Universe::sweep` projects each star from the poses it actually held.
 
-- **It is exact** for a straight track, which is what a warp run is, where a
-  linear extrapolation of one step is a chord across a curve.
-- **It cannot fall behind the near plane — from the seat.** Going back in time
-  moves a star *away from the nose*, so in the cockpit, where the nose is the
-  depth axis, the tail's depth only ever increases: no vanishing point to chase
-  and no `trail_head`. That is a fact about one camera and was written down as
-  a fact about the arithmetic, which cost a shipped bug; see the near-plane cut
-  below. Note that the clamp in `Universe::advance` is a third thing again —
-  it is on the exposure's *length*, and has its own answer.
+- **It is exact** for a straight track, where a linear extrapolation of one
+  step is a chord across a curve — and for a turning one, which the
+  extrapolation could not be at all.
+- **It can fall behind the near plane from anywhere, the seat included.** This
+  bullet has been wrong twice and in the same shape both times. It first said
+  the tail cannot fall behind the plane, on the argument that going back in
+  time moves a star *away from the nose* — true of one camera, written down as
+  a fact about the arithmetic, and it cost a shipped bug the moment the view
+  from outside got ahead of the ship. It then said the exception was the view
+  from outside. It is not: a turn swings the camera, so a star ahead now can
+  have been square abeam three seconds ago, and the cut fires in the cockpit
+  too. There are two boundaries now — `TAIL_NEAR`, the plane, and `TAIL_COS`,
+  a *cone* — and the cone is the one that matters, because what has to stay
+  bounded is `focal · lateral / depth` and only a ratio bounds a ratio. Note
+  that the clamp in `Universe::advance` is a third thing again — it is on the
+  exposure's *length*, and has its own answer.
 - **It deletes `prev`**, and with it the range a trail was drawn at, the fold's
   trail shift, the rule about handing a recycled star the trail it would have
   had, and `retarget` dropping every trail on a resize.
@@ -767,11 +822,22 @@ subtraction. It costs nothing measurable: the cut tail projects far off-canvas
 and `Canvas::clip` bounds the sample count by the frame, so 200 forward-camera
 frames at 200x60 and 72 000 stars run 4.98 ms each against 4.95 before.
 
-**Rotational smear went, and the measurement is why.** A whole sim step at the
-yaw stop moves a star at the frame edge 0.58 of a subpixel, which is inside the
-branch `draw_streak` takes for anything under three quarters of one — so the
-smear a turn used to leave was invisible before it was removed. Do not put it
-back without a number.
+**Rotational smear came back, and the measurement is why.** It went once, and
+the number that sent it away was right about what it measured: a whole sim step
+at the yaw stop moves a star at the frame edge 0.58 of a subpixel, inside the
+branch `draw_streak` takes for anything under three quarters of one. What that
+number was about was *one step*. The exposure is three seconds long — three
+hundred and sixty of them — so the same smear is 209 subpixels on a canvas
+forty-eight tall, four frame-heights of arc per star. The instruction to bring a
+number before putting it back stands; this is the number.
+
+It is not drawn as a smear, though, which is the part worth keeping straight.
+Nothing multiplies a step by anything: `src/track.rs` remembers where the ship
+was and how it was pointed, and the exposure is projected from those poses. The
+rotation falls out because the camera is bolted to the hull, and it arrives
+together with the curve the ship's own track puts in the near stars — one
+mechanism, because the ship flies where it points and so the attitude's turn
+*is* the track's curvature.
 
 #### Brightness is a magnitude, and the canvas is linear
 
@@ -1078,11 +1144,19 @@ dimmer the wider the window — the same flight looking different on two
 machines, which is the one thing the whole test suite exists to stop.
 `draw_trail` multiplies the factor back out, so what `TRAIL_INTENSITY` names is
 the brightness at the nozzle. Anything else that picks its own streak length
-rather than being handed one has the same problem and the same answer. Note that
-this is measured on the *clipped* segment, by design and in both directions: a
-caller dividing it out wants the number that is going to be applied, so a test
-comparing a clipped lance against an unclipped one has to divide it out too or
-it is measuring the falloff rather than whatever it meant to.
+rather than being handed one has the same problem and the same answer.
+
+It is measured on the **whole** segment, before any clipping, and it used to be
+measured on what survived the window — which was the same fault one level down,
+in the half of the tree that was supposed to be the sound one. A star's light is
+laid along the track it flew, so the part of that track on screen carries the
+part of the light that fell on it; measured on the remainder, the whole star's
+brightness was poured into whatever fragment the frame kept, and an edge streak
+burned up to three times brighter per subpixel on a narrower terminal.
+`a_streak_is_ramped_by_its_own_length_and_not_by_the_window` is that stated as
+two terminals drawing one streak and being compared where they overlap. The
+cancellation the lance depends on is unaffected, since both ends of it moved
+together.
 
 **That lance is stretched in screen space, and the frame edge is not the only
 end it has.** A straight ray running away from the eye projects onto a point
@@ -1110,17 +1184,25 @@ exactly zero and the margin has nothing left to buy. Measured star-free at
 0.83 stopping short with the floor, 1.02 running the whole way with it, 0.45 as
 it is now — further and dimmer at once, against a plume peaking at 2.65.
 
-**Its ramp is measured on the whole streak, and `draw_streak`'s on what survived
-clipping.** That is the one difference between them and it is the reason they
-are two entry points rather than a flag. Abeam the lance is stretched to the
-frame's diagonal and leaves by the edge, so its tail is off-screen; ramp it over
-the clipped remainder and it fades to nothing at the edge of the *picture*
-instead of at the end of the plume, and a drive whose reach is the frame's stops
-short of the frame on every terminal.
+**Its ramp is measured on the whole streak, and so is `draw_streak`'s.** They
+differ in where the ramp *ends* — at nothing rather than at `TAIL_BRIGHTNESS` —
+and in nothing else. They are still two entry points rather than a flag, but
+what separates them is now a pair of coefficients rather than a measurement, and
+one body — `draw_leg` — lays both down.
+
+The argument that got the fading one there first is worth keeping, because it is
+the one the star path eventually had to make as well. Abeam the lance is
+stretched to the frame's diagonal and leaves by the edge, so its tail is
+off-screen; ramp it over the clipped remainder and it fades to nothing at the
+edge of the *picture* instead of at the end of the plume, and a drive whose
+reach is the frame's stops short of the frame on every terminal.
 `a_lit_warp_drive_trails_off_the_edge_of_the_frame` catches exactly that, and
 `a_fading_streak_is_ramped_by_its_own_length_and_not_by_the_window` in
 `canvas.rs` is the sharper statement of it. Where the window cuts a plume is not
-a fact about the plume.
+a fact about the plume — and, it turns out, where it cuts a star is not a fact
+about the star either. `draw_path` had always said so; `draw_streak` says so
+now, which is what lets one exposure swap between the two mid-flight without the
+frame changing brightness underneath it.
 
 The abeam shot is the case with no vanishing point at all — `Eye::to_camera` at
 `Orbit::LEVEL` is exactly `(x, y, z) → (z, y, distance − x)`, so the hull's axis
@@ -1150,14 +1232,24 @@ of them can still land a hair outside. A new primitive written against
 ordering are also deliberately identical to `splat`'s, so the two produce the
 same frame rather than a similar one.
 
-**A sublight frame must be the frame the lens code is not there for.**
-`Lens::OFF` is an exact identity rather than a very close one, `Lens::bends`
-routes a streak the bubble does not reach straight to `draw_streak`, and
-`draw_path` over two points lays down the bytes `draw_streak` would. There are
-tests comparing the buffers, not saying they look alike. A star crossing the
-ten-Einstein-radii boundary swaps paths mid-flight, so an ulp of disagreement
-twinkles a ring into the sky and makes engaging the drive re-render the field
-instead of bending it.
+**A sublight frame must be the frame the lens code is not there for, and a
+straight flight the frame the track is not there for.** `Lens::OFF` is an exact
+identity rather than a very close one, `Lens::bends` routes an exposure the
+bubble does not reach straight to `draw_streak`, `draw_path` over two points
+lays down the bytes `draw_streak` would — clipped or not, which it did not
+manage until the two were made one body — and an exposure that does not reach
+back past a turn takes the arithmetic it always took, spelled out rather than
+derived as the one-pose case of the walk. There are tests comparing the buffers,
+not saying they look alike.
+
+Two boundaries get crossed mid-flight and each is why. A star crossing the
+ten-Einstein-radii boundary swaps between the bent and unbent paths, so an ulp
+of disagreement twinkles a ring into the sky and makes engaging the drive
+re-render the field instead of bending it. And the *whole sky* swaps between
+straight and curved the moment a hand touches the stick — every star at once,
+which is why a disagreement there is a step in the frame's brightness rather
+than a ring in it, and why the falloff had to be measured the same way on both
+sides before any of this could land.
 
 **A glyph laid over the frame picks one of three backdrops, and they are not
 interchangeable.** `Screen::overlay` is transparent: it writes its ink and
@@ -1575,6 +1667,17 @@ that a frame never re-sends a colour it is already using. Several iterate over
 `models::models()` or `ViewMode::ALL` so a new entry is covered automatically —
 keep that property when you add to either.
 
+A property that holds bitwise on the fast path is worth a word of its own,
+because the whole trail suite went on passing unchanged when the exposure
+started following the flown track — every one of those tests flies a ship nobody
+steers, so all of them stayed on the arithmetic they were written for. That is a
+hole rather than a reassurance, and the answer was siblings rather than surgery:
+`a_streak_is_the_track_the_star_actually_flew` kept its assertions and became
+the fast path's guard, and
+`a_streak_is_the_track_the_star_actually_flew_when_the_ship_was_turning` is the
+one that looks at the new arithmetic. When a change leaves a suite green, ask
+what the suite was flying.
+
 The sky's own guards are the sharpest examples of that style in the tree and
 are worth reading before adding to them. Three of them are what the rebuild is
 warranted by: `a_camera_swing_moves_no_star` is bitwise over a full turn on all
@@ -1693,7 +1796,9 @@ blurb can go quietly, hiding whole ships cannot.
 **Adding a camera.** Add the variant to `ViewMode::ALL` in `src/view.rs` — the
 cycle and `label()` are written so a third costs one line — then the arm in
 `Flight::draw` and a third `universe::Observer` constructor beside `cockpit` and
-`outside` (`Flight::advance` no longer branches on the view: there is one sky
+`outside` — which has to set `mount`, the camera's pose in the hull's own frame,
+since that is what an exposure is re-mounted on when it walks back through the
+poses the ship held (`Flight::advance` no longer branches on the view: there is one sky
 and it is stepped the same way whoever is watching), the `ViewArg` in
 `src/cli.rs`, and, if the controls
 differ, a *pair* of hint arrays in `src/hud.rs`, since every face is spelled
@@ -1767,7 +1872,7 @@ history or a script — so `--stars` is still declared, `hide = true`, with a
 `--magnitude`. `--color auto` is turned away the same way and for the same
 reason: the value that used to work is the one worth naming.
 
-**Changing the sky.** Beyond the hashes, three things are worth looking at
+**Changing the sky.** Beyond the hashes, four things are worth looking at
 directly because no test says anything about them. Shoot a frame with
 `--features snapshot` and look at it — the density that reads as a sky rather
 than as static is a judgement, and `cli::DEFAULT_MAGNITUDE` was settled by
@@ -1776,10 +1881,22 @@ count law or the default limit moves, or `--exposure` stops meaning what it
 means. And reshoot `docs/` — the README's two images are the first thing anybody
 sees of this program and nothing will tell you they have gone stale.
 
+The fourth is a *turn*, which no reference flight and no snapshot recipe
+reaches: `--demo`'s weave sweeps about a twentieth of what a hand on the stick
+does. Fly one and watch it, or drive `Flight::nudge_stick` from a scratch
+example and shoot a frame. What to look for is that a sustained bank draws
+smooth arcs, and that the corners a *hard* turn leaves are where the turn began
+rather than where the poses are: an abrupt start really does put a corner in
+every trail, and telling that from too few poses took measuring the drawn
+polyline against a finely sampled version of the same walk.
+
 **Changing the renderer.** Expect the golden hashes to move, and regenerate
 them in the same commit with the reason written down. Run
 `cargo run --release --example bench` before and after if the change is in a
-hot loop — `draw_streak`, `resolve_into`, `Universe::streaks`, `Bend::draw`.
+hot loop — `draw_streak`, `draw_leg`, `resolve_into`, `Universe::sweep`,
+`Bend::draw_one`. Two of its rows hold the stick over, which is the only thing
+in the sweep that asks the sky for a curve; the other seven measure the renderer
+with the curve switched off, which is what most frames are.
 
 Two things about that instrument, because it is easy to trust further than it
 goes. **It does not measure `Screen::flush` at all**: the write column times
