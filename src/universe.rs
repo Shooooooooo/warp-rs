@@ -778,9 +778,17 @@ impl Universe {
             } else {
                 let lo = walk_back(&stations[..legs], pos, to, cam, &mut points);
                 if lo > legs - 1 {
-                    continue;
+                    // The walk found nowhere for the exposure to have been:
+                    // the star is so far off the axis that no part of its
+                    // track is in the picture. It is still a star, and it is
+                    // still where it is, so it is drawn as the point it has
+                    // become rather than dropped — a silent total vanish is
+                    // the wrong failure for a guard about a *tail*.
+                    points[legs - 1] = points[legs];
+                    &points[legs - 1..=legs]
+                } else {
+                    &points[lo..=legs]
                 }
-                &points[lo..=legs]
             };
             draw(path, color, intensity);
         }
@@ -1209,14 +1217,31 @@ fn walk_back(
         // the plane is what is left when a star is so nearly at the eye that
         // the cone has nothing to say; falling through from one to the other
         // costs a quadratic on the few exposures that reach either.
-        let cut = leaves_the_cone(previous, at).or_else(|| {
-            let back = [
-                at[0] - previous[0],
-                at[1] - previous[1],
-                at[2] - previous[2],
-            ];
-            tail_of(previous, back)
-        });
+        //
+        // The fallback is only reached from *inside* the cone, and that guard
+        // is the whole of it rather than a tidiness. `leaves_the_cone` answers
+        // `None` for two quite different reasons — the segment never crosses,
+        // and the near end was never inside to begin with — and the plane below
+        // cannot tell them apart: handed a leg that starts outside, it finds
+        // the depth already clear and hands the station back *uncut*, which is
+        // the unbounded blow-up the cone exists to stop, leaking out through
+        // the cone's own fallback. Measured at thirty-one stars a frame on a
+        // terminal wide enough to see them.
+        let square_of = |p: [f32; 3]| p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+        let inside = previous[2] > TAIL_NEAR
+            && previous[2] * previous[2] > TAIL_COS * TAIL_COS * square_of(previous);
+        let cut = if inside {
+            leaves_the_cone(previous, at).or_else(|| {
+                let back = [
+                    at[0] - previous[0],
+                    at[1] - previous[1],
+                    at[2] - previous[2],
+                ];
+                tail_of(previous, back)
+            })
+        } else {
+            None
+        };
         if let Some(cut) = cut {
             if let Some(p) = cam.project_beyond(cut, STAR_NEAR) {
                 // Where along the leg the cut landed, so the stump keeps the
@@ -1854,6 +1879,94 @@ mod tests {
     }
 
     #[test]
+    fn a_trail_thins_away_at_the_end_it_is_forgetting() {
+        // The reported fault, flown the way it was reported: turn at low warp,
+        // let the stick go, and a second or so later every trail on screen is
+        // erased at once rather than fading out.
+        //
+        // The retraction itself is honest and stays. An exposure is the track
+        // of the last few seconds and those seconds age out, so the smear
+        // genuinely shortens — down there it shortens fast, because the whole
+        // window is `TRAIL_SECONDS · warp` and warp at a quarter throttle is a
+        // little over a second. What was wrong was the *edge* it retracted
+        // behind: a streak used to be laid down at a third of full brightness
+        // where its light ran out, so the shortening dragged a bright blunt end
+        // across the frame and then cut it, and every star shares one shutter
+        // so they all went together.
+        //
+        // Said as a property of what is drawn rather than of the arithmetic:
+        // through the whole window the exposure is forgetting, the light at the
+        // end being forgotten has to be a small fraction of the light at the
+        // end where the star is. Measured over these five frames the mean ratio
+        // runs 0.027 to 0.073; with the floor back it runs 0.17 to 0.43, so the
+        // bound below separates them by about a third either way rather than by
+        // an order of magnitude — a threshold a factor of ten clear would go on
+        // passing a floor half the size of the one this is about.
+        let mut sky = Universe::new(5.0, 83);
+        let mut ship = Ship::new();
+        ship.throttle = 0.25;
+        fly(&mut sky, &mut ship, 240);
+        ship.toggle_warp();
+        fly(&mut sky, &mut ship, 600);
+        for _ in 0..120 {
+            ship.nudge_yaw(1.0);
+            fly(&mut sky, &mut ship, 1);
+        }
+        let cam = cam();
+        let inside = |p: (f32, f32)| {
+            p.0 > 2.0 && p.0 < cam.width - 2.0 && p.1 > 2.0 && p.1 < cam.height - 2.0
+        };
+        for frame in 0..5 {
+            // A quarter of a second at a time, so the five of them span the
+            // window the exposure forgets over.
+            fly(&mut sky, &mut ship, 30);
+            let eye = seated(&ship);
+            let (mut sum, mut counted) = (0.0f32, 0usize);
+            for path in swept(&sky, &cam, &eye, 0.0) {
+                let (tail, head) = ends(&path);
+                let span = crate::canvas::length_of(head.0 - tail.0, head.1 - tail.1);
+                if span < 8.0 || !inside(tail) || !inside(head) {
+                    continue;
+                }
+                // One exposure at a time on a canvas of its own, because the
+                // question is about this star's own ends and a frame with the
+                // whole sky on it has other stars lying across them.
+                let mut canvas = crate::canvas::Canvas::new(80, 48);
+                canvas.draw_path(&path, [1.0; 3], 1.0);
+                // The brightest subpixel each end landed in the neighbourhood
+                // of: a sample is splatted over four taps by its bilinear
+                // weights, so the one subpixel it nominally sits on holds only
+                // a share of it.
+                let brightest = |p: (f32, f32)| {
+                    let mut most = 0.0f32;
+                    for dy in -1..=1i32 {
+                        for dx in -1..=1i32 {
+                            let (x, y) = (p.0 as i32 + dx, p.1 as i32 + dy);
+                            most = most.max(canvas.light_at(x as usize, y as usize));
+                        }
+                    }
+                    most
+                };
+                let (old, new) = (brightest(tail), brightest(head));
+                if new <= 0.0 {
+                    continue;
+                }
+                sum += old / new;
+                counted += 1;
+            }
+            assert!(
+                counted > 20,
+                "frame {frame} had only {counted} trails long enough to have two ends"
+            );
+            let mean = sum / counted as f32;
+            assert!(
+                mean < 0.12,
+                "frame {frame}: the end being forgotten holds {mean} of the head                  across {counted} trails, which is a blunt edge rather than a fade"
+            );
+        }
+    }
+
+    #[test]
     fn a_trail_bends_the_way_the_ship_turned() {
         // The reported fault, as the property that rules it out. With the drive
         // lit and the stick held over, a star's exposure is the track it swept
@@ -2028,6 +2141,8 @@ mod tests {
         // bites, exactly as it did for the straight one.
         let (sky, ship) = spooled_up_turning(5.0, 59);
         let cam = cam();
+        let on_canvas =
+            |p: &(f32, f32)| (0.0..cam.width).contains(&p.0) && (0.0..cam.height).contains(&p.1);
         assert!(sky.trail > 0.0, "the exposure never opened");
 
         let mut thinnest = usize::MAX;
@@ -2043,6 +2158,15 @@ mod tests {
             let mut seen = 0;
             for path in swept(&sky, &cam, &eye, 0.0) {
                 let (from, to) = ends(&path);
+                // A star whose whole track is outside the cone is drawn as the
+                // point it has become — see `walk_back`. That is allowed and
+                // invisible: such a star is six focal lengths off the axis and
+                // hundreds of subpixels off the canvas. What is not allowed is
+                // one collapsing *in the picture*, which is the fault this test
+                // was written for.
+                if from == to && !on_canvas(&to) {
+                    continue;
+                }
                 assert!(
                     from != to,
                     "an exposure collapsed to a point at {:?} degrees, nose z {}",
@@ -2097,11 +2221,86 @@ mod tests {
             "a hard turn at warp put no star behind the near plane at all"
         );
         // And nothing that was cut came out as a bright point instead of a
-        // trail, which is the fault the walk exists to have fixed.
+        // trail, which is the fault the walk exists to have fixed. Only a star
+        // whose whole track is outside the cone may be a point, and one of
+        // those is far off the side of any canvas.
+        let on_canvas =
+            |p: &(f32, f32)| (0.0..cam.width).contains(&p.0) && (0.0..cam.height).contains(&p.1);
         for path in swept(&sky, &cam, &eye, 0.0) {
             let (from, to) = ends(&path);
-            assert!(from != to, "a cut exposure collapsed to a point");
+            assert!(
+                from != to || !on_canvas(&to),
+                "a cut exposure collapsed to a point in the picture"
+            );
         }
+    }
+
+    #[test]
+    fn a_star_too_far_off_the_axis_still_has_its_exposure_cut() {
+        // The cone leaking through its own fallback. `leaves_the_cone` answers
+        // `None` for two different reasons — the leg never crosses, and the
+        // near end was never inside — and the plane it falls through to cannot
+        // tell them apart: handed a leg that starts outside, it finds the depth
+        // already clear and hands the station back uncut, which is the
+        // unbounded blow-up the cone exists to stop.
+        //
+        // Asked on a terminal wide enough for the cut to matter, because the
+        // cone sits at six focal lengths and a square window hides everything
+        // past it.
+        let (sky, ship) = spooled_up_turning(5.0, 67);
+        let cam = Camera::new(600, 48);
+        let eye = seated(&ship);
+        let mut worst = 0.0f32;
+        let mut seen = 0;
+        for path in swept(&sky, &cam, &eye, 0.0) {
+            let (tail, head) = ends(&path);
+            // A star the walk found nowhere for is drawn as its own head twice
+            // over, and a head is not a tail — see the test below.
+            if tail == head {
+                continue;
+            }
+            // Every point but the last. The head is where the star actually is
+            // and the cone says nothing about it — a star square abeam of the
+            // camera *now* projects as far out as the arithmetic allows, which
+            // is true today and was true before there was a cone.
+            for p in &path[..path.len() - 1] {
+                worst = worst.max(crate::canvas::length_of(p.0 - cam.cx, p.1 - cam.cy));
+                seen += 1;
+            }
+        }
+        assert!(seen > 1000, "only {seen} tail points were drawn at all");
+        // On the cone, lateral over depth is `sqrt(1 - c²)/c`, so nothing the
+        // walk admits can project further out than the focal length times that.
+        let bound = cam.focal * (1.0 - TAIL_COS * TAIL_COS).sqrt() / TAIL_COS;
+        assert!(
+            worst < bound * 1.01,
+            "a tail landed {worst} subpixels out, against a cone at {bound}"
+        );
+    }
+
+    #[test]
+    fn a_star_the_walk_gives_up_on_is_still_a_star() {
+        // The other half: a star whose whole track is outside the cone has no
+        // exposure to draw, and it used to be dropped head and all. It is still
+        // a star and it is still where it is, so it comes out as the point it
+        // has become. Nothing in the picture changes either way — such a star
+        // is six focal lengths off the axis — but a silent total vanish is the
+        // wrong failure for a guard about a tail.
+        let (sky, ship) = spooled_up_turning(5.0, 71);
+        let cam = Camera::new(600, 48);
+        let eye = seated(&ship);
+        let mut drawn = 0;
+        sky.sweep(&cam, &eye, 0.0, |path, _, _| {
+            drawn += 1;
+            assert!(
+                path.len() >= 2,
+                "an exposure came over as {} points",
+                path.len()
+            );
+        });
+        // Every star bright enough to draw is drawn, whatever the walk made of
+        // its tail.
+        assert!(drawn > 500, "only {drawn} exposures were handed over");
     }
 
     #[test]

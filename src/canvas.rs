@@ -15,9 +15,6 @@ use crate::camera::Streak;
 /// Per-sample brightness falls off with streak length, so a long smear spreads
 /// its light instead of burning a line through the frame.
 const LENGTH_FALLOFF: f32 = 0.12;
-/// A streak's tail is this fraction as bright as its head, which leaves a
-/// visible star at the leading end instead of a uniform dash.
-const TAIL_BRIGHTNESS: f32 = 0.32;
 /// Backstop on samples per streak; clipping already bounds this in practice.
 const MAX_SAMPLES: usize = 4096;
 
@@ -93,9 +90,6 @@ struct Ramp {
     /// that is one leg, and the only answer available for a path whose pace
     /// nobody knows.
     total: f32,
-    /// Brightness at the tail, and how much of the way it climbs to the head.
-    floor: f32,
-    lift: f32,
     /// The star's whole light. It is divided down per *leg* rather than once
     /// for the path, because how far the light is spread depends on how fast
     /// the image was moving there — see [`spread`].
@@ -140,9 +134,9 @@ struct Ramp {
 /// clipped remainder, the whole star's light was poured into whatever fragment
 /// the frame happened to keep — an edge streak burned up to three times
 /// brighter per subpixel than the same streak on a wider terminal, which is the
-/// one thing this test suite exists to stop. It is also the argument
-/// `draw_fading_streak` has always made about the engine lance, and there was
-/// never a reason it stopped at the lance.
+/// one thing this test suite exists to stop. It is also the argument the lance
+/// has always made — where the window cuts a plume is not a fact about the
+/// plume — and there was never a reason it stopped at the lance.
 ///
 /// What it buys past the honesty is that a two-point [`Canvas::draw_path`] is
 /// now the bytes [`Canvas::draw_streak`] lays down whether the segment was
@@ -477,59 +471,45 @@ impl Canvas {
         spread(total)
     }
 
-    /// Draw one star's contribution: a line from where it was to where it is,
-    /// brightening toward the head.
+    /// Draw one streak: a line from where the light ran out to where it is,
+    /// brightening toward the head and running out at nothing.
+    ///
+    /// There used to be two of these. A star's ramp stopped at a floor of a
+    /// third and only the engine lance ran out at nothing, on the argument that
+    /// a star's tail "is simply where it was a frame ago" and that light
+    /// stopping dead there would read as a dash with no star on it. A frame ago
+    /// a floor is harmless, because nothing ever leaves a streak through its
+    /// tail. That premise went when a streak became an exposure seconds long:
+    /// the tail is now where the shutter closes, everything that ages out of
+    /// the picture leaves through exactly that edge, and a floor made it leave
+    /// at a *third of full brightness*. Eight bits' worth: level 178 against a
+    /// head of 237, and the next subpixel zero.
+    ///
+    /// What that looked like is what it was — a hard bright edge dragged across
+    /// the frame. Hold a turn at low warp, where the whole trail is the smear
+    /// the turn left, and the sky holds its streaks steady for a second after
+    /// the stick comes back and is then wiped: measured, the lit subpixels sat
+    /// at 59 000 for a second and fell to 9 000 over the next one and three
+    /// quarters. Every star shares one shutter, so they all went together.
+    ///
+    /// So there is one ramp, it runs out at nothing, and the argument that got
+    /// the lance there first is now the argument for all of it: where a streak
+    /// ends is where its light ran out. For the lance that means it may be
+    /// aimed exactly at the point its own exhaust vanishes toward — every bell
+    /// shares that point, and a floor put a third of full brightness from every
+    /// lane of every one of them on the single subpixel they all end on, a bead
+    /// hanging in the sky precisely where the exhaust was meant to have gone.
+    /// For a star it means the oldest light in the exposure is the faintest,
+    /// which is what makes a trail thin away as it ages instead of being cut.
+    ///
+    /// The ramp is measured on the *whole* streak rather than on what survived
+    /// clipping. A lance abeam is stretched to the frame's diagonal and leaves
+    /// by the edge, so its tail is off-screen; ramped over the clipped
+    /// remainder it would fade to nothing at the edge of the *picture* instead
+    /// of at the end of the plume, and a drive whose reach is the frame's would
+    /// stop short of the frame on every terminal. Where the window happens to
+    /// cut a streak is not a fact about the streak.
     pub fn draw_streak(&mut self, streak: &Streak) {
-        self.streak_with_tail::<false>(streak);
-    }
-
-    /// The same segment, for a caller whose tail is where the light *runs out*
-    /// rather than where it has been: the ramp goes to nothing instead of
-    /// stopping at [`TAIL_BRIGHTNESS`].
-    ///
-    /// The floor is right for a star, whose tail is simply where it was a frame
-    /// ago — light that stopped dead there would read as a dash with no star on
-    /// it. The engine lance is the other case. It is aimed at the point its own
-    /// direction vanishes at, and every bell on a ship shares that one point, so
-    /// a floor puts a third of full brightness from every lane of every bell on
-    /// the same subpixel: a bead hanging in the sky exactly where the exhaust
-    /// was meant to have gone. Ramping to nothing is what lets the lance be
-    /// aimed at the point at all — the sample that lands on it carries a ramp of
-    /// exactly zero, so the margin that used to hold it back buys nothing.
-    ///
-    /// Both ramps are measured on the *whole* streak, and this one used to be
-    /// the only one that was. A lance abeam is stretched to the frame's
-    /// diagonal and leaves by the edge, so its tail is off-screen; ramped over
-    /// the clipped remainder it would fade to nothing at the edge of the
-    /// picture, and a drive whose reach is the frame's would stop short of the
-    /// frame on every terminal. Where the window happens to cut a plume is not
-    /// a fact about the plume — and, as [`spread`] now says, there was never a
-    /// reason that stopped at the plume. So the two differ in a pair of
-    /// coefficients and in nothing else: where the ramp ends.
-    pub fn draw_fading_streak(&mut self, streak: &Streak) {
-        self.streak_with_tail::<true>(streak);
-    }
-
-    /// The body both of those share.
-    ///
-    /// Both ramps come out as `tail + lift * t` over the drawn segment, so the
-    /// two differ in a pair of coefficients worked out once and not in anything
-    /// the sampling loop does. The star path's pair are the constants the
-    /// expression here used to hold literally, so it is the same multiply, the
-    /// same add and the same bits it was, and no reference frame moved for the
-    /// split.
-    ///
-    /// `FADING` is a const parameter rather than an argument so that each caller
-    /// is monomorphised with its own coefficients folded in, and the star loop
-    /// keeps the immediates it has always had instead of taking them from
-    /// registers behind a branch. That is an argument from what the compiler is
-    /// left able to do, not from a measurement: at 20 000 stars on 200x60 from
-    /// the side, six interleaved runs put this at 22.14 ms of drawing against
-    /// 22.26 before the split and 22.37 with a runtime flag, which is half a
-    /// percent across the three and inside the run-to-run spread of any one of
-    /// them. Measuring the builds in separate sittings said otherwise and said
-    /// it consistently; interleave them before believing a number here.
-    fn streak_with_tail<const FADING: bool>(&mut self, streak: &Streak) {
         // A dark star has nothing to add, and a NaN one would spread across the
         // buffer — nothing recovers a pixel once it is not a number.
         if streak.intensity.is_nan() || streak.intensity <= 0.0 {
@@ -552,21 +532,9 @@ impl Canvas {
             return;
         }
 
-        // The two ramps differ in a pair of coefficients and in nothing the
-        // sampling loop does. A star ends at [`TAIL_BRIGHTNESS`] rather than at
-        // nothing, because light that stopped dead there would read as a dash
-        // with no star on it; a lance ends at nothing, for the reason
-        // [`Self::draw_fading_streak`] gives.
-        let (floor, lift) = if FADING {
-            (0.0, 1.0)
-        } else {
-            (TAIL_BRIGHTNESS, 1.0 - TAIL_BRIGHTNESS)
-        };
         let ramp = Ramp {
             inv_total: 1.0 / total,
             total,
-            floor,
-            lift,
             intensity: streak.intensity,
             color: streak.color,
         };
@@ -648,9 +616,11 @@ impl Canvas {
         *resume_at = Some(to);
         for i in first..=steps {
             let s = i as f32 * inv_steps;
-            let t = t0 + (t1 - t0) * s;
-            // `from` is the tail, `to` the head: ramp brightness along it.
-            let level = ramp.floor + ramp.lift * t;
+            // How far along the whole streak this sample sits, which is the
+            // brightness it carries: `from` is where the light ran out and `to`
+            // is the head. See [`Canvas::draw_streak`] for why there is no
+            // floor under it.
+            let level = t0 + (t1 - t0) * s;
             // Clipping put both ends on the canvas. The clamps are for the
             // last of the floating-point slack: an interpolated point can land
             // a hair outside the box its endpoints were clipped to.
@@ -696,8 +666,6 @@ impl Canvas {
         let ramp = Ramp {
             inv_total: 1.0 / total,
             total,
-            floor: TAIL_BRIGHTNESS,
-            lift: 1.0 - TAIL_BRIGHTNESS,
             intensity,
             color,
         };
@@ -1252,41 +1220,35 @@ mod tests {
     }
 
     #[test]
-    fn a_fading_streak_runs_out_where_a_star_streak_stops_dead() {
-        // What the engine lance is drawn with, and why it is allowed to be
-        // aimed at the point its own exhaust vanishes at. A star's tail is
-        // where it was a frame ago and holds `TAIL_BRIGHTNESS`, which on a
-        // lance puts a third of full brightness from every lane of every bell
-        // on the one subpixel they all end on — a bead sitting exactly where
-        // the exhaust was meant to have gone.
-        let ends = |fading: bool| {
-            let mut canvas = Canvas::new(64, 64);
-            let s = streak((8.0, 32.0), (56.0, 32.0));
-            if fading {
-                canvas.draw_fading_streak(&s);
-            } else {
-                canvas.draw_streak(&s);
-            }
-            (canvas.light_at(8, 32), canvas.light_at(56, 32))
-        };
-        let (star_tail, star_head) = ends(false);
-        let (fading_tail, fading_head) = ends(true);
-        assert_eq!(
-            fading_tail, 0.0,
-            "a fading streak left {fading_tail} at the end it runs out at"
-        );
+    fn a_streak_runs_out_at_the_end_the_light_ran_out_at() {
+        // There is one ramp and it ends at nothing. It used to end at a third
+        // of the head for a star, on the argument that a tail is where the star
+        // was a frame ago — true then, and false since a streak became an
+        // exposure seconds long. What leaves through that edge now is light
+        // ageing out of the shutter, and a third of full brightness is a bright
+        // edge dragged across the frame rather than a trail thinning away.
+        //
+        // It is also what lets the engine lance be aimed exactly at the point
+        // its own exhaust vanishes toward: every bell shares that point, so a
+        // floor would put a third of full brightness from every lane of every
+        // one of them on the single subpixel they all end on.
+        let mut canvas = Canvas::new(64, 64);
+        canvas.draw_streak(&streak((8.0, 32.0), (56.0, 32.0)));
+        let (tail, head) = (canvas.light_at(8, 32), canvas.light_at(56, 32));
+        assert_eq!(tail, 0.0, "the streak left {tail} where its light ran out");
+        assert!(head > 0.0, "the streak drew no head at all");
+        // And it climbs the whole way rather than stepping: a quarter along is
+        // dimmer than half, which is dimmer than the head.
+        let quarter = canvas.light_at(20, 32);
+        let half = canvas.light_at(32, 32);
         assert!(
-            (star_tail - star_head * TAIL_BRIGHTNESS).abs() < 1e-6,
-            "a star's tail is {star_tail}, not {TAIL_BRIGHTNESS} of its head"
-        );
-        assert!(
-            (fading_head - star_head).abs() < 1e-6,
-            "the two disagree about the head: {fading_head} against {star_head}"
+            quarter < half && half < head,
+            "the ramp is not monotone: {quarter}, {half}, {head}"
         );
     }
 
     #[test]
-    fn a_fading_streak_is_ramped_by_its_own_length_and_not_by_the_window() {
+    fn a_lance_is_ramped_by_its_own_length_and_not_by_the_window() {
         // The bug this is here for. A lit warp drive's lance is stretched to
         // the frame's diagonal and leaves by the edge, so from the beam its
         // tail is off-screen. Ramped over what survived clipping it faded to
@@ -1297,11 +1259,10 @@ mod tests {
         //
         // Drawn the way `draw_trail` draws it, `Canvas::streak_spread` divided
         // back out, so what is being compared is the ramp and not the length
-        // falloff — which is measured on the clipped segment by design and
-        // would otherwise be the whole of the difference.
+        // falloff.
         let lance = |canvas: &mut Canvas, from, to| {
             let held = canvas.streak_spread(from, to);
-            canvas.draw_fading_streak(&Streak {
+            canvas.draw_streak(&Streak {
                 intensity: held,
                 ..streak(from, to)
             });
@@ -1870,13 +1831,14 @@ mod tests {
 
     #[test]
     fn a_streak_is_ramped_by_its_own_length_and_not_by_the_window() {
-        // The star's half of what `draw_fading_streak` has always claimed for
-        // the lance. A streak's light is spread along the track it flew, and
-        // the track is a fact about the star — so the visible part of it has to
-        // carry the light that fell on it and no more. Measured on the clipped
-        // remainder instead, the whole star's brightness was poured into
-        // whatever fragment the frame happened to keep, and the same flight
-        // came out brighter at the edges on a narrower terminal.
+        // The star's half of what the lance has always claimed, and the
+        // sibling of the test that claims it. A streak's light is spread along
+        // the track it flew, and the track is a fact about the star — so the
+        // visible part of it has to carry the light that fell on it and no
+        // more. Measured on the clipped remainder instead, the whole star's
+        // brightness was poured into whatever fragment the frame happened to
+        // keep, and the same flight came out brighter at the edges on a
+        // narrower terminal.
         //
         // Asked as the two windows a real pair of terminals would give: draw
         // the same streak on a wide canvas and on a narrow one, and compare

@@ -176,12 +176,18 @@ const PLUME_FLARE: f32 = 1.6;
 /// How much shorter the outermost lane of the fan is than the centre one.
 ///
 /// This is what gives the plume a silhouette instead of an outline. Lanes of
-/// equal length draw a *rectangle* — `draw_streak` ramps down to
-/// `TAIL_BRIGHTNESS` rather than to nothing, so the far end stops dead at a
-/// third of full brightness and the sides stop dead at the outermost lane, and
-/// the whole thing reads as a brown block bolted to the tail. Shortening the
-/// outer lanes carries the tails round in a curve from the widest point to a
-/// tip, which is the shape a flame has.
+/// equal length draw a *rectangle*: every tail lands on one line straight
+/// across the flow and the sides stop dead at the outermost lane, so the whole
+/// thing reads as a block bolted to the tail. Shortening the outer lanes
+/// carries the tails round in a curve from the widest point to a tip, which is
+/// the shape a flame has.
+///
+/// It used to be worse, and the argument here used to lean on why: a streak ran
+/// out at a floor of a third rather than at nothing, so the flat far end was
+/// laid down bright as well as flat. The floor is gone — see
+/// [`Canvas::draw_streak`], where a star's tail is now where the shutter closes
+/// rather than where it was a frame ago — so the end fades whatever the taper
+/// does, and what is left of the argument is the outline itself.
 ///
 /// A lance does not want one, so the figure eases toward `PLUME_TAPER_AT_WARP`
 /// as the drive spools: at frame length the flame's taper puts the widest point
@@ -1456,8 +1462,9 @@ struct Flame<'a> {
 ///
 /// Drawn with [`Canvas::draw_streak`] — the primitive the whole sky is made of
 /// — because three of the four things a plume wants fall out of it for nothing:
-/// the ramp already runs from `TAIL_BRIGHTNESS` at `from` to full at `to`, so
-/// putting the head at the nozzle brightens the exhaust where it is hottest;
+/// the ramp already runs from nothing at `from` to full at `to`, so putting
+/// the head at the nozzle brightens the exhaust where it is hottest and runs it
+/// out where the plume ends;
 /// the length falloff already spreads a long lance instead of letting it burn a
 /// solid bar; and it accumulates into the same buffer, tonemapped once with
 /// everything else. A chain of glows was the other candidate and the arithmetic
@@ -1591,13 +1598,14 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         // as one ship under way.
         //
         // To the point itself, and not a fraction short of it. That fraction
-        // used to be here, and it was covering for `draw_streak`'s tail floor
-        // rather than for anything about the geometry: every bell shares this
-        // one point, so a lance ending *on* it left a third of full brightness
-        // from every lane of every bell on a single subpixel — the artefact
-        // relocated rather than removed. `draw_fading_streak` takes the floor
-        // away, so the sample that lands on the point carries a ramp of exactly
-        // zero and the margin has nothing left to buy.
+        // used to be here, and it was covering for a tail floor in
+        // `draw_streak` rather than for anything about the geometry: every bell
+        // shares this one point, so a lance ending *on* it left a third of full
+        // brightness from every lane of every bell on a single subpixel — the
+        // artefact relocated rather than removed. Taking the floor away is what
+        // paid for the margin: the sample that lands on the point carries a
+        // ramp of exactly zero, and there is nothing left for a fraction short
+        // of it to buy.
         if let Some(horizon) = horizon {
             lance = lance.min(horizon);
             gone = lance / horizon;
@@ -1640,9 +1648,8 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         let out = offset * offset;
         // Outer lanes stop short, which is what carries the tails round in a
         // curve from the widest point to a tip. Lanes of equal length draw a
-        // rectangle instead: `draw_streak` ramps down to `TAIL_BRIGHTNESS`
-        // rather than to nothing, so the far end would stop dead at a third of
-        // full brightness and the sides at the outermost lane.
+        // rectangle instead — every tail on one line across the flow, and the
+        // sides squared off at the outermost lane.
         let shorten = 1.0 - taper * out;
         let nozzle = (
             flame.head.0 + px * offset * throat,
@@ -1665,7 +1672,7 @@ fn draw_trail(canvas: &mut Canvas, cam: &Camera, flame: Flame<'_>) {
         // drive's — would burn dimmer the wider the terminal, and the same
         // flight would not look the same on two machines.
         let held = canvas.streak_spread(tip, nozzle);
-        canvas.draw_fading_streak(&Streak {
+        canvas.draw_streak(&Streak {
             from: tip,
             to: nozzle,
             color: flame.color,

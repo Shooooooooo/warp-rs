@@ -69,8 +69,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 299 unit + 9 flight + 3 golden, ~20s
-cargo test --locked --all-features      # 300 unit — adds the snapshot-gated one
+cargo test                              # 305 unit + 9 flight + 3 golden, ~20s
+cargo test --locked --all-features      # 306 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -181,10 +181,10 @@ The last three are not decoration, and what they are *for* has changed under
 them. With only the `--demo` pair, the reference covered two seconds of flight
 that never leaves sublight — `--demo` spends its opening six seconds easing the
 throttle up — so it peaked at a quarter of light speed with the drive cold. A
-deliberate change to `TAIL_BRIGHTNESS` did not move the hashes at all, because a
-sublight streak is shorter than a subpixel and takes the branch in `draw_streak`
-that never reads it. The streak ramp, the glare, the flash, the Doppler shift
-and the entire view from outside were all outside the reference.
+deliberate change to the ramp along a warp streak did not move the hashes at
+all, because a sublight streak is shorter than a subpixel and takes the branch
+in `draw_streak` that never reads it. The streak ramp, the glare, the flash, the
+Doppler shift and the entire view from outside were all outside the reference.
 
 Each of the later cases went in to close a hole of that kind, and most of the
 holes were in the star band's own machinery: the fast paths that reduced to
@@ -461,14 +461,15 @@ The default cockpit frame at 200x60 went from 1.1 ms to 2.7.
 **What a turn costs is a column of its own, and it is the one figure here worth
 knowing before touching the exposure.** An exposure the ship flew straight
 through is two points and the arithmetic it always was, so the seven rows above
-measure a renderer with the curve switched off. `examples/bench.rs` has two
+measure a renderer with the curve switched off. `examples/bench.rs` has three
 rows with the stick buried, which is the most curve it can be asked for — the
-autopilot's weave sweeps about a twentieth of it. At 200x60 on this machine:
-the default sky draws in 1.43 ms straight and 4.06 turning, comfortably inside
-the frame budget either way; `--magnitude 8` draws in 8.19 and 50.76, and the
-outside view in 11.99 and 59.90.
+autopilot's weave sweeps about a twentieth of it. At 200x60 on this machine,
+taking the minimum of five sweeps because the bench reports a bare mean of one
+run: the default sky draws in 1.38 ms straight and 4.13 turning, comfortably
+inside the frame budget either way; `--magnitude 8` draws in 8.18 and 53.04, and
+the outside view in 11.96 and 63.20.
 
-That last pair is a sixfold cost and it was accepted rather than capped, on two
+That last pair is a fivefold cost and it was accepted rather than capped, on two
 grounds. It is self-limiting — the steering rates decay in under a second and
 the exposure forgets in three, so a hard turn costs a few seconds and cannot be
 held. And the light is spread along the arc it was smeared over, so what a
@@ -1136,15 +1137,32 @@ wherever no plate covers either.
 
 **The streak falloff is physics for a star and a bug for the drive, which is
 what `Canvas::streak_spread` is for.** `draw_streak` divides a streak's
-per-sample light by its length, so a fast smear spreads instead of burning a
-line. That is right when the length *is* the motion, which is every star in the
-sky. It is wrong for the engine trail: a lit warp drive throws its lance at the
-frame edge, so the length is the terminal's and left alone the drive would burn
-dimmer the wider the window — the same flight looking different on two
-machines, which is the one thing the whole test suite exists to stop.
+per-sample light by how fast the image was moving, so a fast smear spreads
+instead of burning a line. That is right when the pace *is* the motion, which
+is every star in the sky. It is wrong for the engine trail: a lit warp drive
+throws its lance at the frame edge, so the length is the terminal's and left
+alone the drive would burn dimmer the wider the window — the same flight
+looking different on two machines, which is the one thing the whole test suite
+exists to stop.
 `draw_trail` multiplies the factor back out, so what `TRAIL_INTENSITY` names is
 the brightness at the nozzle. Anything else that picks its own streak length
 rather than being handed one has the same problem and the same answer.
+
+**It is asked for a pace and not a length**, and that is the second of the two
+corrections this has taken. A point of a streak carries how fast the star's
+image was moving on the leg leaving it, measured as the length the whole
+exposure would have covered at that pace — which for a streak flown straight
+through is simply its own length, so the falloff is the number it always was and
+not one reference flight moved for the change. For a streak the ship *turned*
+through it is not: the tail swings toward the near-plane cone, where the
+projection accelerates hyperbolically, so the image spends almost no time out
+there and must leave almost nothing behind it. Dividing by the total length
+instead charged the star's whole budget to that excursion — 4.6 times too dim on
+the axis and about 3 at the frame edge, with the size of the error set by where
+the cone happens to sit rather than by anything about the star. A pace travels
+through `bend` unchanged for the same reason the moment it replaced could not:
+the bubble's stretching is the magnification the bend already applies, and
+reading it as the star having moved faster charges it twice.
 
 It is measured on the **whole** segment, before any clipping, and it used to be
 measured on what survived the window — which was the same fault one level down,
@@ -1171,38 +1189,47 @@ of one division and neither needs a depth. Reach for a hull-unit lance length
 instead and two tests say why not: the length is the frame's on purpose.
 
 **The lance is aimed at that point exactly, and what makes that drawable is
-`Canvas::draw_fading_streak`.** It used to stop 8% short, and that margin was
-never about the geometry. `draw_streak` ramps down to `TAIL_BRIGHTNESS` rather
-than to nothing, and every bell on a ship shares one vanishing point — the
-plumes run down the same hull axis and differ only by the bell's own reach,
+that a streak runs out at nothing.** It used to stop 8% short, and that margin
+was never about the geometry. `draw_streak` ramped down to a floor of a third
+rather than to nothing, and every bell on a ship shares one vanishing point —
+the plumes run down the same hull axis and differ only by the bell's own reach,
 which a point at infinity cannot see — so a lance ending *on* it put a third of
 full brightness from every lane of every bell on one subpixel: a bead hanging in
-the sky precisely where the exhaust was meant to have gone. The fading variant
-takes the floor away, so the sample landing on the point carries a ramp of
-exactly zero and the margin has nothing left to buy. Measured star-free at
-`--orbit 75,12,0`, peak light within a dozen subpixels of the point:
-0.83 stopping short with the floor, 1.02 running the whole way with it, 0.45 as
-it is now — further and dimmer at once, against a plume peaking at 2.65.
+the sky precisely where the exhaust was meant to have gone. Taking the floor
+away means the sample landing on the point carries a ramp of exactly zero, and
+the margin has nothing left to buy. Measured star-free at `--orbit 75,12,0`,
+peak light within a dozen subpixels of the point: 0.83 stopping short with the
+floor, 1.02 running the whole way with it, 0.45 as it is now — further and
+dimmer at once, against a plume peaking at 2.65.
 
-**Its ramp is measured on the whole streak, and so is `draw_streak`'s.** They
-differ in where the ramp *ends* — at nothing rather than at `TAIL_BRIGHTNESS` —
-and in nothing else. They are still two entry points rather than a flag, but
-what separates them is now a pair of coefficients rather than a measurement, and
-one body — `draw_leg` — lays both down.
+**There is one ramp now, and it runs out at nothing.** A star's used to stop at
+a floor of a third, on the argument that a tail "is simply where it was a frame
+ago" and that light stopping dead there would read as a dash with no star on it.
+A frame ago that is harmless, because nothing ever *leaves* a streak through its
+tail. The premise went when a streak became an exposure seconds long: the tail
+is where the shutter closes, everything ageing out of the picture leaves through
+exactly that edge, and a floor made it leave at eight-bit level 178 against a
+head of 237 with the next subpixel at zero. Hold a turn at low warp, where the
+whole trail is the smear the turn left, and the sky holds its streaks for a
+second after the stick comes back and is then wiped — 59 000 lit subpixels for a
+second, then 9 000 over the next one and three quarters. That is the report this
+came from, and the floor was the whole of it.
 
-The argument that got the fading one there first is worth keeping, because it is
-the one the star path eventually had to make as well. Abeam the lance is
-stretched to the frame's diagonal and leaves by the edge, so its tail is
-off-screen; ramp it over the clipped remainder and it fades to nothing at the
-edge of the *picture* instead of at the end of the plume, and a drive whose
-reach is the frame's stops short of the frame on every terminal.
+So the second entry point and its floor are both gone, and one `draw_streak`
+is what is left. The argument that got the lance the fading ramp first is now
+the argument for all of it: where a streak ends is where its light ran out.
+Abeam the lance is stretched to the frame's diagonal and leaves by the edge, so
+its tail is off-screen; ramp it over the clipped remainder and it fades to
+nothing at the edge of the *picture* instead of at the end of the plume, and a
+drive whose reach is the frame's stops short of the frame on every terminal.
 `a_lit_warp_drive_trails_off_the_edge_of_the_frame` catches exactly that, and
-`a_fading_streak_is_ramped_by_its_own_length_and_not_by_the_window` in
-`canvas.rs` is the sharper statement of it. Where the window cuts a plume is not
-a fact about the plume — and, it turns out, where it cuts a star is not a fact
-about the star either. `draw_path` had always said so; `draw_streak` says so
-now, which is what lets one exposure swap between the two mid-flight without the
-frame changing brightness underneath it.
+`a_lance_is_ramped_by_its_own_length_and_not_by_the_window` in `canvas.rs` is
+the sharper statement of it, beside the star's own
+`a_streak_is_ramped_by_its_own_length_and_not_by_the_window`. Where the window
+cuts a plume is not a fact about the plume — and, it turns out, where it cuts a
+star is not a fact about the star either. `draw_path` had always said so;
+`draw_streak` says so now, which is what lets one exposure swap between the two
+mid-flight without the frame changing brightness underneath it.
 
 The abeam shot is the case with no vanishing point at all — `Eye::to_camera` at
 `Orbit::LEVEL` is exactly `(x, y, z) → (z, y, distance − x)`, so the hull's axis
@@ -1894,9 +1921,9 @@ polyline against a finely sampled version of the same walk.
 them in the same commit with the reason written down. Run
 `cargo run --release --example bench` before and after if the change is in a
 hot loop — `draw_streak`, `draw_leg`, `resolve_into`, `Universe::sweep`,
-`Bend::draw_one`. Two of its rows hold the stick over, which is the only thing
-in the sweep that asks the sky for a curve; the other seven measure the renderer
-with the curve switched off, which is what most frames are.
+`Bend::draw_one`. Three of its rows hold the stick over, which is the only
+thing in the sweep that asks the sky for a curve; the other seven measure the
+renderer with the curve switched off, which is what most frames are.
 
 Two things about that instrument, because it is easy to trust further than it
 goes. **It does not measure `Screen::flush` at all**: the write column times

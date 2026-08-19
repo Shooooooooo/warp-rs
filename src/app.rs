@@ -234,11 +234,6 @@ impl Flight {
     /// note on [`crate::ship`] about terminals reporting presses and not
     /// releases, and the identity in `crate::autopilot` about scaling one by
     /// `dt`.
-    #[doc(hidden)]
-    pub fn pixels_probe(&self) -> &[[u8; 3]] {
-        self.renderer.pixels()
-    }
-
     pub fn nudge_stick(&mut self, yaw: f32, pitch: f32, roll: f32) {
         self.ship.nudge_yaw(yaw);
         self.ship.nudge_pitch(pitch);

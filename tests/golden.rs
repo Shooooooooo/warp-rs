@@ -427,8 +427,8 @@ fn the_frames_are_the_ones_committed_as_the_reference() {
 #[test]
 fn the_reference_flights_between_them_reach_the_whole_renderer() {
     // The hashes are only worth what they cover, and what they covered was
-    // discovered the hard way: a deliberate change to `TAIL_BRIGHTNESS` — the
-    // ramp along a warp streak — did not move them at all, because two seconds
+    // discovered the hard way: a deliberate change to the ramp along a warp
+    // streak did not move them at all, because two seconds
     // of `--demo` never leaves sublight and a sublight streak is shorter than a
     // subpixel, so it takes the branch that never reads the constant.
     //
