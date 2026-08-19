@@ -24,42 +24,39 @@ const MAX_CELLS: usize = 2_000_000;
 /// And no single dimension past this, so the error names the obvious mistake
 /// rather than quoting a product.
 const MAX_DIM: u16 = 10_000;
-/// Ceiling on a star pool, however the pool was asked for.
+/// The faintest star a sky holds, and the two ends the flag is held to.
 ///
-/// Two doors reach it and this is the only number behind both: `--stars` here
-/// and the `+` key. That key used to have a ceiling of its own, 20 000, which
-/// sat *under* what this file already allowed — so `--stars 100000` and a
-/// single press shrank the pool by four fifths, which is not what that key
-/// says. There was a third door once, an automatic count in [`crate::app`] that
-/// sized the pool from the canvas; it is gone, and [`DEFAULT_STARS`] is what
-/// stands where it stood.
+/// This replaced a literal count, and the change is not a rename. `--stars N`
+/// asked for a number of objects, which is not a thing anybody can look up or
+/// check against a sky; a limiting magnitude is how star counts have always
+/// been quoted, it is a property of the observer rather than of the window, and
+/// the number of stars on screen falls out of it and the field of view instead
+/// of being capped by anybody.
 ///
-/// It is also the one bound in this file not enforced only at parse time, and
-/// for a reason rather than by omission: a pool is the one thing on the list
-/// that can still be resized after the command line has been read. A `Star` is
-/// 40 bytes, so this is 40 MB of it — an allocation rather than an abort on
-/// anything this will run on.
-pub const MAX_STARS: usize = 1_000_000;
-/// How many stars a flight opens with when the command line does not say.
+/// 6.0 rather than the 6.5 a dark sky really reaches, and the half magnitude is
+/// paid to the grid rather than to taste. The cockpit's window is 89 degrees
+/// across, so a true naked-eye sky puts about a thousand stars in it — which is
+/// honest, and which a terminal cannot resolve: at 120x36 that is a canvas of
+/// 8 640 subpixels, the faint end of the count law is most of the thousand, and
+/// the picture comes out an even wash rather than a sky. What makes a sky read
+/// as one is the contrast between a handful of standouts and a dust behind
+/// them, and half a magnitude of headroom is what leaves room for it. This is
+/// about 4 600 stars over the sphere and 550 in the window, against the 256 the
+/// old fixed count drew on every terminal alike. Both ends were shot and looked
+/// at before this was settled.
 ///
-/// This used to be a *density* — stars per subpixel, at 0.02 — so the sky was a
-/// function of the window, and the number here was the sentinel `0` that asked
-/// for it. What that bought was an even-looking field at every size; what it
-/// cost was that no two terminals flew the same sky, and that a flight already
-/// under way had its pool rebuilt underneath it every time the window moved.
-/// The density's own answers say how wide that spread was: 19 stars at 40x12,
-/// 76 at 80x24, 172 at 120x36, 480 at 200x60, 1080 at 300x90. A fixed count is
-/// a picture the notes, the reference frames and two people on two machines can
-/// all be talking about.
-///
-/// 256 sits inside that range and toward its thin end on purpose. The pool is
-/// the same on every canvas now, so it has to be a number that a small window
-/// can carry without becoming a wash — and the field is drawn as the segment
-/// each star swept, so lighting the drive turns every one of them into a streak
-/// several times its own length. Density is what a large window loses, and
-/// depth parallax is what it keeps; the streaks lengthen with the frame either
-/// way.
-pub const DEFAULT_STARS: usize = 256;
+/// The bounds are the allocation guard this file applies to every other number,
+/// moved one step back: the pool grows as `10^(0.6 m)`, so bounding the
+/// observer bounds the count. At 9.5 that is 574 000 stars of 24 bytes, which
+/// is under the 40 MB the old `MAX_STARS` of a million allowed and is already
+/// far past what a terminal can usefully draw. At the bottom end the whole
+/// sphere holds under one star, which is how an empty sky is asked for now that
+/// `--stars 0` is gone — and an empty sky is worth asking for, being the only
+/// way to see the tunnel, the bubble and the hull with nothing streaming past
+/// them.
+pub const DEFAULT_MAGNITUDE: f32 = 6.0;
+pub const MIN_MAGNITUDE: f32 = -2.0;
+pub const MAX_MAGNITUDE: f32 = 9.5;
 /// So a default the parser would refuse is a compile error rather than a
 /// command line that fails on every invocation. `default_value_t` is spelled
 /// and then read back through the `value_parser` like anything typed at the
@@ -67,8 +64,8 @@ pub const DEFAULT_STARS: usize = 256;
 /// was run — which is the one way a number in this file can be wrong without
 /// anything here saying so.
 const _: () = assert!(
-    DEFAULT_STARS <= MAX_STARS,
-    "the default star count is past its own ceiling"
+    DEFAULT_MAGNITUDE >= MIN_MAGNITUDE && DEFAULT_MAGNITUDE <= MAX_MAGNITUDE,
+    "the default limiting magnitude is outside its own bounds"
 );
 /// Ceiling on the two counts that are spent rather than allocated — `--frames`
 /// and `--warmup`. Nothing runs out of memory over these; a `u32` of them is
@@ -93,26 +90,34 @@ const MAX_SCALE: usize = 16;
     about = "Fly a starship through the universe at warp, in your terminal"
 )]
 pub struct Args {
-    /// How many stars to keep in flight. 0 flies an empty sky.
+    /// How faint a star the sky holds, as a limiting visual magnitude.
     ///
-    /// Zero is a count like any other here rather than the error the other
-    /// zeroes on this command line are, and the reason is that the renderer
-    /// draws it: the hull, the bubble, the drive, the vignette and the panel
-    /// are all still there and only the sky behind them goes, which is the one
-    /// way to look at any of them with nothing streaming past. `--frames 0` and
-    /// `--scale 0` are refused because they are an allocation of nothing; this
-    /// is a picture.
+    /// Higher is more stars: each magnitude is about four times as many, the
+    /// way a darker site shows more of them. How many land on screen is then
+    /// the field of view's business and nothing caps it.
     ///
-    /// It used to be the sentinel that asked for a count taken off the canvas,
-    /// so the number reaching [`crate::app`] was never this one. The help text
-    /// says what it does now rather than leaving it to be found, because a
-    /// command line carrying `--stars 0` from before means something else.
+    /// `allow_hyphen_values` because the bottom of the range is negative and
+    /// without it clap reads `--magnitude -2` as a flag it does not know rather
+    /// than as an empty sky. `--orbit` needs it for the same reason and says
+    /// so; this is the second place that has come up.
     #[arg(
         long,
-        default_value_t = DEFAULT_STARS,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(0..=MAX_STARS as u64)
+        value_name = "MAG",
+        default_value_t = DEFAULT_MAGNITUDE,
+        allow_hyphen_values = true,
+        value_parser = magnitude
     )]
-    pub stars: usize,
+    pub magnitude: f32,
+
+    /// Gone, and refused by name rather than by silence.
+    ///
+    /// A shell history or a script carrying `--stars 600` deserves to be told
+    /// what replaced it, where clap's own answer to a flag it does not know is
+    /// "unexpected argument" and a shrug. This is the shape `--color auto` is
+    /// turned away with, for the same reason: the value that used to work is
+    /// the one worth naming.
+    #[arg(long, value_name = "N", hide = true, value_parser = no_star_count)]
+    pub stars: Option<String>,
 
     /// Frame rate cap.
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
@@ -382,6 +387,32 @@ fn unit_interval(text: &str) -> Result<f32, String> {
     }
 }
 
+/// A limiting magnitude, held to the range the pool can be allocated in.
+fn magnitude(text: &str) -> Result<f32, String> {
+    let v: f32 = text
+        .parse()
+        .map_err(|_| format!("`{text}` is not a number"))?;
+    // Not `clamp`: a NaN passes straight through that and would ask the sky for
+    // a pool of `NaN as usize` stars, which is a silent zero.
+    if v.is_finite() && (MIN_MAGNITUDE..=MAX_MAGNITUDE).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!(
+            "expected a limiting magnitude between {MIN_MAGNITUDE} and {MAX_MAGNITUDE}, got {text}"
+        ))
+    }
+}
+
+/// Always an error, and the error is the point.
+fn no_star_count(text: &str) -> Result<String, String> {
+    Err(format!(
+        "`--stars {text}` is gone: a sky is asked for by how faint a star it \
+         holds, not by how many. Try `--magnitude {DEFAULT_MAGNITUDE}` \
+         (between {MIN_MAGNITUDE} and {MAX_MAGNITUDE}); each magnitude is \
+         about four times as many stars"
+    ))
+}
+
 fn positive(text: &str) -> Result<f32, String> {
     let v: f32 = text
         .parse()
@@ -441,7 +472,7 @@ mod tests {
         // The literal rather than the constant, exactly as the frame rate above
         // it is: this is the one place the defaults are pinned as numbers, and
         // asserting a constant against itself pins nothing.
-        assert_eq!(args.stars, 256);
+        assert_eq!(args.magnitude, DEFAULT_MAGNITUDE);
         assert!(args.demo.is_none() && !args.headless && !args.engage);
         // Pinned here as the flag's own default, beside the frame rate and the
         // star count. That it survives to the writer is a separate question and
@@ -560,17 +591,24 @@ mod tests {
     }
 
     #[test]
-    fn size_and_star_counts_are_bounded() {
+    fn size_and_sky_are_bounded() {
         // Regression: neither was bounded. `--stars 500000000` asked for 20 GB
         // and `--size 60000x60000` for 86 GB, and a failed allocation aborts
         // the process — no unwind, no `Drop`, no panic hook — so interactively
         // it left the terminal in raw mode on the alternate screen.
-        assert!(Args::try_parse_from(["warp", "--stars", "500000000"]).is_err());
-        assert!(Args::try_parse_from(["warp", "--stars", "1000001"]).is_err());
-        assert!(Args::try_parse_from(["warp", "--stars", "1000000"]).is_ok());
+        //
+        // The star half is now bounded one door further back: the count is
+        // derived from the limiting magnitude, which grows as `10^(0.6 m)`, so
+        // holding the observer holds the allocation. Both ends are checked
+        // because both are reachable — the top by a hand on `+` and the bottom
+        // by a hand on `-`.
+        assert!(Args::try_parse_from(["warp", "--magnitude", "12"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--magnitude", "-8"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--magnitude", "nan"]).is_err());
+        assert!(Args::try_parse_from(["warp", "--magnitude", "9.5"]).is_ok());
         assert!(
-            Args::try_parse_from(["warp", "--stars", "0"]).is_ok(),
-            "an empty sky is a count like any other"
+            Args::try_parse_from(["warp", "--magnitude", "-2"]).is_ok(),
+            "an empty sky is a limit like any other"
         );
 
         assert!(parse_size("60000x60000").is_err());
@@ -582,6 +620,20 @@ mod tests {
         assert!(parse_size("10000x10000").is_err());
         assert!(parse_size("2000x1000").is_ok(), "exactly the cell ceiling");
         assert!(parse_size("2000x1001").is_err(), "one row past it");
+    }
+
+    #[test]
+    fn the_star_count_flag_says_what_replaced_it() {
+        // `--stars` is gone and clap's own answer to a flag it does not know is
+        // "unexpected argument", which is no use to a shell history or a script
+        // carrying one. The same courtesy `--color auto` is turned away with.
+        let err = Args::try_parse_from(["warp", "--stars", "600"])
+            .expect_err("a sky is not asked for by the number any more")
+            .to_string();
+        assert!(
+            err.contains("--magnitude"),
+            "the error does not name what replaced it: {err}"
+        );
     }
 
     #[test]

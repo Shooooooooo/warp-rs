@@ -10,7 +10,7 @@
 //! This is a look, not a colour-managed pipeline: exposure and gamma here are
 //! tuned by eye against what the terminal actually shows.
 
-use crate::starfield::Streak;
+use crate::camera::Streak;
 
 /// Per-sample brightness falls off with streak length, so a long smear spreads
 /// its light instead of burning a line through the frame.

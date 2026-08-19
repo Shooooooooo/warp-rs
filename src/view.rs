@@ -13,8 +13,8 @@
 //! is that plus how far off it is, and both are here rather than in
 //! [`crate::models`] because they are what the *sky* is streamed against as
 //! well as what the hull is posed by — putting them next to the hull would make
-//! [`crate::exterior`] reach through the ship models to find out which way it
-//! is being looked at.
+//! [`crate::render`] reach through the ship models to find out which way it is
+//! being looked at.
 
 use crate::ship::wrap_signed;
 use std::f32::consts::{PI, TAU};
@@ -42,12 +42,18 @@ pub const HULL_REACH: f32 = 1.8;
 /// How far in and out the side camera may be pushed, as a multiple of the
 /// default framing.
 ///
-/// Both ends are held by a near plane rather than by taste, and both are
-/// checked where the plane they answer to is declared: pulling back too far
-/// would let a star pass between the eye and the hull, which is the whole of
-/// the exterior view's depth sorting ([`crate::exterior`]), and pushing in too
-/// far would put a rolled fin through the projection's own near plane and drop
-/// the plate ([`crate::models`]). The numbers here leave both with room.
+/// The near end is held by a near plane rather than by taste, and it is checked
+/// where that plane is declared: pushing in too far would put a rolled fin
+/// through the projection's own near plane and drop the plate, which is the
+/// `const` assertion in [`crate::models`]. The number here leaves it room.
+///
+/// The far end used to answer to a plane as well — pulling back too far would
+/// let a star pass between the eye and the hull, which was the whole of the
+/// exterior view's depth sorting. [`crate::universe`] holds its nearest star
+/// four *light years* off against a hull measured in units where the ship is
+/// about one, so that end of the sandwich is now twelve orders of magnitude
+/// clear and answers to framing alone. The assertion that used to guard it is
+/// gone, and says so where it stood.
 pub const ZOOM_MIN: f32 = 0.6;
 pub const ZOOM_MAX: f32 = 2.8;
 /// Where the zoom starts, and where `R` puts it back.
@@ -130,12 +136,14 @@ pub const ORBIT_EASE: f32 = 9.0;
 /// The guard is not an optimisation. [`wrap_signed`] goes through `rem_euclid`
 /// and back, which does not return an angle already in range bit for bit — and
 /// this is applied on every press and every eased step, so without it a notch
-/// and its opposite would not cancel. What turns on that cancelling is
-/// `crate::exterior`, which lays the star band out afresh whenever the orbit
-/// differs from the one it was last laid against: an angle that came back a
-/// hair off would rebuild the whole rotation path every frame of a flight
-/// nobody is touching the camera on. That module guards its own vertical fold
-/// for exactly the same reason and it is the same trap.
+/// and its opposite would not cancel. What used to turn on that cancelling was
+/// the star band, which laid itself out afresh whenever the orbit differed from
+/// the one it was last laid against — so an angle that came back a hair off
+/// rebuilt the whole rotation path every frame of a flight nobody was touching
+/// the camera on. There is no band now and a swing moves no star, but the guard
+/// stays on a reason of its own: an [`Orbit`]'s equality is what
+/// [`crate::app::Flight`] eases the camera against, and an angle that will not
+/// cancel is a camera that never settles.
 fn turn_of(angle: f32) -> f32 {
     if (-PI..PI).contains(&angle) {
         angle
@@ -195,11 +203,10 @@ impl Orbit {
     /// Asked rather than approximated, and a test's question rather than the
     /// renderer's: what wants to know is an assertion that a camera came back
     /// to where it started. The doc here used to claim the star band and the
-    /// bubble both took fast paths off this answer, which was never true —
-    /// they compare against what they were last laid out for
-    /// (`crate::exterior`) and against a zero sine (`crate::lens`), and
-    /// neither has ever called this. Nothing in a running program does, hence
-    /// the gate.
+    /// bubble both took fast paths off this answer, which was never true — they
+    /// compared against what they were last laid out for and against a zero
+    /// sine ([`crate::lens`]), and neither ever called this. There is no band
+    /// at all now, and nothing in a running program calls it, hence the gate.
     #[cfg(test)]
     pub fn is_level(self) -> bool {
         self == Self::LEVEL
@@ -322,10 +329,11 @@ impl Eye {
     ///
     /// Three dot products and a standoff. The rotation is about the *ship's own
     /// centre*, so the range comes out in `[distance - HULL_REACH, distance +
-    /// HULL_REACH]` whatever the orbit is doing — which is exactly how the two
-    /// `const` assertions either side of the hull are worded, in
-    /// [`crate::models`] and [`crate::exterior`], and why swinging the camera
-    /// all the way round does not disturb either of them.
+    /// HULL_REACH]` whatever the orbit is doing — which is exactly how the
+    /// `const` assertion beside the hull is worded, in [`crate::models`], and
+    /// why swinging the camera all the way round does not disturb it. That used
+    /// to be a pair, one at each end of the sandwich; the other answered to the
+    /// star band's near wall and went with the band.
     ///
     /// At [`Orbit::LEVEL`] this is `(x, y, z) → (z, y, distance - x)`, to the
     /// bit. See [`Orbit::basis`] for why that matters more than it looks like

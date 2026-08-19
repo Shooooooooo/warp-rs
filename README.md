@@ -33,7 +33,7 @@ side` walks the shot round the hull rather than parking it, and no two runs up
 to warp are flown quite alike. `--orbit` still says where the shot starts; the
 camera wanders out from there.
 
-| `--stars N` | Star count. Default 256; `0` for an empty sky. |
+| `--magnitude M` | How faint a star the sky holds. Default 6.0; each magnitude is about four times as many. Low enough is an empty sky. |
 | `--fps N` | Frame rate cap, while nothing is being typed. Default 60. |
 | `--color truecolor\|256\|ascii` | Colour depth. 24-bit by default. |
 | `--engage` | Start with the drive already lit. |
@@ -46,6 +46,27 @@ camera wanders out from there.
 | `--seed N` | Fix the sky. Omit for a different one each run. |
 | `--size COLSxROWS` | Override the terminal size. |
 | `--headless --frames N` | Print frames to stdout instead of taking over the terminal. |
+
+## The sky
+
+Stars are where their own photometry puts them. A star is drawn from the
+spectral census, given an absolute magnitude, and placed at the distance that
+makes it look as bright as it does — so the near ones are faint red dwarfs a
+few light years off and the bright ones are giants a thousand light years away,
+which is the arrangement the real sky is in.
+
+Two things follow, and they are the reason for it. At impulse the sky does not
+move: 0.9 c against a nearest star four light years off is a hundredth of a
+subpixel a second, so the stars sit still and only the twinkle moves. And at
+warp — 2000 c is five and a half light years a second — the near sky tears past
+a far one that barely shifts, which is depth rather than speed and is the thing
+a fixed backdrop cannot show.
+
+`--magnitude` is the knob, and it is the one astronomers use: a sky is
+described by how faint a star you can pick out of it, not by how many there
+are. `+` and `-` move it half a magnitude at a time. How many land on screen is
+then the field of view's business, so a wider terminal shows more sky rather
+than the same sky stretched.
 
 ## Terminals
 
