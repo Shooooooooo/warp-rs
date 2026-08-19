@@ -343,7 +343,7 @@ mod tests {
             let cam = renderer.camera(&ship, time);
             sky.advance(
                 ship.position,
-                ship.axes[2],
+                ship.axes,
                 1.0 / 60.0,
                 ship.warp_intensity(),
                 ship.velocity_ly_per_s(),
@@ -380,7 +380,7 @@ mod tests {
                 let cam = renderer.camera(&ship, time);
                 sky.advance(
                     ship.position,
-                    ship.axes[2],
+                    ship.axes,
                     1.0 / 60.0,
                     ship.warp_intensity(),
                     ship.velocity_ly_per_s(),
@@ -456,7 +456,7 @@ mod tests {
             let cam = renderer.exterior_camera(&ship, time);
             sky.advance(
                 ship.position,
-                ship.axes[2],
+                ship.axes,
                 1.0 / 60.0,
                 ship.warp_intensity(),
                 ship.velocity_ly_per_s(),
@@ -596,7 +596,7 @@ mod tests {
                 ship.update(1.0 / 60.0);
                 sky.advance(
                     ship.position,
-                    ship.axes[2],
+                    ship.axes,
                     1.0 / 60.0,
                     ship.warp_intensity(),
                     ship.velocity_ly_per_s(),
@@ -636,7 +636,7 @@ mod tests {
                 ship.update(1.0 / 60.0);
                 sky.advance(
                     ship.position,
-                    ship.axes[2],
+                    ship.axes,
                     1.0 / 60.0,
                     ship.warp_intensity(),
                     ship.velocity_ly_per_s(),

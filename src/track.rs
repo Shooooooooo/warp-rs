@@ -55,9 +55,18 @@ struct Sample {
     origin: [f64; 3],
     /// Starboard, down, nose — [`crate::ship::Ship::axes`] as it stood.
     axes: [[f32; 3]; 3],
-    /// Cumulative arc length at this sample, monotone and never reset. `f64`
-    /// because it only ever grows and a screensaver is left up for days.
+    /// Cumulative arc length at this sample, monotone and never reset.
+    ///
+    /// `f64` beside an `f32` everything else here, and that is the one place in
+    /// this arithmetic that cancels badly: the tail is found by subtracting the
+    /// exposure's length from the distance flown so far, two large numbers
+    /// leaving a small one, at full warp after a flight that has been up for
+    /// days. It only ever grows, too, which is the same argument
+    /// [`crate::app::Flight::time`] makes for itself.
     flown: f64,
+    /// Cumulative attitude change, in radians of total variation. Monotone for
+    /// the same reason and searched the same way — see [`Track::turn_over`].
+    turn: f64,
 }
 
 /// The flown track, as a ring of poses walked by arc length.
@@ -106,26 +115,37 @@ impl Track {
     /// poses light years apart at adjacent arc lengths, and a walk would land
     /// between them.
     pub fn record(&mut self, origin: [f64; 3], axes: [[f32; 3]; 3]) {
-        let (step, was_straight) = match self.newest() {
+        let (step, swept, was_straight) = match self.newest() {
             Some(last) => {
                 let (dx, dy, dz) = (
                     origin[0] - last.origin[0],
                     origin[1] - last.origin[1],
                     origin[2] - last.origin[2],
                 );
-                ((dx * dx + dy * dy + dz * dz).sqrt(), last.axes == axes)
+                (
+                    (dx * dx + dy * dy + dz * dz).sqrt(),
+                    turned_by(last.axes, axes) as f64,
+                    last.axes == axes,
+                )
             }
-            None => (0.0, true),
+            None => (0.0, 0.0, true),
         };
         let step = if step.is_finite() { step } else { 0.0 };
-        let flown = self.newest().map_or(0.0, |last| last.flown) + step;
-        // Bitwise, deliberately: see the module doc.
-        self.straight = if was_straight { self.straight + step } else { step };
+        let (flown, turn) = self
+            .newest()
+            .map_or((0.0, 0.0), |last| (last.flown + step, last.turn + swept));
+        // Bitwise, deliberately: see [`Self::straight_run`].
+        self.straight = if was_straight {
+            self.straight + step
+        } else {
+            step
+        };
 
         let sample = Sample {
             origin,
             axes,
             flown,
+            turn,
         };
         if self.ring.len() < TRACK_SAMPLES {
             self.ring.push(sample);
@@ -148,40 +168,126 @@ impl Track {
         }
     }
 
-    /// How far back the attitude is bit-for-bit the one being flown now.
+    /// How far back the recorded attitude is bit-for-bit the attitude being
+    /// flown now, in light years.
+    ///
+    /// Bitwise, and not within a tolerance, because what it decides is whether
+    /// the exposure takes the arithmetic every reference frame is pinned
+    /// through. [`crate::ship::Ship::steer`] runs `orthonormalise` every step,
+    /// and at [`crate::ship::LEVEL_AXES`] every dot product in it is a hard
+    /// zero and every norm a hard one — so a flight nobody steers holds one
+    /// attitude to the last bit for as long as it flies, which is what
+    /// `a straight flight has turned` over in `ship.rs` already says. The four
+    /// `--engage` reference flights take the fast path from the first frame to
+    /// the last because of it.
+    ///
+    /// Note what this does *not* claim. Away from level, `orthonormalise` is
+    /// not known to have a fixed point, so a ship that has once been turned may
+    /// never come back to the fast path however straight it then flies. That
+    /// costs a few matrix products a frame and nothing whatever in the picture.
+    ///
+    /// It is an accumulator in its own right rather than something read off the
+    /// ring, and deliberately: an attitude unchanged for longer than the ring is
+    /// long is still unchanged, and capping this at what the ring remembers
+    /// would push a long exposure onto the curved path for no reason but the
+    /// buffer's size.
     pub fn straight_run(&self) -> f32 {
-        // Held to what the ring can still speak for. An attitude unchanged for
-        // longer than the ring is long is still straight over the whole of it,
-        // and the exposure is clamped to the same number, so the comparison the
-        // caller makes stays true.
-        self.straight.min(self.flown()) as f32
+        self.straight as f32
+    }
+
+    /// How much the attitude turned over the last `back` light years of track,
+    /// in radians of total variation.
+    ///
+    /// Total variation and not the angle between the two ends, which is the
+    /// distinction a weave makes expensive to get wrong: a ship that yaws a
+    /// radian one way and a radian back has its nose where it started, so the
+    /// net rotation is nearly the identity — and the arc its stars swept is two
+    /// radians wide. A curve chosen by the net angle would be drawn as a chord
+    /// straight across it. Summed per step and carried cumulatively, which also
+    /// makes it monotone in how far back you look and so searchable the same way
+    /// the arc length is.
+    pub fn turn_over(&self, back: f32) -> f32 {
+        let Some(newest) = self.newest() else {
+            return 0.0;
+        };
+        if back.is_nan() || back <= 0.0 {
+            return 0.0;
+        }
+        let (i, t) = self.walk_to(newest.flown - back as f64);
+        let turn = if i == 0 {
+            self.at(0).turn
+        } else {
+            let (before, after) = (self.at(i - 1), self.at(i.min(self.len - 1)));
+            before.turn + (after.turn - before.turn) * t
+        };
+        ((newest.turn - turn) as f32).max(0.0)
     }
 
     /// The pose the ship held `back` light years ago along its own track.
     ///
-    /// Clamped to the oldest sample the ring still holds rather than
-    /// extrapolated past it, which cannot bite while the exposure is clamped to
-    /// [`Self::flown`] and is the right answer if it ever did: the last thing
-    /// this should do is invent a flight.
+    /// **Saturating** at the oldest sample the ring still holds, rather than
+    /// extrapolated past it and rather than answered by clamping the exposure
+    /// to what the ring remembers. Those are not the same guard and the
+    /// difference is worth the sentence: the exposure is an `f32` sum of
+    /// `speed · dt` and the ring's span is an `f64` sum of the same steps, so a
+    /// `min` between them lands within a rounding of the number it was given
+    /// and shaves an ulp off it either way — and an ulp on that length is
+    /// applied to every star in the sky, which repaints every warp reference
+    /// frame to say nothing at all. Saturating the *lookup* costs no arithmetic
+    /// on any path, and a drawn exposure that fell short of the one asked for
+    /// would move its tail outward, which is the direction a tail is allowed to
+    /// move. The ring is sized so it cannot happen; this is what it does if it
+    /// ever does.
     ///
-    /// The two samples either side are *interpolated between* on the position
-    /// and the nearer one is taken whole on the attitude. Rounding a position
-    /// to the nearer sample would step the tail of every streak in the sky
-    /// forward and back as the walk crossed a sample boundary, which is a
-    /// visible jitter at 120 samples a second; an attitude is a basis and
-    /// blending two of them is not one, so the near one is taken instead — the
-    /// two are a sim step apart, which at the yaw stop is 0.007 of a radian.
+    /// The pose between two samples is interpolated rather than rounded to the
+    /// nearer of them. Rounding would step the tail of every streak in the sky
+    /// as the walk crossed a sample boundary, and the walk crosses one every
+    /// step by construction — the exposure grows by exactly the distance the
+    /// ship flew — so it would be a jitter at 120 a second rather than an
+    /// occasional one. The attitude is lofted the same way and pulled back to
+    /// orthonormal afterwards, since a blend of two bases is not a basis: over
+    /// one sim step the two differ by 0.007 of a radian at the yaw stop, so
+    /// what the pullback has to correct is nothing.
     pub fn pose_at(&self, back: f32) -> ([f64; 3], [[f32; 3]; 3]) {
         let Some(newest) = self.newest() else {
             return ([0.0; 3], crate::ship::LEVEL_AXES);
         };
-        if !(back > 0.0) {
+        // A NaN reach and a zero one mean the same thing: there is no exposure
+        // to walk, so the pose is the one being flown. Spelled out rather than
+        // as a negated comparison, which is the same test and reads as if the
+        // NaN were an afterthought.
+        if back.is_nan() || back <= 0.0 {
             return (newest.origin, newest.axes);
         }
-        let want = newest.flown - back as f64;
-        // Binary search over the ring in flight order. `flown` is monotone, so
-        // the partition point is the first sample at or past where the walk
-        // wants to be.
+        let (i, t) = self.walk_to(newest.flown - back as f64);
+        if i == 0 {
+            let oldest = self.at(0);
+            return (oldest.origin, oldest.axes);
+        }
+        let (before, after) = (self.at(i - 1), self.at(i.min(self.len - 1)));
+        let origin = [
+            before.origin[0] + (after.origin[0] - before.origin[0]) * t,
+            before.origin[1] + (after.origin[1] - before.origin[1]) * t,
+            before.origin[2] + (after.origin[2] - before.origin[2]) * t,
+        ];
+        let mut axes = [[0.0f32; 3]; 3];
+        let blend = t as f32;
+        for (axis, (a, b)) in axes.iter_mut().zip(before.axes.iter().zip(after.axes)) {
+            for (place, (from, to)) in axis.iter_mut().zip(a.iter().zip(b)) {
+                *place = from + (to - from) * blend;
+            }
+        }
+        (origin, crate::ship::orthonormalise(axes))
+    }
+
+    /// Where a cumulative arc length falls in the ring: the index of the first
+    /// sample at or past it, and how far between that one and the one before it.
+    ///
+    /// Binary search, because `flown` is monotone by construction and the ring
+    /// holds a thousand samples that a frame walks a dozen times. An index of
+    /// zero means the walk wanted further back than the ring remembers, which
+    /// is the saturating case both callers answer for themselves.
+    fn walk_to(&self, want: f64) -> (usize, f64) {
         let (mut lo, mut hi) = (0usize, self.len);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -192,8 +298,7 @@ impl Track {
             }
         }
         if lo == 0 {
-            let oldest = self.at(0);
-            return (oldest.origin, oldest.axes);
+            return (0, 0.0);
         }
         let (before, after) = (self.at(lo - 1), self.at(lo.min(self.len - 1)));
         let span = after.flown - before.flown;
@@ -202,13 +307,7 @@ impl Track {
         } else {
             0.0
         };
-        let origin = [
-            before.origin[0] + (after.origin[0] - before.origin[0]) * t,
-            before.origin[1] + (after.origin[1] - before.origin[1]) * t,
-            before.origin[2] + (after.origin[2] - before.origin[2]) * t,
-        ];
-        let axes = if t < 0.5 { before.axes } else { after.axes };
-        (origin, axes)
+        (lo, t)
     }
 
     /// The `i`th oldest sample the ring holds.
@@ -226,14 +325,37 @@ impl Track {
     }
 }
 
+/// How far one attitude turned into another, in radians.
+///
+/// From the trace of `a·bᵀ`, which for a rotation is `1 + 2cos θ`, so
+/// `3 - trace` is `4 sin²(θ/2)` and the square root of it is `2 sin(θ/2)` —
+/// which is `θ` to within a part in ten million over a sim step, and is what is
+/// taken rather than an `acos` that would be ill-conditioned exactly where
+/// every sample of a straight flight sits. Negatives are folded away: two
+/// bases that differ by nothing can still put the trace a hair over three.
+fn turned_by(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> f32 {
+    let mut trace = 0.0;
+    for (row, other) in a.iter().zip(b) {
+        for (x, y) in row.iter().zip(other) {
+            trace += x * y;
+        }
+    }
+    (3.0 - trace).max(0.0).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ship::{Ship, LEVEL_AXES};
 
+    /// A pose the ship really held, and how far it had flown by then: what the
+    /// ring is checked against, kept in a plain growing list so the check does
+    /// not lean on the thing under test.
+    type Logged = ([f64; 3], [[f32; 3]; 3], f64);
+
     /// Fly a ship, recording as the sky does, and hand back the track and a
     /// straight log of every pose for a test to check the ring against.
-    fn flown(steps: usize, steer: bool) -> (Track, Vec<([f64; 3], [[f32; 3]; 3], f64)>) {
+    fn flown(steps: usize, steer: bool) -> (Track, Vec<Logged>) {
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         ship.toggle_warp();
@@ -277,16 +399,20 @@ mod tests {
             let want = end - back as f64;
             // The logged pose either side of that distance; the walk is
             // interpolated, so it has to sit between them.
-            let after = log.partition_point(|(_, _, f)| *f < want).min(log.len() - 1);
+            let after = log
+                .partition_point(|(_, _, f)| *f < want)
+                .min(log.len() - 1);
             let before = after.saturating_sub(1);
-            for axis in 0..3 {
-                let (a, b) = (log[before].0[axis], log[after].0[axis]);
-                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            for (axis, (walked, (a, b))) in origin
+                .iter()
+                .zip(log[before].0.iter().zip(log[after].0))
+                .enumerate()
+            {
+                let (lo, hi) = if *a <= b { (*a, b) } else { (b, *a) };
                 let slack = (hi - lo).max(1e-9) + 1e-9;
                 assert!(
-                    origin[axis] >= lo - slack && origin[axis] <= hi + slack,
-                    "walking back {back} ly landed at {} on axis {axis}, outside {lo}..{hi}",
-                    origin[axis]
+                    *walked >= lo - slack && *walked <= hi + slack,
+                    "walking back {back} ly landed at {walked} on axis {axis}, outside {lo}..{hi}"
                 );
             }
             checked += 1;
@@ -347,18 +473,42 @@ mod tests {
 
     #[test]
     fn the_ring_never_grows() {
-        // A screensaver is left up for days. The ring is allocated once and
-        // what it holds stops growing; only the distance it spans is bounded by
-        // the flight rather than by the ring.
+        // A screensaver is left up for days. The ring is allocated once, and
+        // what it holds stops growing the moment it is full.
         let (track, _) = flown(4000, true);
         assert_eq!(track.ring.len(), TRACK_SAMPLES);
         assert_eq!(track.ring.capacity(), TRACK_SAMPLES);
         assert_eq!(track.len, TRACK_SAMPLES);
-        let span = track.flown();
-        assert!(span > 0.0, "a long flight remembered no track at all");
+        let long = track.flown();
+        let (longer, _) = flown(12_000, true);
         assert!(
-            span < 40.0,
-            "the ring is holding {span} ly, which is more than it should"
+            (longer.flown() - long).abs() < long * 0.05,
+            "three times the flight remembered {} ly against {long}",
+            longer.flown()
+        );
+    }
+
+    #[test]
+    fn the_ring_holds_more_track_than_an_exposure_can_ask_for() {
+        // The reason `pose_at` saturating rather than clamping the exposure is
+        // an answer to something that cannot happen. The exposure settles at
+        // `TRAIL_SECONDS` of flight and can transiently run ahead of the
+        // distance covered in the last `TRAIL_SECONDS` — the drive snaps 3.4 c
+        // on and the ease climbs to 2000 c behind it, so `3·v` outruns the
+        // integral of `v` for as long as `v` is still climbing. What the ring
+        // has to hold is the worst of that with room over.
+        let (track, _) = flown(4000, false);
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        ship.toggle_warp();
+        for _ in 0..2000 {
+            ship.update(1.0 / 120.0);
+        }
+        let settled = 3.0 * ship.velocity_ly_per_s() as f64;
+        assert!(
+            track.flown() > settled * 2.5,
+            "the ring holds {} ly against an exposure that settles at {settled}",
+            track.flown()
         );
     }
 
@@ -410,6 +560,46 @@ mod tests {
                 "the exposure walked back across the reset, to {origin:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_turn_that_goes_out_and_comes_back_still_swept_the_arc_it_swept() {
+        // Total variation and not the angle between the two ends, which is what
+        // a weave makes expensive to get wrong. Yaw one way, then the other, so
+        // the nose finishes where it started: the net rotation is nearly
+        // nothing and the arc the sky swept is the sum of the two legs. A curve
+        // chosen off the net angle would be drawn as a chord straight across it.
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        ship.toggle_warp();
+        let mut track = Track::new();
+        let opened = ship.axes;
+        for step in 0..600 {
+            ship.nudge_yaw(if step < 300 { 0.5 } else { -0.5 });
+            ship.update(1.0 / 120.0);
+            track.record(ship.position, ship.axes);
+        }
+        let net = turned_by(opened, ship.axes);
+        let swept = track.turn_over(track.flown() as f32);
+        assert!(
+            net < 0.15,
+            "the ship was supposed to come back to its heading, and turned {net}"
+        );
+        assert!(
+            swept > net * 5.0,
+            "a there-and-back turn swept {swept} against a net {net}"
+        );
+    }
+
+    #[test]
+    fn nothing_turns_over_no_distance_at_all() {
+        // The other end of it: asking how much a zero-length exposure swept has
+        // to be zero rather than the whole flight's turn, or the station count
+        // would be picked off a swing nothing was drawn over.
+        let (track, _) = flown(400, true);
+        assert_eq!(track.turn_over(0.0), 0.0);
+        assert_eq!(track.turn_over(-1.0), 0.0);
+        assert!(track.turn_over(track.flown() as f32) > 0.0);
     }
 
     #[test]

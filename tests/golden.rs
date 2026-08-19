@@ -539,7 +539,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
             ship.update(dt);
             sky.advance(
                 ship.position,
-                ship.axes[2],
+                ship.axes,
                 dt,
                 ship.warp_intensity(),
                 ship.velocity_ly_per_s(),

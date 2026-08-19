@@ -9,6 +9,11 @@
 //! flight can be driven from a test, a benchmark, or another program without
 //! going through the binary.
 //!
+//! [`track`] is where the ship has *been*, which the sky needs because a
+//! streak is an exposure: the track a star swept while the shutter was open,
+//! drawn from the poses the ship actually held rather than rewound along the
+//! one it is holding now.
+//!
 //! [`view`] says which camera is flying, and *only* that: there is one sky, and
 //! both cameras are places to stand in it rather than skies of their own. The
 //! second one watches from outside and brings the rest of the renderer with it
@@ -29,6 +34,7 @@ pub mod models;
 pub mod render;
 pub mod ship;
 pub mod term;
+pub mod track;
 pub mod universe;
 pub mod view;
 

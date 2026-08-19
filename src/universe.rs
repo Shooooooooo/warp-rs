@@ -25,6 +25,7 @@
 //! could not have one.
 
 use crate::camera::{Camera, Streak};
+use crate::track::Track;
 use crate::view::Eye;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -397,6 +398,16 @@ pub struct Universe {
     /// tail moving outward is the direction it is allowed to move, and a drive
     /// shutting down should visibly stop smearing.
     trail: f32,
+    /// The flight the exposure is drawn along: where the ship has been, and
+    /// which way it was pointed while it was there.
+    ///
+    /// It lives here rather than on [`crate::ship::Ship`] because it is the
+    /// other half of `trail` — an exposure is a length *and* the track that
+    /// length is measured along, and separating the two is how they come apart.
+    /// There is a mechanical reason as well: [`Observer`] is `Copy`, and a
+    /// borrow of the track on it would push a lifetime through both of its
+    /// constructors and every caller in [`crate::render`].
+    track: Track,
 }
 
 impl Universe {
@@ -406,6 +417,7 @@ impl Universe {
             rng: StdRng::seed_from_u64(seed),
             limit,
             trail: 0.0,
+            track: Track::new(),
         };
         sky.stock();
         sky
@@ -490,14 +502,31 @@ impl Universe {
         }
     }
 
-    /// Step the sky: unroll the exposure a little further, then take away
-    /// whatever has fallen past the limit and put the same number back where
-    /// the flow is bringing them in from.
+    /// Step the sky: remember where the ship is, unroll the exposure a little
+    /// further, then take away whatever has fallen past the limit and put the
+    /// same number back where the flow is bringing them in from.
     ///
     /// The ship does the moving — see [`crate::ship::Ship::coast`] — so there
     /// is nothing to translate here and no screen for anything to fall off.
-    /// What is left is one distance test per star.
-    pub fn advance(&mut self, origin: [f64; 3], nose: [f32; 3], dt: f32, warp: f32, speed: f32) {
+    /// What is left is one sample and one distance test per star.
+    ///
+    /// It is handed the whole attitude rather than the nose alone, and the
+    /// other two axes are [`Self::track`]'s: a camera bolted to the hull rolls
+    /// with it, so an exposure drawn from where the ship *was* has to be drawn
+    /// through how it was pointed as well. The recycle reads the nose out of it
+    /// and draws in exactly the place in the sequence it always did — `--seed`
+    /// reproducibility is a property of the RNG's draw order, and a draw moved
+    /// is a different sky.
+    pub fn advance(
+        &mut self,
+        origin: [f64; 3],
+        axes: [[f32; 3]; 3],
+        dt: f32,
+        warp: f32,
+        speed: f32,
+    ) {
+        let nose = axes[2];
+        self.track.record(origin, axes);
         // The exposure lengthens by the distance the ship actually flew and not
         // one light year more, which is what keeps a trail behind its star
         // rather than reaching past it. See [`Self::trail`]; shortening is not
@@ -888,7 +917,7 @@ mod tests {
             ship.update(1.0 / 120.0);
             sky.advance(
                 ship.position,
-                ship.axes[2],
+                ship.axes,
                 1.0 / 120.0,
                 ship.warp_intensity(),
                 ship.velocity_ly_per_s(),
@@ -1464,7 +1493,7 @@ mod tests {
             ship.update(1.0 / 120.0);
             sky.advance(
                 ship.position,
-                ship.axes[2],
+                ship.axes,
                 1.0 / 120.0,
                 ship.warp_intensity(),
                 ship.velocity_ly_per_s(),

@@ -392,7 +392,7 @@ impl Flight {
             // does all the moving, in `Ship::coast`.
             self.sky.advance(
                 self.ship.position,
-                self.ship.axes[2],
+                self.ship.axes,
                 SIM_STEP,
                 self.ship.warp_intensity(),
                 self.ship.velocity_ly_per_s(),

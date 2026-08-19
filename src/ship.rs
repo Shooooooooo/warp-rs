@@ -74,7 +74,7 @@ const PITCH_LIMIT: f32 = FRAC_PI_2 * 0.85;
 /// nose along `+z`. Every entry is an exact zero or an exact one, so a flight
 /// that never touches the stick projects the sky through a transform that is
 /// the identity to the bit.
-const LEVEL_AXES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+pub(crate) const LEVEL_AXES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// The player's ship: everything about how it is currently moving.
 #[derive(Debug, Clone)]
@@ -357,7 +357,7 @@ impl Ship {
 /// right, which is what keeps the determinant at `+1`. A basis that drifted
 /// into its own mirror image would look very nearly right and invert every
 /// facing test in [`crate::models`].
-fn orthonormalise(a: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+pub(crate) fn orthonormalise(a: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     let [right, down, _] = a;
     let Some(right) = unit(right) else {
         return LEVEL_AXES;
