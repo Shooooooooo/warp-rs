@@ -155,7 +155,7 @@ impl Renderer {
     /// Draw one frame into the cell grid. Nothing reaches the terminal yet.
     pub fn render(&mut self, sky: &Universe, ship: &Ship, cam: &Camera, time: f64, hud: &Readout) {
         let warp = ship.warp_intensity();
-        let eye = Observer::cockpit(ship.axes, ship.position, warp, ship.velocity_ly_per_s());
+        let eye = Observer::cockpit(ship.axes, ship.position, warp);
 
         self.canvas.clear();
         for streak in sky.streaks(cam, &eye, time) {
@@ -248,14 +248,8 @@ impl Renderer {
         // hull instead of leaving a fixed collar hanging in the middle.
         let lens = Lens::for_warp((cam.cx, cam.cy), warp, ship_half, orbit.nose_in_camera());
 
-        let watcher = Observer::outside(
-            ship.axes,
-            ship.position,
-            &eye,
-            orbit.nose_in_camera(),
-            warp,
-            ship.velocity_ly_per_s(),
-        );
+        let watcher =
+            Observer::outside(ship.axes, ship.position, &eye, orbit.nose_in_camera(), warp);
 
         self.canvas.clear();
         self.bend
@@ -345,7 +339,13 @@ mod tests {
             time += 1.0 / 60.0;
             ship.update(1.0 / 60.0);
             let cam = renderer.camera(&ship, time);
-            sky.advance(ship.position, ship.axes[2]);
+            sky.advance(
+                ship.position,
+                ship.axes[2],
+                1.0 / 60.0,
+                ship.warp_intensity(),
+                ship.velocity_ly_per_s(),
+            );
             renderer.render(&sky, &ship, &cam, time, &readout(&ship));
 
             if frame == 120 {
@@ -376,7 +376,13 @@ mod tests {
                 time += 1.0 / 60.0;
                 ship.update(1.0 / 60.0);
                 let cam = renderer.camera(&ship, time);
-                sky.advance(ship.position, ship.axes[2]);
+                sky.advance(
+                    ship.position,
+                    ship.axes[2],
+                    1.0 / 60.0,
+                    ship.warp_intensity(),
+                    ship.velocity_ly_per_s(),
+                );
                 renderer.render(&sky, &ship, &cam, time, &readout(&ship));
             }
             let (w, h) = renderer.canvas_dims();
@@ -446,7 +452,13 @@ mod tests {
             time += 1.0 / 60.0;
             ship.update(1.0 / 60.0);
             let cam = renderer.exterior_camera(&ship, time);
-            sky.advance(ship.position, ship.axes[2]);
+            sky.advance(
+                ship.position,
+                ship.axes[2],
+                1.0 / 60.0,
+                ship.warp_intensity(),
+                ship.velocity_ly_per_s(),
+            );
             let readout = readout(&ship);
             let scene = Exterior {
                 sky: &sky,
@@ -580,7 +592,13 @@ mod tests {
             let mut sky = Universe::new(4.0, 1);
             for _ in 0..5 {
                 ship.update(1.0 / 60.0);
-                sky.advance(ship.position, ship.axes[2]);
+                sky.advance(
+                    ship.position,
+                    ship.axes[2],
+                    1.0 / 60.0,
+                    ship.warp_intensity(),
+                    ship.velocity_ly_per_s(),
+                );
                 renderer.render(&sky, &ship, &cam, 0.0, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();
@@ -614,7 +632,13 @@ mod tests {
             for _ in 0..30 {
                 ship.nudge_yaw(0.2);
                 ship.update(1.0 / 60.0);
-                sky.advance(ship.position, ship.axes[2]);
+                sky.advance(
+                    ship.position,
+                    ship.axes[2],
+                    1.0 / 60.0,
+                    ship.warp_intensity(),
+                    ship.velocity_ly_per_s(),
+                );
                 renderer.render(&sky, &ship, &cam, i as f64, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();

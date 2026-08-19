@@ -53,8 +53,17 @@
 #                 used to be: at impulse the stars now hold *still* — a full
 #                 impulse frame differs from a parked one only by the twinkle —
 #                 while at warp the exposure draws three seconds of each star's
-#                 own track. A change to the exposure moves the five flights
-#                 that light a drive and leaves the rest alone.
+#                 own track. A change to the exposure moves the *six* flights
+#                 that light a drive and leaves the other three alone.
+#
+#                 That count is measured rather than asserted, and this block
+#                 said five until something finally tested it. Pacing the
+#                 exposure to the distance actually flown moved all four
+#                 `--engage` runs and both `--fps 10` ones, whose drive lights
+#                 at frame 60 of a twelve-second flight, while `truecolor.txt`,
+#                 `ascii.txt` and `ansi256.txt` came out byte for byte
+#                 identical: two seconds of `--demo` at 60 fps never leaves
+#                 sublight, and at sublight the exposure is an exact zero.
 #
 #   Camera.       Four flights watch from outside and they are at four
 #                 different angles, which is now a question about which sky is
@@ -107,9 +116,9 @@
 0206d88b033c7247d807a412784a2f5906c737e9840119edbd13a4c7d68f865c  truecolor.txt
 525588a213e9d8ae94c63427d06661aefd7858eb5605b15b47d0f211f03987a3  ascii.txt
 78fd737c9eb1be6663a8c3ccd4fda4d3d6777271e7845669c19708af69c3b56b  ansi256.txt
-27651be9905fbe71fa1b362f7bf4a1b3a75f3d241366fabad2db6aaf964473b3  warp.txt
-7c5fb0a3dfdeab627bc57022bb1f08cb772ae8324f8093b59eb819f8f8066647  side.txt
-26c4fa1c887753fc11e32596e8481efdc92fc2dcc7dc8be58dd6bba795f34313  orbit.txt
-8832d555bd6e28f641ea4299c7668972c70005195093e12f238422160100615f  astern.txt
-283da07c87a1c7d4be9cd43292594e98574c23451746846b137406201a88effe  steer.txt
-5b2d050db58549d0adf8c02398f175a4df05ff6fd3d0379be3bb8e6a3151414a  drift.txt
+f6c4219d607280e064277164f0453bf9d5080c735b1bd28fee9dfdde06c8eb6c  warp.txt
+1ed662b939b7a8ede104e5b81d3ba35c6094a6bc85bb079794b4ac93638eeaf6  side.txt
+b3ec7eeb76b5583f6a0016a2355b99117d992fec5a34457e7831a30da63bd6e5  orbit.txt
+f82fdacc71982679102c582f8cf8ca975d7ab534ae1fbd35b58e687ffccf7d16  astern.txt
+a21caad0d7d1071f8063628868853ecc1076c20116a1ffa21d5e6b6be4d4cb45  steer.txt
+6123f14f3b3c1cc75fca8ad6712f601fbb06578b53d66aa915d9600c24ccbaea  drift.txt

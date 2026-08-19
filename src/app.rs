@@ -390,7 +390,13 @@ impl Flight {
             // step does is take away whatever has fallen past the limit and
             // put it back where the flow is bringing stars in from; the ship
             // does all the moving, in `Ship::coast`.
-            self.sky.advance(self.ship.position, self.ship.axes[2]);
+            self.sky.advance(
+                self.ship.position,
+                self.ship.axes[2],
+                SIM_STEP,
+                self.ship.warp_intensity(),
+                self.ship.velocity_ly_per_s(),
+            );
             self.accumulator -= SIM_STEP;
         }
     }

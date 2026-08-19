@@ -69,8 +69,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 277 unit + 8 flight + 3 golden, ~20s
-cargo test --locked --all-features      # 278 unit — adds the snapshot-gated one
+cargo test                              # 279 unit + 8 flight + 3 golden, ~20s
+cargo test --locked --all-features      # 280 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -456,7 +456,10 @@ private; new state that another module needs comes with an accessor.
 terminal keeps up or not. There is one sky and it is stepped whichever camera
 is flying — there is no longer a second one to be kept warm or skipped, and
 `Universe::advance` is one distance test per star because the *ship* does all
-the moving.
+the moving. The one thing it carries between steps is the exposure's length —
+see the long-exposure section below, where a length recomputed afresh each frame
+is the bug it exists to have fixed — which is why it is handed the step, the
+warp ramp and the speed rather than only the ship's position.
 
 There are **two** clamps on `dt` and they are not the same one. `advance`
 holds its own argument to `MAX_STEP_DT` (1.0 s) and turns a non-finite step
@@ -668,7 +671,9 @@ why this replaced `prev` rather than joining it.
   linear extrapolation of one step is a chord across a curve.
 - **It cannot fall behind the near plane.** Going back in time moves a star
   *away* from the eye, so the tail's depth only ever increases — which is why
-  there is no clamp here, no vanishing point to chase, and no `trail_head`.
+  nothing clamps that depth, there is no vanishing point to chase, and no
+  `trail_head`. The clamp further down is on the exposure's *length* and is a
+  different question with a different answer.
 - **It deletes `prev`**, and with it the range a trail was drawn at, the fold's
   trail shift, the rule about handing a recycled star the trail it would have
   had, and `retarget` dropping every trail on a resize.
@@ -677,6 +682,37 @@ And it puts depth in the tunnel for the first time: 67 subpixels for a star at
 ten light years, 9.6 at seventy, 2.1 at three hundred, 0.7 at a thousand. The
 old sky drew every streak the same length because every star was the same
 distance away.
+
+**What the tail is computed *from* is state, and that took a shipped bug to
+learn.** `TRAIL_SECONDS · warp · velocity` is right for a flight that has
+settled and wrong for one that is changing, because on screen a trail may only
+ever extend *outward*: it is laid down behind a star as the ship flies, so the
+end away from the vanishing point is the only end that may move. The tail sits
+at depth `z + reach` and the star closes at the ship's speed, so `z` falls by
+`v·dt` a step and the tail moves inward exactly when `reach` grows faster than
+that. Lighting the drive takes the velocity from 3.4 c to 2000 c, a factor of
+588, so a `reach` recomputed each frame with no memory of the last one reached
+backwards into the past faster than time was passing — 12x faster a quarter of a
+second in, 6x at one second, honest only after about 2.7 — and for the whole of
+every spool-up each streak grew from its middle outward in both directions at
+once. Nothing in the picture was moving inward. The renderer was changing its
+mind about how much history to draw.
+
+`Universe::trail` is the fix and it is one clamp: the exposure may grow by at
+most `v·dt` a step, which pins the tail's *world* point while the ship flies
+away from it. Shrinking is deliberately not held back, since a shorter trail
+moves its tail outward and a drive shutting down should visibly stop smearing.
+`TRAIL_SECONDS` is therefore the length the exposure **settles** at rather than
+the length it has, and the length is honest as well as monotone: three seconds
+after the drive lights there are three seconds of track behind the ship rather
+than a retroactive thirty. The two guards are
+`a_trail_only_ever_grows_away_from_the_vanishing_point`, which is the symptom
+stated as a property over a hundred thousand tail samples across an engage, and
+`the_exposure_never_outruns_the_flight_that_earned_it`, which is the same
+statement down where the arithmetic is. Both need the on-canvas filter
+`the_sky_holds_still_at_impulse` needs, and for the same reason: a star square
+abeam has a camera depth of nearly nothing, so `focal · lateral / (z + trail)`
+is a division whose noise is a third of a subpixel.
 
 **Rotational smear went, and the measurement is why.** A whole sim step at the
 yaw stop moves a star at the frame edge 0.58 of a subpixel, which is inside the

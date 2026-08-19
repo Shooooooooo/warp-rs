@@ -91,6 +91,10 @@ const FADE_MAGNITUDES: f32 = 0.75;
 /// off, so one step of 1/120 s moves it 0.19 subpixels and six of those is
 /// barely more than a point.
 ///
+/// It is the length the exposure *settles* at rather than the length it has:
+/// see [`Universe::trail`], which may only ever grow as fast as the ship
+/// actually flies.
+///
 /// So the streak stops being a stretch and becomes what it always looked like:
 /// the track a star actually flew, over the last three seconds. On an 80x24
 /// terminal at full warp that is 67 subpixels for a star at ten light years,
@@ -282,22 +286,25 @@ pub struct Observer {
     /// Which way the ship is going, in the camera's space. Exactly `(0, 0, 1)`
     /// from the cockpit.
     nose: [f32; 3],
-    /// 0..=1 across the superluminal range: it sets the exposure, the Doppler
-    /// shift and how much twinkle is left.
+    /// 0..=1 across the superluminal range: it sets the Doppler shift and how
+    /// much twinkle is left.
+    ///
+    /// It used to set the exposure as well, multiplied by a velocity carried
+    /// beside it. Both went to [`Universe::trail`], which is where a length
+    /// that has to remember what it drew last frame belongs — an observer is
+    /// where an eye is, and how long the drive has been smearing is not a fact
+    /// about where anybody is standing.
     warp: f32,
-    /// Light years per second.
-    velocity: f32,
 }
 
 impl Observer {
     /// From the pilot's seat, where the camera is the hull.
-    pub fn cockpit(axes: [[f32; 3]; 3], origin: [f64; 3], warp: f32, velocity: f32) -> Self {
+    pub fn cockpit(axes: [[f32; 3]; 3], origin: [f64; 3], warp: f32) -> Self {
         Self {
             to_camera: axes,
             origin,
             nose: [0.0, 0.0, 1.0],
             warp,
-            velocity,
         }
     }
 
@@ -316,7 +323,6 @@ impl Observer {
         eye: &Eye,
         nose: [f32; 3],
         warp: f32,
-        velocity: f32,
     ) -> Self {
         let mut to_camera = [[0.0f32; 3]; 3];
         for (row, turn) in to_camera.iter_mut().zip(eye.basis) {
@@ -330,7 +336,6 @@ impl Observer {
             origin,
             nose,
             warp,
-            velocity,
         }
     }
 
@@ -355,6 +360,32 @@ pub struct Universe {
     stars: Vec<Star>,
     rng: StdRng,
     limit: f32,
+    /// How far back along the track the exposure currently reaches, in light
+    /// years, and it is *state* rather than a number worked out afresh each
+    /// frame. That is the whole of the fix for a trail that grew toward the
+    /// middle of the screen.
+    ///
+    /// A trail is laid down behind a star as the ship flies, so on screen it
+    /// may only ever extend outward, away from the point the track vanishes at.
+    /// The tail sits at depth `z + trail`; the star closes at the ship's speed,
+    /// so `z` falls by `v·dt` a step, and the tail therefore moves *inward*
+    /// exactly when the trail lengthens faster than that. Computed from
+    /// `TRAIL_SECONDS · warp · velocity` with no memory it did: lighting the
+    /// drive takes the velocity from 3.4 c to 2000 c, a factor of 588, so for
+    /// the whole of the spool-up the exposure reached back into the past faster
+    /// than time was passing — up to twelve times faster in the first half
+    /// second — and every streak grew from its middle outward in both
+    /// directions at once. Nothing was moving inward. The renderer was changing
+    /// its mind about how much history to draw.
+    ///
+    /// Held to the distance actually flown, it cannot. Growing at exactly
+    /// `v·dt` pins the tail's *world* point while the ship flies away from it,
+    /// which is what a trail is, and it makes the length honest as well: three
+    /// seconds after the drive lights there are three seconds of track behind
+    /// the ship and not a retroactive thirty. Shrinking is left alone — the
+    /// tail moving outward is the direction it is allowed to move, and a drive
+    /// shutting down should visibly stop smearing.
+    trail: f32,
 }
 
 impl Universe {
@@ -363,6 +394,7 @@ impl Universe {
             stars: Vec::new(),
             rng: StdRng::seed_from_u64(seed),
             limit,
+            trail: 0.0,
         };
         sky.stock();
         sky
@@ -433,13 +465,26 @@ impl Universe {
         }
     }
 
-    /// Step the sky: take away whatever has fallen past the limit and put the
-    /// same number back where the flow is bringing them in from.
+    /// Step the sky: unroll the exposure a little further, then take away
+    /// whatever has fallen past the limit and put the same number back where
+    /// the flow is bringing them in from.
     ///
     /// The ship does the moving — see [`crate::ship::Ship::coast`] — so there
     /// is nothing to translate here and no screen for anything to fall off.
     /// What is left is one distance test per star.
-    pub fn advance(&mut self, origin: [f64; 3], nose: [f32; 3]) {
+    pub fn advance(&mut self, origin: [f64; 3], nose: [f32; 3], dt: f32, warp: f32, speed: f32) {
+        // The exposure lengthens by the distance the ship actually flew and not
+        // one light year more, which is what keeps a trail behind its star
+        // rather than reaching past it. See [`Self::trail`]; shortening is not
+        // held back, because a shorter trail moves its tail *outward* and that
+        // is the direction a tail is allowed to move.
+        let settled = TRAIL_SECONDS * warp * speed;
+        self.trail = if settled > self.trail {
+            settled.min(self.trail + speed * dt)
+        } else {
+            settled
+        };
+
         let mut stars = std::mem::take(&mut self.stars);
         for star in &mut stars {
             if distance_sq(star.pos, origin) <= star.reach_sq {
@@ -468,8 +513,12 @@ impl Universe {
     ) -> impl Iterator<Item = Streak> + 'a {
         // How far back along the track the exposure reaches, as a displacement
         // in the camera's own space. Exactly zero at sublight, where there is
-        // no drive lit to smear anything and the sky is a fixed backdrop.
-        let reach = TRAIL_SECONDS * eye.warp * eye.velocity;
+        // no drive lit to smear anything and the sky is a fixed backdrop, and
+        // unrolled by [`Self::advance`] rather than worked out here — a length
+        // this frame computed on its own could outrun the flight that earned
+        // it, and a trail that grows faster than the ship flies grows the wrong
+        // way.
+        let reach = self.trail;
         let back = [
             eye.nose[0] * reach,
             eye.nose[1] * reach,
@@ -759,19 +808,20 @@ mod tests {
     }
 
     fn seated(ship: &Ship) -> Observer {
-        Observer::cockpit(
-            ship.axes,
-            ship.position,
-            ship.warp_intensity(),
-            ship.velocity_ly_per_s(),
-        )
+        Observer::cockpit(ship.axes, ship.position, ship.warp_intensity())
     }
 
     /// Fly a sky and a ship together for `steps` of a sim step.
     fn fly(sky: &mut Universe, ship: &mut Ship, steps: usize) {
         for _ in 0..steps {
             ship.update(1.0 / 120.0);
-            sky.advance(ship.position, ship.axes[2]);
+            sky.advance(
+                ship.position,
+                ship.axes[2],
+                1.0 / 120.0,
+                ship.warp_intensity(),
+                ship.velocity_ly_per_s(),
+            );
         }
     }
 
@@ -927,6 +977,127 @@ mod tests {
     }
 
     #[test]
+    fn a_trail_only_ever_grows_away_from_the_vanishing_point() {
+        // The reported fault, as the property that rules it out. A trail is
+        // laid down behind a star as the ship flies, so on screen it may only
+        // extend *outward*; an end that creeps toward the point the track
+        // vanishes at is the renderer reaching further into the past than time
+        // has passed, and nothing in the picture is moving that way.
+        //
+        // Watched across an engage, because that is where it showed: lighting
+        // the drive takes the velocity from 3.4 c to 2000 c, and an exposure
+        // computed fresh each frame from `TRAIL_SECONDS · warp · velocity`
+        // lengthened up to twelve times faster than the ship flew. Every streak
+        // grew from its middle in both directions at once for the whole of the
+        // spool-up.
+        //
+        // The tail sits at depth `z + trail`. The star closes at the ship's
+        // speed, so `z` falls by `v·dt` a step, and holding the trail's growth
+        // to the same `v·dt` makes `z + trail` non-increasing — which is the
+        // whole proof, and why this is asserted on the radius rather than on
+        // the constant.
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        let mut sky = Universe::new(5.5, 23);
+        fly(&mut sky, &mut ship, 240);
+        ship.toggle_warp();
+
+        // Only tails that are actually in the picture, which is the same
+        // restriction `the_sky_holds_still_at_impulse` needs and for the same
+        // reason. A star square abeam has a camera depth of very nearly
+        // nothing, so its tail projects tens of thousands of subpixels off the
+        // side of a canvas eighty wide — and `focal · lateral / (z + trail)`
+        // with a denominator of two hundredths is a division whose *noise* is a
+        // third of a subpixel. Measuring one of those asks how well the
+        // projection conditions, not which way a trail grows.
+        let cam = cam();
+        let centre = (cam.cx, cam.cy);
+        let on_canvas =
+            |p: &(f32, f32)| (0.0..cam.width).contains(&p.0) && (0.0..cam.height).contains(&p.1);
+        let radii = |sky: &Universe, ship: &Ship| -> Vec<Option<f32>> {
+            let eye = seated(ship);
+            let back = sky.trail;
+            sky.stars
+                .iter()
+                .map(|star| {
+                    let pos = eye.place(star.pos);
+                    cam.project_beyond(
+                        [
+                            pos[0] + eye.nose[0] * back,
+                            pos[1] + eye.nose[1] * back,
+                            pos[2] + eye.nose[2] * back,
+                        ],
+                        STAR_NEAR,
+                    )
+                    .filter(&on_canvas)
+                    .map(|p| crate::canvas::length_of(p.0 - centre.0, p.1 - centre.1))
+                })
+                .collect()
+        };
+
+        // Four seconds of spool-up, a frame at a time, which covers the whole
+        // of the band the fault lived in.
+        let mut watched = 0;
+        let mut worst = 0.0f32;
+        let mut before = (sky.positions(), radii(&sky, &ship));
+        for _ in 0..240 {
+            fly(&mut sky, &mut ship, 2);
+            let after = (sky.positions(), radii(&sky, &ship));
+            for (i, (was, is)) in before.1.iter().zip(&after.1).enumerate() {
+                // A star that crossed its own limit and came back elsewhere is
+                // a different star, not one that moved.
+                if before.0[i] != after.0[i] {
+                    continue;
+                }
+                if let (Some(a), Some(b)) = (was, is) {
+                    worst = worst.max(a - b);
+                    watched += 1;
+                }
+            }
+            before = after;
+        }
+        assert!(watched > 100_000, "only {watched} tails were followed");
+        // A tenth of a subpixel of slack for the arithmetic, against a fault
+        // that moved tails most of the way to the middle of the frame.
+        assert!(
+            worst < 0.1,
+            "a trail grew {worst} subpixels toward the vanishing point"
+        );
+    }
+
+    #[test]
+    fn the_exposure_never_outruns_the_flight_that_earned_it() {
+        // The same statement one level down, where the arithmetic is: the trail
+        // is a distance the ship has actually flown, so it can never be longer
+        // than the distance flown since the drive lit.
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        let mut sky = Universe::new(4.5, 29);
+        fly(&mut sky, &mut ship, 240);
+        ship.toggle_warp();
+
+        let lit_at = ship.distance_ly;
+        for _ in 0..600 {
+            fly(&mut sky, &mut ship, 1);
+            let flown = (ship.distance_ly - lit_at) as f32;
+            assert!(
+                sky.trail <= flown + 1e-4,
+                "the exposure reaches {} ly after {flown} ly of flight",
+                sky.trail
+            );
+        }
+        // And it does get there, or the clamp would be hiding the exposure
+        // rather than pacing it.
+        fly(&mut sky, &mut ship, 2400);
+        let settled = TRAIL_SECONDS * ship.warp_intensity() * ship.velocity_ly_per_s();
+        assert!(
+            (sky.trail - settled).abs() < 1e-3,
+            "the exposure settled at {} rather than {settled}",
+            sky.trail
+        );
+    }
+
+    #[test]
     fn a_streak_is_the_track_the_star_actually_flew() {
         // The exposure, checked against the thing it claims to be rather than
         // against itself: the tail is where the star projected from where the
@@ -941,7 +1112,7 @@ mod tests {
 
         let cam = cam();
         let eye = seated(&ship);
-        let back = TRAIL_SECONDS * eye.warp * eye.velocity;
+        let back = sky.trail;
         let drawn: Vec<_> = sky.streaks(&cam, &eye, 0.0).collect();
         let mut checked = 0;
         for star in &sky.stars {
@@ -1064,7 +1235,13 @@ mod tests {
         for _ in 0..120 {
             let before = sky.positions();
             ship.update(1.0 / 120.0);
-            sky.advance(ship.position, ship.axes[2]);
+            sky.advance(
+                ship.position,
+                ship.axes[2],
+                1.0 / 120.0,
+                ship.warp_intensity(),
+                ship.velocity_ly_per_s(),
+            );
             let eye = seated(&ship);
             for (i, was) in before.iter().enumerate() {
                 if *was == sky.stars[i].pos {
@@ -1133,7 +1310,6 @@ mod tests {
                 ship.position,
                 &Eye::new(orbit, 1.0 + turn as f32 * 0.03),
                 orbit.nose_in_camera(),
-                0.0,
                 0.0,
             );
             let drawn = sky.streaks(&cam, &eye, turn as f64).count();
