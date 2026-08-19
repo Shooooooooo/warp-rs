@@ -11,7 +11,7 @@
 # drifted it; the `headless` CI job produces the same files from a release
 # binary and runs `sha256sum -c` over this, which also proves the two agree.
 #
-# Nine flights, sharing
+# Ten flights, sharing
 #
 #     --headless --frames 120 --seed 1 --size 120x36
 #
@@ -26,6 +26,7 @@
 #     astern.txt      the same, --orbit -75,6,20
 #     steer.txt       --demo --fps 10 --color truecolor
 #     drift.txt       the same, --view side --orbit -60,0,0
+#     ahead.txt       --engage --throttle 1.0 --fps 10 --view side --orbit 90,0,0
 #
 # All nine moved when the sky stopped being a box in front of the camera and
 # became a volume the ship is inside, and most of what this block used to say
@@ -35,8 +36,8 @@
 # the near wall needed, the fold that carried a trail across the edge — and
 # there is no band any more, so none of those reasons survives its subject.
 #
-# What the spread is for now is simpler and mostly unchanged: nine flights over
-# one sky, at both speeds, from five camera angles, in three colour modes, with
+# What the spread is for now is simpler and mostly unchanged: ten flights over
+# one sky, at both speeds, from six camera angles, in three colour modes, with
 # and without a hand on the stick. Read it as a grid rather than as a list of
 # special cases.
 #
@@ -53,11 +54,10 @@
 #                 used to be: at impulse the stars now hold *still* — a full
 #                 impulse frame differs from a parked one only by the twinkle —
 #                 while at warp the exposure draws three seconds of each star's
-#                 own track. A change to the exposure moves the *six* flights
-#                 that light a drive and leaves the other three alone.
-#
-#                 That count is measured rather than asserted, and this block
-#                 said five until something finally tested it. Pacing the
+#                 own track. A change to the exposure moves the flights that
+#                 light a drive and leaves the rest alone — seven of the ten
+#                 now, and the count is measured rather than asserted: this
+#                 block said five until something finally tested it. Pacing the
 #                 exposure to the distance actually flown moved all four
 #                 `--engage` runs and both `--fps 10` ones, whose drive lights
 #                 at frame 60 of a twelve-second flight, while `truecolor.txt`,
@@ -65,13 +65,33 @@
 #                 identical: two seconds of `--demo` at 60 fps never leaves
 #                 sublight, and at sublight the exposure is an exact zero.
 #
-#   Camera.       Four flights watch from outside and they are at four
+#                 Lighting a drive is not the same as spooling one up, which is
+#                 what `ahead.txt` is here to say. Every `--engage` flight but
+#                 that one lasts two seconds, in which the ship covers only a
+#                 few light years, so the exposure never reaches far enough for
+#                 anything that depends on its *length* to happen at all. That
+#                 is how a bug that lost the trail of every star inside the
+#                 exposure — a fifth of the pool — moved not one of the nine.
+#
+#   Camera.       Five flights watch from outside and they are at five
 #                 different angles, which is now a question about which sky is
 #                 in front of the lens rather than about which arithmetic is
 #                 switched on. `side.txt` is abeam, where `Eye::to_camera` is an
 #                 exact swizzle and the hull's axis lies flat in the image
 #                 plane, so it is still the shot with no vanishing point at all
 #                 and still the one the engine lance's clamp cannot move.
+#
+#                 What the angle decides for the *sky* is the sign of
+#                 `Orbit::nose_in_camera`'s depth component,
+#                 `-cos(elevation)·sin(azimuth)`: behind the ship the exposure
+#                 recedes and ahead of it the exposure runs at the lens and has
+#                 to be cut against the near plane. `astern.txt` holds one side
+#                 of that and `ahead.txt` the other, at `--orbit 90,0,0` where
+#                 the nose points straight down the barrel and the cut bites
+#                 hardest. `orbit.txt` is nominally on the forward side too and
+#                 cannot substitute: two seconds is not long enough an exposure
+#                 for the cut to reach any star, which is the whole of why
+#                 `ahead.txt` runs at `--fps 10`.
 #
 #   Stick.        The four `--demo` flights steer and the four `--engage` ones
 #                 hold every rate at an exact zero from the first frame to the
@@ -97,10 +117,10 @@
 #                 was -60,0,0 at a turn every 43 seconds and -20,0,0 at every
 #                 137.
 #
-# None of the nine names a sky, so all of them fly the default limiting
+# None of the ten names a sky, so all of them fly the default limiting
 # magnitude — which is a fixed number of stars over the whole celestial sphere
 # on every terminal, where `--stars` was a fixed number *drawn*. The reference
-# is also still one ship deep: no case passes `--ship`, so all three flights
+# is also still one ship deep: no case passes `--ship`, so all four flights
 # with a hull in them fly the enterprise, and a fault that only some other
 # outline exposes wants a property test over `models()` rather than a tenth
 # flight.
@@ -111,7 +131,7 @@
 # So they are checked on `ubuntu-latest` only, and `tests/golden.rs` is gated to
 # Linux for the same reason.
 #
-# Regenerating: build a release binary and run the nine commands in `CLAUDE.md`,
+# Regenerating: build a release binary and run the ten commands in `CLAUDE.md`,
 # then put this block back. Say in the commit message which moved and why.
 0206d88b033c7247d807a412784a2f5906c737e9840119edbd13a4c7d68f865c  truecolor.txt
 525588a213e9d8ae94c63427d06661aefd7858eb5605b15b47d0f211f03987a3  ascii.txt
@@ -122,3 +142,4 @@ b3ec7eeb76b5583f6a0016a2355b99117d992fec5a34457e7831a30da63bd6e5  orbit.txt
 f82fdacc71982679102c582f8cf8ca975d7ab534ae1fbd35b58e687ffccf7d16  astern.txt
 a21caad0d7d1071f8063628868853ecc1076c20116a1ffa21d5e6b6be4d4cb45  steer.txt
 6123f14f3b3c1cc75fca8ad6712f601fbb06578b53d66aa915d9600c24ccbaea  drift.txt
+2a71a9db63426e3f1f4f7125940948a67f8291c2048989f42986ca74712c377e  ahead.txt

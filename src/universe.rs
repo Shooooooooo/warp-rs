@@ -129,7 +129,7 @@ const TRAIL_SECONDS: f32 = 3.0;
 /// toward the luminous classes as the limit comes down, which is not a side
 /// effect but the observation — a magnitude-two sky really is all giants, and
 /// the M dwarfs really are all too faint to be in it.
-const NEAREST_STAR: f32 = 4.0;
+pub const NEAREST_STAR: f32 = 4.0;
 
 /// Nearest a star is projected from, in light years.
 ///
@@ -139,6 +139,17 @@ const NEAREST_STAR: f32 = 4.0;
 /// projection is asked for this one instead. A star this close is passing
 /// through the ship in all but name and there is nothing sensible left to draw.
 const STAR_NEAR: f32 = 0.001;
+
+/// Nearest the *tail* of an exposure is cut to, in light years.
+///
+/// A hair in front of [`STAR_NEAR`], and the margin is doing the same job
+/// `models::PLUME_NEAR`'s does: the cut is solved by subtracting two numbers of
+/// about the exposure's own length, so landing exactly on the plane is a
+/// coin-toss at the last bit, and [`Camera::project_beyond`] refuses a point
+/// *at* its near plane as well as behind it. Five percent of a thousandth of a
+/// light year is four orders of magnitude more room than the cancellation can
+/// take.
+const TAIL_NEAR: f32 = STAR_NEAR * 1.05;
 
 /// A parsec, in light years, and ten of them — the distance a star's absolute
 /// magnitude is quoted at, so this is the whole of the distance modulus.
@@ -430,6 +441,20 @@ impl Universe {
         self.stars.is_empty()
     }
 
+    /// How far back along the track the exposure currently reaches, in light
+    /// years.
+    ///
+    /// State rather than an answer worked out on demand — see [`Self::trail`]
+    /// — so a caller that wants to know how much history is being drawn has to
+    /// ask the sky that drew it rather than recompute it from the ship, which
+    /// is the whole of the bug that field exists to have fixed. The reference
+    /// flights' own coverage test is what wants it: whether a flight reaches
+    /// the near-plane cut at all is `exposure` against [`NEAREST_STAR`], and
+    /// neither number can be guessed from the flags.
+    pub fn exposure(&self) -> f32 {
+        self.trail
+    }
+
     /// Where every star is, for a test that wants to say a thing did or did not
     /// move the sky. Positions rather than the stars themselves, because what
     /// those tests are about is the one field a camera could conceivably
@@ -556,16 +581,12 @@ impl Universe {
                 return None;
             }
 
-            // Where the star was when the exposure opened. Going back along the
-            // track moves it *away* from the eye, so this cannot fall behind
-            // the near plane however long the exposure is — which is why there
-            // is no clamp here and no vanishing point to chase.
+            // Where the star was when the exposure opened, cut against the near
+            // plane by [`tail_of`] — which from the seat is an identity and
+            // from a camera ahead of the ship is the whole of whether a streak
+            // gets drawn at all.
             let from = if reach > 0.0 {
-                cam.project_beyond(
-                    [pos[0] + back[0], pos[1] + back[1], pos[2] + back[2]],
-                    STAR_NEAR,
-                )
-                .unwrap_or(to)
+                cam.project_beyond(tail_of(pos, back)?, STAR_NEAR)?
             } else {
                 to
             };
@@ -746,6 +767,56 @@ fn frame(axis: [f32; 3]) -> ([f32; 3], [f32; 3]) {
         axis[0] * right[1] - axis[1] * right[0],
     ];
     (right, down)
+}
+
+/// Where an exposure opened, in camera space, cut against the near plane.
+///
+/// `back` is the whole displacement to the tail — the nose, times how far the
+/// ship flew while the shutter was open — and from the pilot's seat adding it
+/// is the entire answer, because there the nose *is* the depth axis and going
+/// back in time can only push a star further off. That is what the code here
+/// used to say, flatly, with an `unwrap_or(head)` behind it that was supposed
+/// to be unreachable.
+///
+/// It is not, and the exception is a whole half of the range of a control.
+/// From outside, the nose is [`crate::view::Orbit::nose_in_camera`], whose
+/// depth component is `-cos(elevation)·sin(azimuth)` — negative across the
+/// entire forward half of the azimuth, where the camera is ahead of the ship
+/// looking back down its own track. There the tail runs *toward* the eye and
+/// through it, the projection refuses it, and the fallback fired for real:
+/// every star inside the exposure's reach, which at full warp is 16.4 light
+/// years and a fifth of the whole pool, lost its trail and was splatted as a
+/// point instead — at full brightness, since `draw_streak`'s short branch
+/// skips the `spread` division, so *brighter* than the streaks it should have
+/// matched. A field of bright dots exactly where the tunnel should be.
+///
+/// The cut is the one `models::draw_flame` already makes against the same
+/// plane, for the same reason and in the same closed form: the track is a
+/// straight segment in camera space, so where it crosses is one division. What
+/// is left is the part of the exposure that happened in front of the lens,
+/// which is the part there was ever anything to see of.
+///
+/// `None` when the head itself is inside the sliver between the two planes —
+/// a star at a thousandth of a light year of *depth*, which is one square
+/// abeam and projects some millions of subpixels off the side of any canvas.
+/// There is no room to cut a tail into and nothing would be drawn of it
+/// anyway; dropping it is cheaper than collapsing it and says the same thing.
+fn tail_of(pos: [f32; 3], back: [f32; 3]) -> Option<[f32; 3]> {
+    let depth = pos[2] + back[2];
+    if depth > TAIL_NEAR {
+        return Some([pos[0] + back[0], pos[1] + back[1], depth]);
+    }
+    if pos[2] <= TAIL_NEAR || back[2] >= -f32::MIN_POSITIVE {
+        return None;
+    }
+    // Solved for the crossing rather than stepped toward it, and the depth is
+    // *set* rather than recomputed: `pos[2] + back[2] * t` subtracts two
+    // numbers of about the exposure's length to leave a thousandth of a light
+    // year, which is the one place in this arithmetic that cancels badly. The
+    // plane it lands on is known exactly; only the lateral offsets need
+    // working out.
+    let t = ((TAIL_NEAR - pos[2]) / back[2]).clamp(0.0, 1.0);
+    Some([pos[0] + back[0] * t, pos[1] + back[1] * t, TAIL_NEAR])
 }
 
 /// How far a world-space star is from a world-space ship, squared.
@@ -1095,6 +1166,162 @@ mod tests {
             "the exposure settled at {} rather than {settled}",
             sky.trail
         );
+    }
+
+    /// A spread of camera angles reaching both halves of the azimuth, so a
+    /// question asked over it cannot be answered by the half where the track
+    /// runs away from the eye.
+    ///
+    /// The forward half is the half that matters here and it is the half the
+    /// reference frames barely touch: `orbit.txt` is the only one of the nine
+    /// with the camera ahead of the ship at all, and it is oblique. Dead ahead,
+    /// where the exposure runs straight at the lens, nothing was watching.
+    fn both_halves() -> Vec<crate::view::Orbit> {
+        let mut spread = Vec::new();
+        for azimuth in [-150.0f32, -90.0, -55.0, 0.0, 40.0, 90.0, 125.0, 179.0] {
+            for elevation in [-40.0f32, 0.0, 35.0] {
+                for roll in [0.0f32, 25.0] {
+                    spread.push(crate::view::Orbit {
+                        azimuth: azimuth.to_radians(),
+                        elevation: elevation.to_radians(),
+                        roll: roll.to_radians(),
+                    });
+                }
+            }
+        }
+        spread
+    }
+
+    /// A ship at full warp with the exposure fully unrolled, and a sky to fly
+    /// it through.
+    fn spooled_up(limit: f32, seed: u64) -> (Universe, Ship) {
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        let mut sky = Universe::new(limit, seed);
+        fly(&mut sky, &mut ship, 240);
+        ship.toggle_warp();
+        fly(&mut sky, &mut ship, 1200);
+        (sky, ship)
+    }
+
+    #[test]
+    fn no_camera_angle_collapses_a_streak_to_a_point() {
+        // The reported fault: from a camera ahead of the ship, stars sweeping
+        // past it had no trails at all.
+        //
+        // The tail is the star projected from where the ship *was*, which is
+        // `nose · reach` further along the track. From the seat that is `+z`
+        // and the tail can only ever recede — the claim the code used to make
+        // flatly, with an `unwrap_or(head)` behind it that was supposed to be
+        // unreachable. From outside the nose is `Orbit::nose_in_camera`, whose
+        // depth component is `-cos(elevation)·sin(azimuth)`, so across the
+        // whole forward half of the azimuth the tail runs *toward* the eye and
+        // through it. The fallback then fired for real, and every star inside
+        // the exposure's reach — 16.4 light years at full warp, which is a
+        // fifth of the pool and every one of the near stars that carry the
+        // longest trails — collapsed to a point.
+        //
+        // Worse than losing the trail: `draw_streak`'s short branch splats at
+        // full intensity with no `spread` division, so each one came out
+        // *brighter* than the streaks it should have matched.
+        let (sky, ship) = spooled_up(5.0, 41);
+        let cam = cam();
+        assert!(sky.trail > 0.0, "the exposure never opened");
+
+        let mut thinnest = usize::MAX;
+        for orbit in both_halves() {
+            let eye = Observer::outside(
+                ship.axes,
+                ship.position,
+                &crate::view::Eye::new(orbit, 1.0),
+                orbit.nose_in_camera(),
+                ship.warp_intensity(),
+            );
+            let mut seen = 0;
+            for streak in sky.streaks(&cam, &eye, 0.0) {
+                assert!(
+                    streak.from != streak.to,
+                    "a streak collapsed to a point at {:?} degrees, nose z {}",
+                    (
+                        orbit.azimuth.to_degrees(),
+                        orbit.elevation.to_degrees(),
+                        orbit.roll.to_degrees()
+                    ),
+                    orbit.nose_in_camera()[2]
+                );
+                seen += 1;
+            }
+            thinnest = thinnest.min(seen);
+        }
+        // Every angle has to have had something to look at, or an angle that
+        // drew nothing would pass this by drawing nothing.
+        assert!(
+            thinnest > 200,
+            "the emptiest camera angle offered only {thinnest} streaks"
+        );
+    }
+
+    #[test]
+    fn the_exposure_is_cut_where_it_crosses_the_near_plane() {
+        // The same statement down where the arithmetic is, and the other half
+        // of it: the cut has to leave the tail in front of the near plane, and
+        // it has to leave a tail that never reached the plane exactly alone.
+        //
+        // Bit-exactness on the second half is the point rather than a nicety.
+        // The cut is on the path every star in the program takes, and the four
+        // cockpit reference flights are pinned through it.
+        let (sky, ship) = spooled_up(4.5, 43);
+        let mut cut = 0;
+        let mut untouched = 0;
+        for orbit in both_halves() {
+            let eye = Observer::outside(
+                ship.axes,
+                ship.position,
+                &crate::view::Eye::new(orbit, 1.0),
+                orbit.nose_in_camera(),
+                ship.warp_intensity(),
+            );
+            let back = [
+                eye.nose[0] * sky.trail,
+                eye.nose[1] * sky.trail,
+                eye.nose[2] * sky.trail,
+            ];
+            for star in &sky.stars {
+                let pos = eye.place(star.pos);
+                if pos[2] <= STAR_NEAR {
+                    continue;
+                }
+                let Some(tail) = tail_of(pos, back) else {
+                    // Only the sliver between the two planes may be given up,
+                    // and it is a star square abeam at a thousandth of a light
+                    // year of depth — vanishingly rare and millions of
+                    // subpixels off the canvas when it happens.
+                    assert!(
+                        pos[2] <= TAIL_NEAR,
+                        "a tail at depth {} was given up",
+                        pos[2]
+                    );
+                    continue;
+                };
+                assert!(
+                    tail[2] > STAR_NEAR,
+                    "a cut tail sits at depth {}, behind {STAR_NEAR}",
+                    tail[2]
+                );
+                if pos[2] + back[2] > TAIL_NEAR {
+                    assert_eq!(
+                        tail,
+                        [pos[0] + back[0], pos[1] + back[1], pos[2] + back[2]],
+                        "a tail that never reached the near plane was moved anyway"
+                    );
+                    untouched += 1;
+                } else {
+                    cut += 1;
+                }
+            }
+        }
+        assert!(cut > 1000, "only {cut} tails were ever cut");
+        assert!(untouched > 1000, "only {untouched} tails were left alone");
     }
 
     #[test]

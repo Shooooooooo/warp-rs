@@ -69,8 +69,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 279 unit + 8 flight + 3 golden, ~20s
-cargo test --locked --all-features      # 280 unit — adds the snapshot-gated one
+cargo test                              # 281 unit + 8 flight + 3 golden, ~20s
+cargo test --locked --all-features      # 282 unit — adds the snapshot-gated one
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -153,7 +153,7 @@ The in-process half is the reason `render_headless` is public and separate from
 `run_headless`. It costs about four seconds — most of `cargo test`'s wall clock
 after the unit tests — and is **Linux-gated**, for the reason below.
 
-**Nine flights, and the case list lives in three places** — the comment block
+**Ten flights, and the case list lives in three places** — the comment block
 in `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job.
 Adding one means adding it to all three, and `.gitignore` needs the file's name
 too, which is a list that has fallen behind that recipe twice. They share
@@ -161,8 +161,9 @@ too, which is a list that has fallen behind that recipe twice. They share
 the renderer do: three `--demo` runs in truecolor, ascii and 256, one
 `--engage --throttle 1.0`, one of those from `--view side`, the same again with
 the camera swung off the beam by `--orbit 55,35,20`, one more from *behind*
-the ship at `--orbit -75,6,20`, one more `--demo` at `--fps 10`, and that last
-one again from `--view side --orbit -60,0,0`.
+the ship at `--orbit -75,6,20`, one more `--demo` at `--fps 10`, that last one
+again from `--view side --orbit -60,0,0`, and one from dead *ahead* of the ship
+at `--orbit 90,0,0`, which needs `--fps 10` of its own for the reason below.
 
 `ansi256.txt` is the odd one and the only case here recorded to be read against
 another rather than against itself. It is `truecolor.txt`'s flight in the other
@@ -190,7 +191,7 @@ holes were in the star band's own machinery: the fast paths that reduced to
 identities when the camera was abeam, the sign of the depth travel, the ramp the
 near wall needed, the fold that carried a trail across the edge. **All of that
 is gone**, so those reasons no longer describe anything. Read the spread as a
-grid instead — nine flights over one sky, at both speeds, from five camera
+grid instead — ten flights over one sky, at both speeds, from six camera
 angles, in three colour modes, with and without a hand on the stick — and
 `tests/golden/frames.sha256` carries the same grid in full.
 
@@ -233,7 +234,8 @@ common="--headless --frames 120 --seed 1 --size 120x36"
 ./target/release/warp $common --engage --throttle 1.0 --view side --orbit -75,6,20 --color truecolor > astern.txt
 ./target/release/warp $common --demo --fps 10 --color truecolor > steer.txt
 ./target/release/warp $common --demo --fps 10 --view side --orbit -60,0,0 --color truecolor > drift.txt
-sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt drift.txt \
+./target/release/warp $common --engage --throttle 1.0 --fps 10 --view side --orbit 90,0,0 --color truecolor > ahead.txt
+sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern.txt steer.txt drift.txt ahead.txt \
     > tests/golden/frames.sha256
 # then put the comment block at the top of that file back
 ```
@@ -275,6 +277,16 @@ the identity it looked like. Note that this shape now reaches the side view too
 — the ship carries an attitude and both cameras are projected through it — so a
 steering change that leaves `drift.txt` alone has probably missed something.
 
+**By which way the nose points.** The sign of
+`Orbit::nose_in_camera`'s depth component, `-cos(elevation)·sin(azimuth)`,
+decides whether the exposure recedes from the eye or runs at it, so a change to
+the near-plane cut moves `ahead.txt` and `orbit.txt` and must leave `side.txt`
+alone — abeam that component is an exact zero, and the tail keeps the head's
+depth to the bit. `astern.txt` is the other side of the same coin and must also
+stay put. Careful with the two forward flights, though: `orbit.txt` is on the
+forward side but only reaches a two-second exposure, so a change that only bites
+past four light years of reach moves `ahead.txt` alone.
+
 **And by camera drift.** A change to where the camera outside is pointed by
 nobody moves `drift.txt` and only `drift.txt`. It is the one flight whose camera
 moves at all: the other three side-view runs hold `orbit_target - orbit` at an
@@ -308,6 +320,21 @@ into the case list's own coverage test beside the others, asked of the parsed
 still earning its place, even though the fault it was written for cannot happen
 any more: a star's tail is now projected from where the ship stood rather than
 extrapolated toward a vanishing point, so there is nothing left to overshoot.
+
+**A region can be covered on paper and unwatched in fact, which is the sharpest
+version of this trap and the newest.** `ahead.txt` closes one. The exposure's
+tail runs at the lens rather than away from it across the whole forward half of
+the azimuth, and `orbit.txt` sits on that half — so by the astern clause's own
+reasoning the region was covered. It was not: 120 frames at 60 fps is two
+seconds, the drive covers a few light years in that, and the nearest a star can
+be is four, so the near plane was never reached and the branch that deals with
+reaching it was never taken. A bug that turned every star inside the exposure
+into a bright point instead of a streak moved not one of the nine hashes. The
+lesson is that an angle is only half of a camera case: **what a flight is
+*doing* at that angle, for long enough, is the other half**, and the coverage
+clause has to ask the second question as well. That one flies each case's own
+sky and compares `Universe::exposure` against `universe::NEAREST_STAR`, because
+the exposure is state and there is nothing else to read it off.
 
 Say in the commit message what moved and why. Regenerating without explanation
 throws away the only thing that file is for.
@@ -669,11 +696,13 @@ why this replaced `prev` rather than joining it.
 
 - **It is exact** for a straight track, which is what a warp run is, where a
   linear extrapolation of one step is a chord across a curve.
-- **It cannot fall behind the near plane.** Going back in time moves a star
-  *away* from the eye, so the tail's depth only ever increases — which is why
-  nothing clamps that depth, there is no vanishing point to chase, and no
-  `trail_head`. The clamp further down is on the exposure's *length* and is a
-  different question with a different answer.
+- **It cannot fall behind the near plane — from the seat.** Going back in time
+  moves a star *away from the nose*, so in the cockpit, where the nose is the
+  depth axis, the tail's depth only ever increases: no vanishing point to chase
+  and no `trail_head`. That is a fact about one camera and was written down as
+  a fact about the arithmetic, which cost a shipped bug; see the near-plane cut
+  below. Note that the clamp in `Universe::advance` is a third thing again —
+  it is on the exposure's *length*, and has its own answer.
 - **It deletes `prev`**, and with it the range a trail was drawn at, the fold's
   trail shift, the rule about handing a recycled star the trail it would have
   had, and `retarget` dropping every trail on a resize.
@@ -713,6 +742,30 @@ statement down where the arithmetic is. Both need the on-canvas filter
 `the_sky_holds_still_at_impulse` needs, and for the same reason: a star square
 abeam has a camera depth of nearly nothing, so `focal · lateral / (z + trail)`
 is a division whose noise is a third of a subpixel.
+
+**From outside, the tail can and does fall behind the near plane, and
+`universe::tail_of` is the cut.** The nose in camera space is
+`Orbit::nose_in_camera`, whose depth component is
+`-cos(elevation)·sin(azimuth)` — negative across the whole forward half of the
+azimuth, where the camera is ahead of the ship looking back down its own track.
+There the exposure runs *at* the lens and through it, `project_beyond` refuses
+the tail, and what used to catch that was an `unwrap_or(head)` written under the
+belief that it could not happen. It happened to every star inside the exposure's
+reach — 16.4 light years at full warp, a fifth of the pool, and every one of the
+near stars that carry the longest trails — each collapsing to a point drawn at
+*full* intensity, since `draw_streak`'s short branch skips the `spread`
+division. A field of conspicuous bright dots exactly where the tunnel should be.
+
+The cut is the one `models::draw_flame` already makes against the same plane and
+in the same closed form: the track is a straight segment in camera space, so
+where it crosses is one division, and what is left is the part of the exposure
+that happened in front of the lens. `TAIL_NEAR` carries the margin for the same
+reason `PLUME_NEAR` does — the solve cancels two numbers of about the exposure's
+length down to a thousandth of a light year — and the depth is *set* rather than
+recomputed from the parameter, so only the lateral offsets go through the
+subtraction. It costs nothing measurable: the cut tail projects far off-canvas
+and `Canvas::clip` bounds the sample count by the frame, so 200 forward-camera
+frames at 200x60 and 72 000 stars run 4.98 ms each against 4.95 before.
 
 **Rotational smear went, and the measurement is why.** A whole sim step at the
 yaw stop moves a star at the frame edge 0.58 of a subpixel, which is inside the

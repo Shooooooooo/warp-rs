@@ -1,17 +1,18 @@
 /target
 # Snapshots land in the working directory; the ones in docs/ are tracked.
 /*.png
-# Frames dumped when checking against tests/golden/frames.sha256. All nine of
+# Frames dumped when checking against tests/golden/frames.sha256. All ten of
 # them: the recipe in that file writes one per pinned flight, and this list has
 # now fallen behind that recipe twice. `warp.txt` and `side.txt` arrived with
 # the flights that widened the reference, `orbit.txt` with the one that swung
 # the camera off the beam, `ansi256.txt` with the one that pinned the
 # palette-index writer, `astern.txt` with the one that got behind the ship,
 # `steer.txt` with the one that put a hand on the stick, and `drift.txt` with
-# the one that gave that hand the camera as well — each time leaving the
-# documented regeneration recipe with an untracked file waiting to be swept into
-# somebody's next `git add .`.
-# A tenth flight means a tenth line here.
+# the one that gave that hand the camera as well, and `ahead.txt` with the one
+# that got in *front* of the ship with the drive spooled up — each time leaving
+# the documented regeneration recipe with an untracked file waiting to be swept
+# into somebody's next `git add .`.
+# An eleventh flight means an eleventh line here.
 /truecolor.txt
 /ascii.txt
 /ansi256.txt
@@ -21,3 +22,4 @@
 /astern.txt
 /steer.txt
 /drift.txt
+/ahead.txt

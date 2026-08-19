@@ -165,7 +165,7 @@ const COMMON: [&str; 7] = [
 /// same 120 frames are twelve seconds of flight rather than two and the last
 /// six of them have the stick moving.
 ///
-/// `drift.txt` is the newest, and it is `steer.txt`'s hole seen from outside.
+/// `drift.txt` is `steer.txt`'s hole seen from outside.
 /// The autopilot flies the camera as well as the ship now — a screensaver on
 /// the outside view used to be very nearly a still life — and not one of the
 /// eight flights before it could have said so: the four `--engage` ones carry
@@ -196,10 +196,33 @@ const COMMON: [&str; 7] = [
 /// anything. It was -20 while a turn took 137 seconds. At 43 that same angle
 /// would have crossed at frame 24, with the drive still cold.
 ///
+/// `ahead.txt` is the newest, and the hole it closes is the subtlest so far,
+/// because on paper it was already covered. The exposure's tail is the star
+/// projected from where the ship *was*, `nose · reach` further along the track,
+/// and whether that runs away from the eye or straight at it is the sign of
+/// `Orbit::nose_in_camera`'s depth component — negative across the whole
+/// forward half of the azimuth. `orbit.txt` sits on that half. What it does not
+/// do is stay there long enough for the sign to matter: 120 frames at 60 fps is
+/// two seconds, in which the drive covers a few light years, and the nearest a
+/// star can be is four. So the near plane was never reached, the branch that
+/// deals with reaching it was never taken, and a bug that turned every star
+/// inside the exposure into a bright point instead of a streak — a fifth of the
+/// pool, and every one of the near stars that streak furthest — moved not one
+/// of the nine hashes.
+///
+/// It is `--engage --throttle 1.0` at `--fps 10`, so the same 120 frames are
+/// twelve seconds and the exposure settles at its full sixteen light years,
+/// and `--orbit 90,0,0` puts the nose straight down the barrel where the depth
+/// component is exactly -1 and the cut bites hardest. That the angle is the
+/// extreme rather than a corner is deliberate and is the one difference from
+/// how `astern.txt` was chosen: what wants pinning here is arithmetic that
+/// switches on with a *sign*, so the shot is taken where the sign is least
+/// ambiguous.
+///
 /// The same list appears at the top of `tests/golden/frames.sha256` and in the
 /// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
 /// it to all three, and to `.gitignore`.
-const CASES: [(&str, &[&str]); 9] = [
+const CASES: [(&str, &[&str]); 10] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
     ("ansi256.txt", &["--demo", "--color", "256"]),
@@ -261,6 +284,22 @@ const CASES: [(&str, &[&str]); 9] = [
             "side",
             "--orbit",
             "-60,0,0",
+            "--color",
+            "truecolor",
+        ],
+    ),
+    (
+        "ahead.txt",
+        &[
+            "--engage",
+            "--throttle",
+            "1.0",
+            "--fps",
+            "10",
+            "--view",
+            "side",
+            "--orbit",
+            "90,0,0",
             "--color",
             "truecolor",
         ],
@@ -465,6 +504,53 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
     assert!(
         swung,
         "no reference flight ever swings the camera on its own"
+    );
+
+    // And some flight gets *ahead* of the ship with the exposure long enough to
+    // matter, which is the sixth of the same kind and the sharpest lesson in
+    // the set. The camera being forward of the ship is not the question — the
+    // `astern` clause above has an exact counterpart in `orbit.txt`, whose nose
+    // points at the lens. The question is whether any flight holds that angle
+    // long enough for the exposure to reach *past* the nearest a star can be,
+    // because that is what puts a trail's far end behind the near plane, and
+    // for nine flights nothing did: the four `--engage` runs last two seconds,
+    // where the drive has flown only a few light years, and the `--demo` pair
+    // that lasts twelve never opens the throttle far enough. So a bug that lost
+    // the trail of every star inside the exposure — a fifth of the pool, and
+    // every one of the near ones that streak furthest — moved not one hash.
+    //
+    // Asked by flying each case's own sky at its own timestep, because the
+    // exposure is *state* and there is nothing to read it off but the sky that
+    // unrolled it.
+    let ahead = CASES.iter().any(|(_, case)| {
+        let args = reference_args(case);
+        let nose_z = args.orbit.nose_in_camera()[2];
+        if nose_z >= 0.0 {
+            return false;
+        }
+        let mut ship = warp_rs::ship::Ship::new();
+        let mut sky = warp_rs::universe::Universe::new(args.magnitude, args.seed.unwrap_or(0));
+        if args.engage {
+            ship.toggle_warp();
+        }
+        ship.throttle = args.throttle;
+        let dt = 1.0 / args.fps as f32;
+        for _ in 0..args.frames {
+            ship.update(dt);
+            sky.advance(
+                ship.position,
+                ship.axes[2],
+                dt,
+                ship.warp_intensity(),
+                ship.velocity_ly_per_s(),
+            );
+        }
+        -nose_z * sky.exposure() > warp_rs::universe::NEAREST_STAR
+    });
+    assert!(
+        ahead,
+        "no reference flight ever gets ahead of the ship with the exposure \
+         reaching past the nearest star, so nothing pins the near-plane cut"
     );
 
     // And the warp cases really are at warp rather than nominally engaged: a
