@@ -1565,10 +1565,17 @@ mod tests {
         // swinging the camera rotated the whole pool — and the fold, the rim
         // and the entering-surface sampler existed to patch the seams that
         // tore. A world-space sky has nothing to re-lay, so this is bitwise.
+        //
+        // Flown with the throttle shut, and that is what makes the claim sharp
+        // rather than merely true. `advance` is what eases the orbit, and it is
+        // also what would step the sky — so a ship left under way would have
+        // stars crossing their own limits and coming back somewhere else, and
+        // the comparison would have to allow for it. At a standstill nothing
+        // may move by so much as an ulp, whatever the camera does.
         let args = args_for(&["--seed", "9", "--magnitude", "5.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         flight.cycle_view();
-        flight.ship.throttle = 1.0;
+        flight.ship.throttle = 0.0;
         for _ in 0..30 {
             flight.advance(1.0 / 60.0);
         }

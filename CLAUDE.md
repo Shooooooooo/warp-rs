@@ -21,10 +21,10 @@ The distances are real, which is most of what the sky's behaviour follows from.
 A star is placed by its own photometry — how bright it is against how bright it
 looks — so the nearest are a few light years off and the brightest giants are
 thousands. At impulse that makes the sky *still*: 0.9 c against a star four
-light years away is a hundredth of a subpixel a second, and a full-impulse frame
-differs from a parked one only by the twinkle. At warp, five and a half light
-years a second, the near sky tears past a far one that barely moves, which is
-the depth cue the old three-hundred-unit-deep volume could not have had.
+light years away moves the median star three subpixels in half a minute. At
+warp, three hundred and eighty light years a second, the near sky tears past a
+far one that barely moves, which is the depth cue the old three-hundred-unit-deep
+volume could not have had.
 
 One crate, `warp-rs`, with a binary named `warp`. `src/lib.rs` carries
 everything; `src/main.rs` is sixteen lines of entry point. That split is
@@ -365,7 +365,7 @@ outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2.
 the number to reproduce now.** The same case is a different frame: the pool is
 what a limiting magnitude asks for rather than a count, and a streak is a few
 subpixels rather than one across the frame, so the outside view at warp runs
-12.2 ms at 72 000 stars where it ran 21.1 at 20 000. Every optimisation above is
+20.7 ms at 72 000 stars where it ran 21.1 at 20 000. Every optimisation above is
 still in place and still worth its comment; what has moved is the baseline they
 add up to. Re-measure before believing a regression, and re-measure the two
 trees back to back.
@@ -408,10 +408,17 @@ whole run. The working set fits. This is instruction-bound, and shrinking
 Those figures predate the world-space sky and its pool is thirty-six times
 larger, so the cache claim in particular wants remeasuring before it is leaned
 on again. What has been measured since is the wall clock, and it went the good
-way: the expensive frame — the outside view at warp — runs 12.2 ms against 21.1
-before, with 72 000 stars against 20 000, because a streak that is a few
-subpixels long costs a few samples where one across the frame costs a hundred.
-The default cockpit frame at 200x60 went from 1.1 ms to 2.7.
+way per star: the expensive frame — the outside view at warp — runs 20.7 ms
+against 21.1 before, with **three and a half times the stars**. The default
+cockpit frame at 200x60 went from 1.1 ms to 2.9.
+
+Both halves of that moved twice. The world-space sky first took the expensive
+frame to 12.2 ms, because a streak a few subpixels long costs a few samples
+where one across the frame costs a hundred; giving warp its speed back put it
+at 20.7, because the exposure that keeps the tunnel is a fifth of a second of
+travel at 383 ly/s and the streaks are long again. `--magnitude 8` is a
+deliberate extreme either way — it is 72 000 stars — and the frame anyone
+actually flies is the 2.9.
 
 ## Layout
 
@@ -654,10 +661,9 @@ the limiting magnitude, where `FADE_MAGNITUDES` has it at nothing at all.
 #### The streak is a long exposure
 
 This is the part most likely to be misread as an effect. At honest distances one
-sim step at full warp moves a ten-light-year star **0.19 subpixels**, and the
-`1 + 5·warp²` multiplier the old sky used makes that 1.1 against the 119 the
-renderer used to draw. Multiplying harder is not the answer; saying what the
-streak *is* is.
+sim step at full warp moves a ten-light-year star **three subpixels**, and the
+`1 + 5·warp²` multiplier the old sky used draws a smear rather than a track.
+Multiplying harder is not the answer; saying what the streak *is* is.
 
 It is the track the star actually flew over the last `TRAIL_SECONDS`, and the
 tail is computed rather than remembered: the ship was at `P − n·v·T`, so the
@@ -673,16 +679,60 @@ why this replaced `prev` rather than joining it.
   trail shift, the rule about handing a recycled star the trail it would have
   had, and `retarget` dropping every trail on a resize.
 
-And it puts depth in the tunnel for the first time: 67 subpixels for a star at
-ten light years, 9.6 at seventy, 2.1 at three hundred, 0.7 at a thousand. The
-old sky drew every streak the same length because every star was the same
-distance away.
+And it puts depth in the tunnel for the first time: 35 subpixels for a star at
+ten light years, 21 at seventy, 7.6 at three hundred, 2.8 at a thousand. The old
+sky drew every streak the same length because every star was the same distance
+away.
 
 **Rotational smear went, and the measurement is why.** A whole sim step at the
 yaw stop moves a star at the frame edge 0.58 of a subpixel, which is inside the
 branch `draw_streak` takes for anything under three quarters of one — so the
 smear a turn used to leave was invisible before it was removed. Do not put it
 back without a number.
+
+#### How fast anything looks is one constant, and it is a dial's
+
+`ship::TIME_COMPRESSION` sets the whole of it. Apparent motion is speed over
+distance and the distances are real, so there is **exactly one scale here and it
+fixes both ends of the throttle at once**: turn it up and warp sweeps *and*
+impulse creeps, turn it down and impulse freezes *and* warp dies. There is no
+tuning one without the other, and an edit that tries has misread the geometry.
+
+It shipped at one day per second and had to go to ten weeks, and the reason is
+the sharpest lesson in this file. **`speed_to_c` is a dial.** It spans three
+orders of magnitude — 0.9 c to 2000 c — because the panel has to be able to say
+"warp 9.8", and while it was read only by the odometer that cost nothing. The
+rebuild wired it to the stars, which is the honest thing to do, and inherited
+the span: the throttle's bottom sixty percent bought the sky's bottom four
+percent, lighting the drive gave a six-hundredth of the full-warp rate where the
+old renderer gave a fifth, and a typical star moved sixty-eight times less per
+frame than before. Every one of those is the same exponential seen from a
+different side.
+
+Two things came out of fixing it and both are load-bearing.
+
+**The throttle picks a warp factor, not a speed.** `Ship::target_speed` chooses
+`WARP_ENTRY_FACTOR + (WARP_MAX_FACTOR − WARP_ENTRY_FACTOR)·throttle` and inverts
+`speed_to_c` through `speed_for_warp_factor`. A factor is what a pilot asks for
+and each notch is then a proportionate change; linear in `speed` it was a
+rounding error at one end and a leap at the other. `Ship::speed` is still the
+eased state everything downstream reads, so the shake, the plume, the glare and
+the lens needed no changes at all.
+
+**`warp_intensity` is a ramp on the factor.** It was a ramp on the raw speed and
+began at 0.9 c; with the drive now catching at warp 5 — which is 566 of `speed`'s
+780 — that spelling would have jumped to 0.71 the instant the key was pressed
+and left every visual effect a quarter of its range to move in. Measured on the
+factor it is exactly 0 at light speed and exactly 1 at maximum warp, which is a
+cleaner statement anyway.
+
+And a third thing, in `autopilot`: `PEAK_FLOOR`, `PEAK_SWING` and `PEAK_PERIOD`
+were calibrated against the old exponential, which turned a hand's width of
+throttle into a factor of two. Against a power law they gave six consecutive
+cycles peaking within a few percent of each other — a screensaver reading as a
+loop, which is the one thing they exist to prevent. **Any constant chosen for
+how it feels through the throttle wants re-deriving when the throttle's shape
+moves.**
 
 #### Brightness is a magnitude, and the canvas is linear
 

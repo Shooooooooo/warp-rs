@@ -87,23 +87,23 @@ const FADE_MAGNITUDES: f32 = 0.75;
 /// that cannot survive honest distances. The old sky was three hundred
 /// ship-lengths deep and a star crossed a good fraction of it every step, so
 /// stretching one step's motion by six drew a streak across the frame. Out here
-/// the ship covers 5.48 ly a second and the nearest star is ten light years
-/// off, so one step of 1/120 s moves it 0.19 subpixels and six of those is
-/// barely more than a point.
+/// a step of 1/120 s moves a ten-light-year star three subpixels, and six of
+/// those is a smear rather than a track.
 ///
 /// So the streak stops being a stretch and becomes what it always looked like:
-/// the track a star actually flew, over the last three seconds. On an 80x24
-/// terminal at full warp that is 67 subpixels for a star at ten light years,
-/// 9.6 at seventy, 2.1 at three hundred and 0.7 at a thousand — near stars
-/// tearing past, mid ones dashing, far ones holding still as points. The old
-/// sky drew every star the same length because every star was the same distance
-/// away.
+/// the track a star actually flew, over the last fifth of a second. On an 80x24
+/// terminal at full warp that is 35 subpixels for a star at ten light years, 21
+/// at seventy, 8 at three hundred and 2.7 at a thousand — near stars tearing
+/// past, mid ones dashing, far ones holding still as points. The old sky drew
+/// every streak the same length because every star was the same distance away.
 ///
-/// Three seconds because that is where the near streaks reach across most of
-/// the frame without the mid-distance ones running together. It is a fixed
-/// fraction of the frame on every terminal, since `Camera::focal` follows the
-/// canvas height and so does the canvas.
-const TRAIL_SECONDS: f32 = 3.0;
+/// A fifth of a second because the exposure wants to be about half the canvas
+/// for a typical star, and it is a *time* rather than a length so it stays that
+/// fraction on every terminal: `Camera::focal` follows the canvas height and so
+/// does the canvas. It was three seconds while the ship covered 5.5 ly a
+/// second; at 383 that would reach eleven hundred light years, past most of the
+/// sky, and every trail would end on the vanishing point.
+const TRAIL_SECONDS: f32 = 0.2;
 
 /// Nearest any star is, in light years.
 ///
@@ -469,6 +469,15 @@ impl Universe {
         // How far back along the track the exposure reaches, as a displacement
         // in the camera's own space. Exactly zero at sublight, where there is
         // no drive lit to smear anything and the sky is a fixed backdrop.
+        //
+        // The warp ramp is in here as the switch rather than as a second
+        // helping of the throttle. It used to be both: while the throttle was
+        // linear in `Ship::speed` this multiplied an already-exponential
+        // velocity by a linear ramp, so the trail shortened *fastest* exactly
+        // where there was least motion to see it — a fiftieth of a subpixel at
+        // the moment the drive lit. With the stick shaped in warp factors the
+        // ramp spans 0.46 to 1.0 and is very nearly a constant, which is all it
+        // was ever meant to be.
         let reach = TRAIL_SECONDS * eye.warp * eye.velocity;
         let back = [
             eye.nose[0] * reach,
@@ -832,24 +841,50 @@ mod tests {
 
     #[test]
     fn the_sky_holds_still_at_impulse() {
-        // What the user asked for, as a number. The nearest star a magnitude
-        // limit puts in the sky is about ten light years off, and at 0.9 c the
-        // ship covers 0.0025 ly a second — so it subtends
-        // `focal · v / d = 40.8 · 0.0025 / 10` of a subpixel a second, or 0.30
-        // over thirty seconds of flight.
+        // What the user asked for, as a number, and it is a statement about the
+        // *sky* rather than about every star in it. At 0.9 c the ship covers
+        // 0.17 ly a second, so in thirty seconds it puts a fifth of a light
+        // year behind it. Against the median star at seventy that is three
+        // subpixels; against the nearest at four it is twenty, and that is not
+        // a fault to be tuned away — a star four light years off really does
+        // have proper motion you could watch, and the catalogue is built from
+        // real distances now.
         //
-        // The margin is 3.3x and deliberately not more. A threshold with a
-        // hundredfold margin would go on passing a speed map that had regressed
-        // by an order of magnitude, which is exactly the fault this replaced:
-        // the old sky ran impulse at a twentieth of its warp rate while the dial
-        // read a two-thousandth.
+        // So the bound is on the median and the margin is deliberately tight.
+        // A threshold ten times clear would go on passing a speed map that had
+        // regressed by an order of magnitude, which is exactly the fault this
+        // family of tests exists to catch — twice over now, once when the sky
+        // was a box three hundred ship-lengths deep and once when the exponent
+        // meant for the dial was wired to the stars.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
-        let mut sky = Universe::new(4.5, 3);
+        let mut sky = Universe::new(5.5, 3);
         // Up to speed first: the ease takes about a second and this is about
         // where the sky goes once it is there.
         fly(&mut sky, &mut ship, 600);
 
+        let moved = drift(&mut sky, &mut ship, 30 * 120);
+        let median = moved[moved.len() / 2];
+        assert!(
+            moved.len() > 100,
+            "only {} stars stayed in the picture",
+            moved.len()
+        );
+        assert!(
+            median < 4.0,
+            "thirty seconds of full impulse moved the median star {median} subpixels"
+        );
+    }
+
+    /// How far every star still in the picture moved over `steps`, sorted.
+    ///
+    /// Stars that crossed their own limit and came back somewhere else are left
+    /// out — one of those is not a star that moved, it is a different star —
+    /// and so is anything off the canvas at either end, since a star square
+    /// abeam has a camera depth of very nearly nothing and projects thousands
+    /// of subpixels off the side. Measuring one of those would be asking a
+    /// question about the projection rather than about the sky.
+    fn drift(sky: &mut Universe, ship: &mut Ship, steps: usize) -> Vec<f32> {
         let cam = cam();
         let seen = |sky: &Universe, ship: &Ship| -> Vec<Option<(f32, f32)>> {
             let eye = seated(ship);
@@ -859,43 +894,56 @@ mod tests {
                 .collect()
         };
         let places = sky.positions();
-        let opened = seen(&sky, &ship);
-        fly(&mut sky, &mut ship, 30 * 120);
-        let after = seen(&sky, &ship);
-
-        // Star by star, and skipping any that crossed its own limit and came
-        // back somewhere else — a few of the nearest do even at this crawl, and
-        // one of those is not a star that moved, it is a different star.
-        let mut moved = 0.0f32;
-        let mut counted = 0;
+        let opened = seen(sky, ship);
+        fly(sky, ship, steps);
+        let after = seen(sky, ship);
         let ends = sky.positions();
         let on_canvas =
             |p: &(f32, f32)| (0.0..cam.width).contains(&p.0) && (0.0..cam.height).contains(&p.1);
-        for (i, (was, is)) in opened.iter().zip(&after).enumerate() {
-            if places[i] != ends[i] {
-                continue;
-            }
-            // And only what is actually in the picture. A star square abeam has
-            // a camera depth of very nearly nothing and projects thousands of
-            // subpixels off the side, where the canvas clips it and where a
-            // hundredth of a degree of parallax is still a large number — so
-            // measuring one would be asking this question of the projection
-            // rather than of the sky.
-            if let (Some(a), Some(b)) = (was, is) {
-                if !on_canvas(a) || !on_canvas(b) {
-                    continue;
+
+        let mut moved: Vec<f32> = opened
+            .iter()
+            .zip(&after)
+            .enumerate()
+            .filter(|(i, _)| places[*i] == ends[*i])
+            .filter_map(|(_, (was, is))| match (was, is) {
+                (Some(a), Some(b)) if on_canvas(a) && on_canvas(b) => {
+                    Some(crate::canvas::length_of(b.0 - a.0, b.1 - a.1))
                 }
-                moved = moved.max(crate::canvas::length_of(b.0 - a.0, b.1 - a.1));
-                counted += 1;
+                _ => None,
+            })
+            .collect();
+        moved.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        moved
+    }
+
+    #[test]
+    fn the_sky_answers_the_throttle_the_way_the_dial_does() {
+        // The invariant the impulse bound above is only a symptom of, asserted
+        // directly: the sky's rate and the panel's velocity are one map, so the
+        // ratio between full warp and full impulse on screen is the ratio the
+        // dial reads — 2000 c against 0.9.
+        //
+        // This is the test that would have caught the fault the other way
+        // round. Before the rebuild the sky ran on `Ship::speed`, which spans
+        // 42 to 780, so this ratio came out at 19 against the dial's 2222 and
+        // impulse streamed a hundred and twenty times too fast for its own
+        // instruments.
+        let rate = |warp: bool| {
+            let mut ship = Ship::new();
+            ship.throttle = 1.0;
+            if warp {
+                ship.toggle_warp();
             }
-        }
+            let mut sky = Universe::new(5.5, 17);
+            fly(&mut sky, &mut ship, 1200);
+            ship.velocity_ly_per_s()
+        };
+        let ratio = rate(true) / rate(false);
+        let dial = 2000.0 / 0.9;
         assert!(
-            counted > 20,
-            "only {counted} stars stayed in front of the eye"
-        );
-        assert!(
-            moved < 1.0,
-            "thirty seconds of full impulse moved a star {moved} subpixels"
+            (ratio / dial - 1.0).abs() < 0.02,
+            "the sky answers the throttle {ratio} times over where the dial says {dial}"
         );
     }
 

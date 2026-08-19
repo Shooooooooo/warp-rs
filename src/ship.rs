@@ -17,29 +17,56 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 pub const CRUISE_MAX: f32 = 42.0;
 /// Top speed with the warp drive engaged.
 pub const WARP_MAX: f32 = 780.0;
-/// Speed floor the drive snaps to the instant it engages.
-const WARP_ENTRY: f32 = 170.0;
-
 /// Velocity, in multiples of c, at `CRUISE_MAX`.
 const CRUISE_MAX_C: f32 = 0.9;
 /// Velocity, in multiples of c, at `WARP_MAX`.
 const WARP_MAX_C: f32 = 2000.0;
 
-/// Flight time is compressed so the odometer moves: one second at the stick is
-/// one day underway. At full warp that reads out around 5 ly per second.
-const TIME_COMPRESSION: f32 = 86_400.0;
+/// The warp factor full throttle reads, and the one the drive catches at.
+///
+/// The first is not a choice — it is what `WARP_MAX_C` already comes to on the
+/// TNG scale, named here so the throttle can be shaped against it. The second
+/// is: lighting the drive used to land the ship at warp 1.4, which is 3.4 c and
+/// a six-hundredth of full-warp speed, so the flash and the shake fired over a
+/// sky that had not started moving. Catching at warp 5 puts a tenth of the
+/// full-warp rate on screen in the frame the key is pressed, which is about
+/// what the old renderer's entry gave and is a great deal more honest about it.
+const WARP_MAX_FACTOR: f32 = 9.779_267;
+const WARP_ENTRY_FACTOR: f32 = 5.0;
+
+/// Flight time is compressed so the sky moves: one second at the stick is ten
+/// weeks underway. At full warp that is about 383 ly per second.
+///
+/// **This is the one number that sets how fast anything looks**, and it is set
+/// against the renderer rather than against the calendar. Apparent motion is
+/// speed over distance, and the distances are real now — so there is exactly
+/// one scale here, and it fixes both ends of the throttle at once. Turn it up
+/// and warp sweeps *and* impulse creeps; turn it down and impulse freezes *and*
+/// warp dies.
+///
+/// It was one day, which put a typical star at 0.054 subpixels a frame at full
+/// warp against the 3.64 the old renderer drew — sixty-eight times too slow,
+/// and the reason warp stopped feeling like warp. Ten weeks puts it at 3.4,
+/// which is where the tunnel reads as motion rather than as a still. What that
+/// costs at the other end is written down rather than hidden: the median star
+/// moves three subpixels in thirty seconds of *full* impulse and the nearest
+/// twenty, where before they moved a twentieth of that. The sky still reads as
+/// fixed — at the default throttle the median star moves half a subpixel in
+/// thirty seconds — but it is no longer frozen to the bit, and nearby stars
+/// having visible proper motion is the truth rather than a concession.
+const TIME_COMPRESSION: f32 = 6_048_000.0;
 const SECONDS_PER_YEAR: f32 = 31_557_600.0;
 
 /// How far one multiple of c carries the ship in a second at the stick, in
 /// light years.
 ///
-/// The two constants above have only ever been read by the odometer, which
-/// meant the distance the panel reported and the distance the sky was moved by
-/// were separate inventions — [`Ship::speed`] is in world units and ran the
-/// stars, and this ran the readout, and nothing made them agree. They are one
-/// scale now: [`crate::universe`] measures its volume in light years and moves
-/// it by [`Ship::velocity_ly_per_s`], so a flight that reads 3 ly on the panel
-/// really has put 3 ly of sky behind it.
+/// The two constants above once belonged to the odometer alone, which meant the
+/// distance the panel reported and the distance the sky was moved by were
+/// separate inventions — [`Ship::speed`] is in world units and ran the stars,
+/// and this ran the readout, and nothing made them agree. They are one scale
+/// now: [`crate::universe`] measures its volume in light years and moves it by
+/// [`Ship::velocity_ly_per_s`], so a flight that reads 3 ly on the panel really
+/// has put 3 ly of sky behind it.
 pub const LY_PER_C_SECOND: f32 = TIME_COMPRESSION / SECONDS_PER_YEAR;
 
 const ACCEL_K: f32 = 1.6;
@@ -195,7 +222,7 @@ impl Ship {
         self.warp_engaged = !self.warp_engaged;
         if self.warp_engaged {
             self.dropping_out = false;
-            self.speed = self.speed.max(WARP_ENTRY);
+            self.speed = self.speed.max(speed_for_warp_factor(WARP_ENTRY_FACTOR));
             self.shake = 1.0;
             self.flash = 1.0;
         } else {
@@ -218,9 +245,19 @@ impl Ship {
     }
 
     /// Where the throttle is asking the ship to end up.
+    ///
+    /// Above light the stick picks a **warp factor**, not a speed, and that is
+    /// the whole of the difference. It used to be linear in [`Self::speed`],
+    /// which `speed_to_c` then put through three orders of magnitude — so the
+    /// bottom sixty percent of the throttle bought the bottom four percent of
+    /// the sky's motion and the stick was dead for most of its travel. A factor
+    /// is what a pilot asks for anyway ("go to warp five"), and each notch is
+    /// then a proportionate change rather than a rounding error at one end and
+    /// a leap at the other.
     fn target_speed(&self) -> f32 {
         if self.warp_engaged {
-            WARP_ENTRY + (WARP_MAX - WARP_ENTRY) * self.throttle
+            let factor = WARP_ENTRY_FACTOR + (WARP_MAX_FACTOR - WARP_ENTRY_FACTOR) * self.throttle;
+            speed_for_warp_factor(factor)
         } else {
             CRUISE_MAX * self.throttle
         }
@@ -335,8 +372,20 @@ impl Ship {
     }
 
     /// 0..=1 ramp across the superluminal range, used to drive the visuals.
+    ///
+    /// Measured on the warp *factor* rather than on [`Self::speed`], so it is
+    /// exactly zero at light speed and exactly one at maximum warp — which is
+    /// the statement the glare, the vignette, the bubble and the exposure all
+    /// want, and a cleaner one than the ramp on an internal speed variable that
+    /// stood here and began at 0.9 c.
+    ///
+    /// It had to move when the throttle became a factor. The drive catches at
+    /// warp 5, which is 566 of `speed`'s 780, so the old spelling would have
+    /// jumped to 0.71 the instant the key was pressed and left every effect
+    /// with a quarter of its range to play in. This gives 0.46 at the catch and
+    /// climbs the rest of the way with the stick.
     pub fn warp_intensity(&self) -> f32 {
-        ((self.speed - CRUISE_MAX) / (WARP_MAX - CRUISE_MAX)).clamp(0.0, 1.0)
+        ((self.warp_factor() - 1.0) / (WARP_MAX_FACTOR - 1.0)).clamp(0.0, 1.0)
     }
 }
 
@@ -420,6 +469,19 @@ fn unit(v: [f32; 3]) -> Option<[f32; 3]> {
 /// ship or an eye.
 pub fn wrap_signed(angle: f32) -> f32 {
     (angle + PI).rem_euclid(TAU) - PI
+}
+
+/// The speed that flies at a given warp factor — [`speed_to_c`] run backwards.
+///
+/// The flight model still eases [`Ship::speed`], because that is what the
+/// shake, the plume, the glare and the lens all read; this is only how the
+/// throttle says where it should end up. Clamped to the warp range at both
+/// ends, so a factor below light or past maximum asks for a speed the rest of
+/// the model already knows what to do with.
+fn speed_for_warp_factor(factor: f32) -> f32 {
+    let v = factor.max(1.0).powf(10.0 / 3.0);
+    let t = (v / CRUISE_MAX_C).ln() / (WARP_MAX_C / CRUISE_MAX_C).ln();
+    CRUISE_MAX + (WARP_MAX - CRUISE_MAX) * t.clamp(0.0, 1.0)
 }
 
 /// Maps world speed to a velocity in multiples of c: linear up to `CRUISE_MAX`,
@@ -768,12 +830,57 @@ mod tests {
     }
 
     #[test]
+    fn the_throttle_is_a_warp_factor() {
+        // The stick's shape, and the fault it was given for. It used to be
+        // linear in `speed`, which `speed_to_c` then put through three orders
+        // of magnitude — so half throttle was 83 c, four percent of full-warp
+        // speed, and the bottom half of the travel did nothing anybody could
+        // see. A factor is what a pilot asks for and each notch is now worth a
+        // proportionate change.
+        let factor = |throttle: f32| {
+            let mut ship = Ship::new();
+            ship.warp_engaged = true;
+            ship.throttle = throttle;
+            for _ in 0..2000 {
+                ship.update(1.0 / 120.0);
+            }
+            ship.warp_factor()
+        };
+        assert!(
+            (factor(0.0) - WARP_ENTRY_FACTOR).abs() < 0.02,
+            "the drive catches at warp {}",
+            factor(0.0)
+        );
+        assert!(
+            (factor(1.0) - WARP_MAX_FACTOR).abs() < 0.02,
+            "full throttle reads warp {}",
+            factor(1.0)
+        );
+        // Linear in between, which is the whole claim. Checked against the
+        // straight line rather than against a table of numbers, so the two ends
+        // above are the only figures written down twice.
+        for step in 0..=10 {
+            let throttle = step as f32 / 10.0;
+            let want = WARP_ENTRY_FACTOR + (WARP_MAX_FACTOR - WARP_ENTRY_FACTOR) * throttle;
+            let got = factor(throttle);
+            assert!(
+                (got - want).abs() < 0.02,
+                "throttle {throttle} settles at warp {got} rather than {want}"
+            );
+        }
+    }
+
+    #[test]
     fn full_impulse_is_a_crawl_and_full_warp_is_not() {
-        // The numbers the whole rebuild turns on. A star ten light years out —
-        // which is where the nearest one in a magnitude-limited catalogue sits
-        // — subtends `focal · v / d` subpixels a second, and on the 48-subpixel
-        // canvas an 80x24 terminal gives that is 0.01 at impulse against 22 at
-        // warp. Frozen, and then not.
+        // The numbers the whole rebuild turns on, and the ones it was retuned
+        // against when warp came out too slow. A star seventy light years out —
+        // the median distance a magnitude-limited catalogue puts them at —
+        // subtends `focal · v / d` subpixels a second, and on the 48-subpixel
+        // canvas an 80x24 terminal gives that is a tenth of one at impulse
+        // against 206 at warp. Frozen, and then not.
+        //
+        // The ratio is the load-bearing half and is asserted below: the sky and
+        // the dial are one map, so it is 2000 against 0.9 and nothing else.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         for _ in 0..1200 {
@@ -786,10 +893,10 @@ mod tests {
         }
         let warp = ship.velocity_ly_per_s();
         assert!(
-            (0.0022..0.0025).contains(&impulse),
+            (0.16..0.18).contains(&impulse),
             "full impulse is {impulse} ly/s"
         );
-        assert!((5.0..5.6).contains(&warp), "full warp is {warp} ly/s");
+        assert!((375.0..390.0).contains(&warp), "full warp is {warp} ly/s");
         assert!(
             warp / impulse > 2000.0,
             "the sky's answer to the throttle is flatter than the dial's"

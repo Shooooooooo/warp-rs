@@ -60,13 +60,22 @@ const COAST_FLOOR: f32 = 0.15;
 /// it the wave can carry one.
 ///
 /// The floor is not taste: three tests require every cycle to reach 100 c, and
-/// 0.78 settles at about 490 c — warp 6.4 against the warp 3.98 they ask for,
+/// 0.30 settles at about 495 c — warp 6.4 against the warp 3.98 they ask for,
 /// which is a fivefold margin. The top of the swing is full throttle, warp 9.8,
 /// so consecutive cycles are plainly different flights rather than the same one
 /// with a wobble in it.
-const PEAK_FLOOR: f32 = 0.78;
-const PEAK_SWING: f32 = 0.22;
-const PEAK_PERIOD: f64 = 71.0;
+///
+/// The pair was 0.78 and 0.22, and it had to move when the throttle became a
+/// warp factor rather than a speed. What this wants is a spread in *velocity* —
+/// that is what a watcher sees — and the old numbers bought a fourfold one
+/// because the stick was exponential in it. Against a factor the same 0.22 of
+/// travel spans 1369 c to 2000 c, half a warp factor, and consecutive cycles
+/// peaked within a few percent of each other: a screensaver reading as a loop,
+/// which is the one thing this constant exists to prevent. These reach the same
+/// 495 c at the bottom and so the same fourfold spread.
+const PEAK_FLOOR: f32 = 0.30;
+const PEAK_SWING: f32 = 0.70;
+const PEAK_PERIOD: f64 = 83.0;
 
 /// How hard the weave leans on the stick, in keypresses a second.
 ///
@@ -486,17 +495,38 @@ mod tests {
     fn no_two_cycles_are_flown_the_same_way() {
         // A screensaver is watched for minutes, and a schedule that comes round
         // unchanged is read as a loop however pretty one pass is.
+        //
+        // Asked as two questions rather than as one, and the change is a
+        // consequence of the throttle becoming a warp factor. It used to demand
+        // that all fifteen pairs of six cycles differ by five percent in peak
+        // velocity, and that was reachable only because the stick was
+        // exponential in velocity: a hand's width of throttle at the top was
+        // worth a factor of two, so any two samples of the wave came out far
+        // apart. Against a power law the top of the range is flat — and worse,
+        // the peak is the *most* the throttle reaches during a leg, so every
+        // cycle whose leg contains the wave's crest peaks at full warp. No
+        // period makes six such samples pairwise distinct, and tuning for one
+        // would be fitting the constant to the test.
+        //
+        // What the test is actually for survives both facts. A schedule reads
+        // as a loop when the same flight comes round again, so: consecutive
+        // cycles must differ, and the set of them must cover a real range.
         let peaks: Vec<f32> = (0..6)
             .map(|cycle| fly(60.0, Autopilot::CYCLE, cycle as f64 * Autopilot::CYCLE).1)
             .collect();
-        for (i, a) in peaks.iter().enumerate() {
-            for b in &peaks[i + 1..] {
-                assert!(
-                    (a - b).abs() > 0.05 * a.max(*b),
-                    "two cycles both peaked at about the same speed: {peaks:?}"
-                );
-            }
+        for pair in peaks.windows(2) {
+            assert!(
+                (pair[0] - pair[1]).abs() > 0.05 * pair[0].max(pair[1]),
+                "two cycles running peaked at about the same speed: {peaks:?}"
+            );
         }
+        let (lo, hi) = peaks
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+        assert!(
+            hi / lo > 2.0,
+            "every cycle peaked at much the same speed: {peaks:?}"
+        );
     }
 
     #[test]
