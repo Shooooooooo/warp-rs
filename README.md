@@ -56,11 +56,11 @@ few light years off and the bright ones are giants a thousand light years away,
 which is the arrangement the real sky is in.
 
 Two things follow, and they are the reason for it. At impulse the sky does not
-move: half a minute of full impulse shifts a typical star by a subpixel and a
-half, so the stars sit still and only the twinkle moves. And at warp — 2000 c,
-which the compressed flight clock makes three hundred and eighty light years a
-second — the near sky tears past a far one that barely shifts, which is depth
-rather than speed and is the thing a fixed backdrop cannot show.
+move: 0.9 c against a nearest star four light years off is a hundredth of a
+subpixel a second, so the stars sit still and only the twinkle moves. And at
+warp — 2000 c is five and a half light years a second — the near sky tears past
+a far one that barely shifts, which is depth rather than speed and is the thing
+a fixed backdrop cannot show.
 
 `--magnitude` is the knob, and it is the one astronomers use: a sky is
 described by how faint a star you can pick out of it, not by how many there
