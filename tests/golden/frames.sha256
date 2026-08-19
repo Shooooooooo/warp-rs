@@ -115,11 +115,32 @@
 #
 #   Stick.        The four `--demo` flights steer and the four `--engage` ones
 #                 hold every rate at an exact zero from the first frame to the
-#                 last. That distinction reaches further than it did: the ship
-#                 carries an attitude now, and the sky is projected through it,
-#                 so a turn moves the sky from *both* cameras rather than only
-#                 from the seat. `drift.txt` is the flight that sees it from
-#                 outside.
+#                 last. That distinction reaches further than it did twice over.
+#                 The ship carries an attitude, and the sky is projected through
+#                 it, so a turn moves the sky from *both* cameras rather than
+#                 only from the seat — `drift.txt` is the flight that sees that
+#                 from outside. And a turn now reaches the exposure's own
+#                 geometry: a streak is the track a star swept while the shutter
+#                 was open, so one the ship flew straight through is a segment
+#                 and one it turned through is a curve.
+#
+#                 That second half is what makes the `--engage` four a control
+#                 rather than merely a contrast. They hold `LEVEL_AXES` to the
+#                 bit from the first frame to the last, so their exposure never
+#                 reaches back past a turn and the sky takes the arithmetic it
+#                 always took — which is why drawing the exposure along the
+#                 flown track moved `steer.txt` and `drift.txt` and left the
+#                 other eight byte for byte. Anything else moving with a change
+#                 to the track has leaked; either of those two failing to move
+#                 means the weave is not steering at warp and the reference is
+#                 watching nothing.
+#
+#                 What the pair do *not* cover is the shape of a curve. The
+#                 weave turns about a twentieth of what a hand on the stick
+#                 does, which asks for a single leg — the right two endpoints
+#                 with a straight line between them. The curve itself is pinned
+#                 by property tests in `universe.rs`, which is the level it
+#                 belongs at: it is a variant, not a region.
 #
 #   Autopilot.    `drift.txt` shares every flag with `steer.txt` but the view,
 #                 which makes the pair one flight watched from inside and from
@@ -160,6 +181,6 @@ c3d609a0321c47abb98b66e69f4327f3fda14cf320d159fb257d85803566b61b  warp.txt
 20b63e7e7a0fe019c1fc56f1f94eadcc6e35297736aaaa8060dbd1fb5f517411  side.txt
 b3ec7eeb76b5583f6a0016a2355b99117d992fec5a34457e7831a30da63bd6e5  orbit.txt
 d16c9ee10c6771432c70894e5b5884792b6d33a2db57caaca69ddc4a01d9199b  astern.txt
-6b040385c5d55846c016fbe2f52f8c73c3d2d6ef8c026d535f44b972e6c9e45c  steer.txt
-6123f14f3b3c1cc75fca8ad6712f601fbb06578b53d66aa915d9600c24ccbaea  drift.txt
+a9148623d63613aa5976a97bae7826ff83c8c0331f25dab8c55802490e2d6677  steer.txt
+924aaa1040f71137a1294a050af678a4977cf0e886c11fecb9042877fd582c76  drift.txt
 4be08f7a82f9f8fd12896ddba27cf843442d3d5272574b61895d2ff8026101a9  ahead.txt

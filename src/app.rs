@@ -217,6 +217,29 @@ impl Flight {
         self.orbit_target
     }
 
+    /// Put the stick over: the three impulses `WASD` and `QE` hand the ship
+    /// from the pilot's seat, for a caller that has no keyboard.
+    ///
+    /// Public for the same reason [`Self::nudge_orbit`] and [`Self::nudge_zoom`]
+    /// are, and it completes the set: `handle_key` reaches the ship only because
+    /// it lives in this module, so until this existed nothing outside could fly
+    /// a turn. Two things need to. `examples/bench.rs` measures what a hard turn
+    /// costs to draw, and the autopilot's weave is nowhere near hard enough to
+    /// stand in for one — it sweeps about a twentieth of what a hand on the
+    /// stick does. And `tests/flight.rs` drives everything through the surface
+    /// another program would have to use, so a turn it could not fly is a turn
+    /// that surface cannot be said to support.
+    ///
+    /// Impulses rather than rates, because that is what the ship takes: see the
+    /// note on [`crate::ship`] about terminals reporting presses and not
+    /// releases, and the identity in `crate::autopilot` about scaling one by
+    /// `dt`.
+    pub fn nudge_stick(&mut self, yaw: f32, pitch: f32, roll: f32) {
+        self.ship.nudge_yaw(yaw);
+        self.ship.nudge_pitch(pitch);
+        self.ship.nudge_roll(roll);
+    }
+
     /// Swing the camera round the ship, over it, or about its own view axis, a
     /// step at a time.
     ///
@@ -1561,6 +1584,42 @@ mod tests {
             "{moved} of {} stars moved while the camera was elsewhere",
             inside.len()
         );
+    }
+
+    #[test]
+    fn turning_the_ship_bends_the_sky_from_both_cameras() {
+        // The ship carries the attitude and both cameras are projected through
+        // it, so a turn has to reach the exposure from the seat *and* from
+        // outside — where the camera rides with the hull and swings with it.
+        // Asked of the frames rather than of the sky, because what is under
+        // test is a picture: fly the same seed twice, once with a hand on the
+        // stick and once without, and the two must differ in both views.
+        for view in [0, 1] {
+            let frames = |steer: bool| {
+                let args = args_for(&["--seed", "3", "--magnitude", "5.5", "--size", "80x24"]);
+                let mut flight = Flight::new(&args, 80, 24);
+                if view == 1 {
+                    flight.cycle_view();
+                }
+                flight.ship.throttle = 1.0;
+                flight.ship.toggle_warp();
+                for _ in 0..300 {
+                    if steer {
+                        flight.nudge_stick(1.0, -0.35, 0.0);
+                    }
+                    flight.advance(1.0 / 60.0);
+                }
+                flight.draw(60.0, false, true);
+                flight.renderer.pixels().to_vec()
+            };
+            let (turned, straight) = (frames(true), frames(false));
+            let differing = turned.iter().zip(&straight).filter(|(a, b)| a != b).count();
+            assert!(
+                differing > straight.len() / 20,
+                "only {differing} of {} subpixels moved in view {view}",
+                straight.len()
+            );
+        }
     }
 
     #[test]

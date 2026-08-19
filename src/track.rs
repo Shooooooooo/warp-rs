@@ -186,13 +186,35 @@ impl Track {
     /// never come back to the fast path however straight it then flies. That
     /// costs a few matrix products a frame and nothing whatever in the picture.
     ///
+    /// A track with no turn recorded in it at all answers with infinity rather
+    /// than with a distance, and that is not a flourish — it is the whole of
+    /// what makes the fast path reachable. The exposure and this are two sums
+    /// of the same steps kept in different accumulators, so comparing them as
+    /// lengths is a coin toss at the last bit; worse, the track cannot count
+    /// the step that carried the ship into its *first* sample, having not been
+    /// there for it, so the exposure runs a step ahead of the run for the whole
+    /// life of a flight that never turns. Measured that way an `--engage`
+    /// flight took the curved path from its first frame, which is precisely
+    /// what this exists to stop.
+    ///
+    /// Stated as a question about turns instead, it is exact. `straight` sums
+    /// the steps since the last turn and [`Self::flown`] sums the steps the ring
+    /// still holds, so the first is the second exactly while no turn has been
+    /// recorded and is strictly shorter the moment one has. No rounding can
+    /// reach it, because both are `f64` sums of the same terms in the same
+    /// order.
+    ///
     /// It is an accumulator in its own right rather than something read off the
     /// ring, and deliberately: an attitude unchanged for longer than the ring is
     /// long is still unchanged, and capping this at what the ring remembers
     /// would push a long exposure onto the curved path for no reason but the
     /// buffer's size.
     pub fn straight_run(&self) -> f32 {
-        self.straight as f32
+        if self.straight >= self.flown() {
+            f32::INFINITY
+        } else {
+            self.straight as f32
+        }
     }
 
     /// How much the attitude turned over the last `back` light years of track,
@@ -278,6 +300,51 @@ impl Track {
             }
         }
         (origin, crate::ship::orthonormalise(axes))
+    }
+
+    /// How far back the track had turned by `swept` radians, in light years,
+    /// never further than `limit`.
+    ///
+    /// The inverse of [`Self::turn_over`], and what places the poses an exposure
+    /// is drawn from. Spacing them evenly along the *track* is the obvious thing
+    /// and it is wrong: a turn is rarely spread evenly over three seconds of
+    /// flight, so a ship that flew straight and then banked hard for half a
+    /// second gets every pose but one in the straight part and a single leg
+    /// across the whole bend. That draws a smooth arc as a hard corner, which
+    /// was visible immediately and is the reason this exists — the curve wants
+    /// poses where the curvature is, and the curvature is the turn.
+    ///
+    /// Searched the same way the arc length is, and for the same reason: the
+    /// cumulative turn is total variation, so it only ever grows.
+    pub fn back_at_turn(&self, swept: f32, limit: f32) -> f32 {
+        let Some(newest) = self.newest() else {
+            return 0.0;
+        };
+        if swept.is_nan() || swept <= 0.0 {
+            return 0.0;
+        }
+        let want = newest.turn - swept as f64;
+        let (mut lo, mut hi) = (0usize, self.len);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.at(mid).turn < want {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 {
+            return limit;
+        }
+        let (before, after) = (self.at(lo - 1), self.at(lo.min(self.len - 1)));
+        let span = after.turn - before.turn;
+        let t = if span > 0.0 {
+            ((want - before.turn) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let flown = before.flown + (after.flown - before.flown) * t;
+        ((newest.flown - flown) as f32).clamp(0.0, limit)
     }
 
     /// Where a cumulative arc length falls in the ring: the index of the first
@@ -444,7 +511,7 @@ mod tests {
         let (track, _) = flown(600, false);
         assert_eq!(
             track.straight_run(),
-            track.flown() as f32,
+            f32::INFINITY,
             "a flight nobody steered was not straight all the way back"
         );
 
@@ -459,14 +526,15 @@ mod tests {
             track.record(ship.position, ship.axes);
         }
         assert_eq!(ship.axes, LEVEL_AXES, "the ship steered itself");
-        let before = track.straight_run();
+        assert_eq!(track.straight_run(), f32::INFINITY);
         ship.nudge_yaw(1.0);
         ship.update(1.0 / 120.0);
         track.record(ship.position, ship.axes);
         let after = track.straight_run();
         assert!(
-            after < before * 0.01,
-            "a turn left {after} of straight run behind it, against {before}"
+            after < track.flown() as f32 * 0.01,
+            "a turn left {after} of straight run behind it, of {}",
+            track.flown()
         );
         assert!(after > 0.0, "the step the turn happened on was flown");
     }
@@ -563,6 +631,23 @@ mod tests {
     }
 
     #[test]
+    fn the_run_a_turn_leaves_behind_it_is_not_measured_against_the_exposure() {
+        // The bug the infinity in `straight_run` exists for, as the property
+        // that rules it out. A flight nobody steers has to answer "straight all
+        // the way back" whatever length anything asks about — the exposure and
+        // the run are two sums of the same steps in different accumulators, and
+        // the ring cannot count the step that carried the ship into its first
+        // sample, so any answer phrased as a length is a step short forever.
+        let (track, _) = flown(240, false);
+        let flown_far = track.flown() as f32;
+        assert!(
+            track.straight_run() > flown_far * 2.0,
+            "a straight flight of {flown_far} ly answered {}",
+            track.straight_run()
+        );
+    }
+
+    #[test]
     fn a_turn_that_goes_out_and_comes_back_still_swept_the_arc_it_swept() {
         // Total variation and not the angle between the two ends, which is what
         // a weave makes expensive to get wrong. Yaw one way, then the other, so
@@ -607,7 +692,9 @@ mod tests {
         // Nothing has flown yet on the first frame, and the sky is drawn on it.
         let track = Track::new();
         assert_eq!(track.flown(), 0.0);
-        assert_eq!(track.straight_run(), 0.0);
+        // Infinity rather than zero: nothing has turned, so nothing an exposure
+        // could ask about reaches back past a turn.
+        assert_eq!(track.straight_run(), f32::INFINITY);
         assert_eq!(track.pose_at(5.0), ([0.0; 3], LEVEL_AXES));
     }
 }

@@ -45,19 +45,40 @@ pub struct Bend {
 }
 
 impl Bend {
-    /// Draw a frame's worth of streaks, bending the ones the bubble reaches.
-    pub fn draw(
+    /// Draw one star's exposure, bending it if the bubble reaches it.
+    ///
+    /// It takes the path rather than a [`Streak`] because an exposure is one:
+    /// when the ship turned while the shutter was open, the track the star
+    /// swept is a curve and the sky hands it over as the poses it was open at.
+    /// A path of two points is the straight case and goes to `draw_streak`
+    /// exactly as it always did, which is what keeps a sublight frame — and
+    /// every frame of a flight nobody steers — the frame it was.
+    pub fn draw_one(
         &mut self,
         canvas: &mut Canvas,
         lens: &Lens,
-        streaks: impl Iterator<Item = Streak>,
+        points: &[(f32, f32)],
+        color: [f32; 3],
+        intensity: f32,
     ) {
-        for streak in streaks {
-            if !lens.bends(streak.from, streak.to) {
-                canvas.draw_streak(&streak);
-                continue;
+        let (Some(tail), Some(head)) = (points.first(), points.last()) else {
+            return;
+        };
+        if !lens.bends(points) {
+            if points.len() == 2 {
+                canvas.draw_streak(&Streak {
+                    from: *tail,
+                    to: *head,
+                    color,
+                    intensity,
+                });
+            } else {
+                canvas.draw_path(points, color, intensity);
             }
-            subdivide(&streak, lens, &mut self.source);
+            return;
+        }
+        {
+            subdivide(points, lens, &mut self.source);
             for image in [Image::Primary, Image::Secondary] {
                 // The head is where the star actually is, so its magnification
                 // is the one that speaks for the whole streak — and its
@@ -67,11 +88,11 @@ impl Bend {
                 // two-thirds of an Einstein radius lands inside the shadow, so
                 // without this check the great majority of the sky is
                 // subdivided, mapped and then thrown away.
-                let head = lens.map(streak.to, image);
-                if head.gain < FAINTEST_COUNTER_IMAGE || lens.shadowed(head.at) {
+                let bent = lens.map(*head, image);
+                if bent.gain < FAINTEST_COUNTER_IMAGE || lens.shadowed(bent.at) {
                     continue;
                 }
-                let gain = head.gain;
+                let gain = bent.gain;
                 self.bent.clear();
                 let mut swallowed = false;
                 for p in &self.source {
@@ -93,32 +114,47 @@ impl Bend {
                     }
                 }
                 if !swallowed {
-                    canvas.draw_path(&self.bent, streak.color, streak.intensity * gain);
+                    canvas.draw_path(&self.bent, color, intensity * gain);
                 }
             }
         }
     }
 }
 
-/// Chop a streak into pieces short enough that each can be bent as a point.
+/// Chop an exposure into pieces short enough that each can be bent as a point.
 ///
 /// Driven by `length · curvature` rather than by length alone: out at the frame
 /// edge the lens is a near-uniform displacement and one piece is plenty, which
 /// is where most of the sky is.
-fn subdivide(streak: &Streak, lens: &Lens, out: &mut Vec<(f32, f32)>) {
+///
+/// [`MAX_ARCS`] is shared out across the legs rather than applied to each of
+/// them, and that is the difference between a ceiling and a ceiling per leg. An
+/// exposure the ship turned through arrives already cut into as many as
+/// twenty-three pieces, so a per-leg ceiling would let one star cost five
+/// hundred and the constant would stop meaning what it says.
+fn subdivide(points: &[(f32, f32)], lens: &Lens, out: &mut Vec<(f32, f32)>) {
     out.clear();
-    let (dx, dy) = (streak.to.0 - streak.from.0, streak.to.1 - streak.from.1);
-    let length = crate::canvas::length_of(dx, dy);
-    // The head, where the star actually is, speaks for the streak.
-    let bend = lens.curvature(streak.to).max(lens.curvature(streak.from));
-    let pieces = if length.is_finite() {
-        ((length * bend / ARC_STEP).ceil() as usize).clamp(1, MAX_ARCS)
-    } else {
-        1
-    };
-    let inv = 1.0 / pieces as f32;
-    for i in 0..=pieces {
-        let t = i as f32 * inv;
-        out.push((streak.from.0 + dx * t, streak.from.1 + dy * t));
+    let budget = (MAX_ARCS / points.len().saturating_sub(1).max(1)).max(1);
+    for (leg, pair) in points.windows(2).enumerate() {
+        let (a, b) = (pair[0], pair[1]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let length = crate::canvas::length_of(dx, dy);
+        // The far end of the leg, which for the first one is where the star
+        // actually is, speaks for it.
+        let bend = lens.curvature(b).max(lens.curvature(a));
+        let pieces = if length.is_finite() {
+            ((length * bend / ARC_STEP).ceil() as usize).clamp(1, budget)
+        } else {
+            1
+        };
+        let inv = 1.0 / pieces as f32;
+        // Only the first leg lays its own near end down; every later one starts
+        // where its predecessor stopped. At one leg that is the whole loop the
+        // straight case always ran, to the bit.
+        let first = usize::from(leg > 0);
+        for i in first..=pieces {
+            let t = i as f32 * inv;
+            out.push((a.0 + dx * t, a.1 + dy * t));
+        }
     }
 }

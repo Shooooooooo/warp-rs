@@ -410,12 +410,16 @@ impl Lens {
     /// `π(REACH·radius)²` — the same disc's worth of sky as when the bubble was
     /// round. That is not a coincidence and it is not free: it is what
     /// [`RING_MINOR`] being a reciprocal buys.
-    pub fn bends(&self, from: (f32, f32), to: (f32, f32)) -> bool {
+    /// Asked of every point rather than of the two ends, because an exposure
+    /// the ship turned through is a curve and its middle can pass the bubble
+    /// while neither end does. At two points it is the two comparisons it
+    /// always was, in the order it always made them.
+    pub fn bends(&self, points: &[(f32, f32)]) -> bool {
         if !self.is_on() {
             return false;
         }
         let reach = REACH * REACH;
-        self.offset_sq(from) <= reach || self.offset_sq(to) <= reach
+        points.iter().any(|p| self.offset_sq(*p) <= reach)
     }
 
     /// Whether the straight line between two points passes inside the ring.
@@ -838,10 +842,13 @@ mod tests {
         );
         // And the reach, which is what decides whether a streak is bent at all.
         let far = (c.0 + small.radius * 9.5, c.1);
-        assert!(small.bends(far, far), "the reach must scale with the ring");
+        assert!(
+            small.bends(&[far, far]),
+            "the reach must scale with the ring"
+        );
         let further = (c.0 + small.radius * 19.0, c.1);
-        assert!(!small.bends(further, further));
-        assert!(large.bends(further, further), "the larger reach did not");
+        assert!(!small.bends(&[further, further]));
+        assert!(large.bends(&[further, further]), "the larger reach did not");
     }
 
     #[test]

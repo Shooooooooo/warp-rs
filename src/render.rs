@@ -5,7 +5,7 @@
 //! drive spools rather than each effect arriving on its own schedule.
 
 use crate::bend::Bend;
-use crate::camera::Camera;
+use crate::camera::{Camera, Streak};
 use crate::canvas::{Canvas, Tonemap};
 use crate::hud::{self, Readout};
 use crate::lens::Lens;
@@ -159,9 +159,23 @@ impl Renderer {
         let eye = Observer::cockpit(ship.axes, ship.position, warp);
 
         self.canvas.clear();
-        for streak in sky.streaks(cam, &eye, time) {
-            self.canvas.draw_streak(&streak);
-        }
+        // A two-point exposure goes to `draw_streak` and anything longer to
+        // `draw_path`. The two lay down the same light — they share the leg
+        // that does the laying — so which one runs is a matter of what is
+        // cheapest to call, not of what the frame comes out looking like.
+        let canvas = &mut self.canvas;
+        sky.sweep(cam, &eye, time, |points, color, intensity| {
+            if let [from, to] = *points {
+                canvas.draw_streak(&Streak {
+                    from,
+                    to,
+                    color,
+                    intensity,
+                });
+            } else {
+                canvas.draw_path(points, color, intensity);
+            }
+        });
 
         // The tunnel: glare down the throat, and a vignette closing in around
         // it. Two overlaid glows — a tight core inside a wide halo — read as
@@ -254,8 +268,12 @@ impl Renderer {
             Observer::outside(ship.axes, ship.position, &eye, orbit.nose_in_camera(), warp);
 
         self.canvas.clear();
-        self.bend
-            .draw(&mut self.canvas, &lens, sky.streaks(cam, &watcher, time));
+        // Split apart so the bend and the canvas can be borrowed at once: they
+        // are separate fields and the closure only ever touches the two.
+        let (canvas, bend) = (&mut self.canvas, &mut self.bend);
+        sky.sweep(cam, &watcher, time, |points, color, intensity| {
+            bend.draw_one(canvas, &lens, points, color, intensity);
+        });
 
         // A wash inside the shadow, so the region the lens has swept clear
         // reads as a bubble the ship is sitting in rather than as a hole
