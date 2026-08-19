@@ -133,7 +133,7 @@ const NEAREST_STAR: f32 = 4.0;
 
 /// Nearest a star is projected from, in light years.
 ///
-/// Not the hull's near plane. `crate::starfield::Z_NEAR` is 0.9 in units where
+/// Not the hull's near plane. [`crate::camera::Z_NEAR`] is 0.9 in units where
 /// the ship is about one, and a star that came within nine tenths of a light
 /// year would be clipped by a number that has nothing to do with it — so the
 /// projection is asked for this one instead. A star this close is passing

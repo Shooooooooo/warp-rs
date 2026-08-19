@@ -110,8 +110,9 @@ impl Renderer {
     /// Build the camera for this instant, shake included.
     ///
     /// The lean into a turn is deliberately *not* here, and neither is it in
-    /// the view from outside — see [`crate::starfield::StarField::update`],
-    /// which carries the argument. It leans the hull instead, by way of
+    /// the view from outside — see [`crate::ship::Ship::steer`], which is that
+    /// rotation moved off the sky and onto the hull and carries the argument.
+    /// It leans the hull instead, by way of
     /// [`crate::models::attitude`], which is the one place it can be seen
     /// without also being flown.
     pub fn camera(&self, ship: &Ship, time: f64) -> Camera {
@@ -214,8 +215,9 @@ impl Renderer {
     ///
     /// The same order as [`Self::render`] — sky, then what is lit, then the
     /// glass — with the hull between them. There is no depth buffer and none
-    /// is needed: [`crate::exterior`]'s near wall is beyond the furthest any
-    /// hull reaches, so nothing can be in front of it, and the far side of the
+    /// is needed: [`crate::universe`] holds its nearest star four light years
+    /// off against a hull measured in units where the ship is about one, so no
+    /// star can be in front of it, and the far side of the
     /// hull is culled on the winding of each plate. The one thing here that is
     /// genuinely on both sides of the ship is the drive, and [`models::draw`]
     /// settles that itself rather than handing the question up. The clearance
