@@ -601,11 +601,20 @@ impl Universe {
     }
 
     /// Grow or shrink the pool to what the limit asks for.
+    ///
+    /// The origin is read once and handed down, because a star is placed inside
+    /// its own visibility sphere and that sphere is centred on the *observer*
+    /// rather than on the world's origin. It only ever mattered on the second
+    /// caller: [`Self::new`] runs before the ship has gone anywhere, so the two
+    /// agreed for as long as `set_limit` was the thing nobody pressed
+    /// mid-flight. [`Track::pose_at`] answers `[0.0; 3]` on an empty ring, so
+    /// construction is the arithmetic it always was.
     fn stock(&mut self) {
         let wanted = Self::population(self.limit);
         self.stars.truncate(wanted);
+        let origin = self.track.pose_at(0.0).0;
         while self.stars.len() < wanted {
-            let star = self.spawn();
+            let star = self.spawn(origin);
             self.stars.push(star);
         }
     }
@@ -898,13 +907,24 @@ impl Universe {
         legs
     }
 
-    /// Make a star, somewhere uniform in its own visibility sphere.
+    /// Make a star, somewhere uniform in its own visibility sphere, centred on
+    /// where the ship is standing.
+    ///
+    /// The origin is an argument rather than a field read because it is the
+    /// whole of what a visibility sphere is about: a star is placed at a
+    /// distance that makes it look as bright as it does *from here*, so a
+    /// sphere hung on the world's origin is the right shape in the wrong place
+    /// the moment the ship has flown anywhere. It went unnoticed because the
+    /// two agree exactly at launch, and `set_limit` — the only other caller —
+    /// arrives from a key rather than from a constructor.
     ///
     /// The draw order is load-bearing rather than incidental — `--seed`
     /// reproducibility is a property of the sequence — and it is: class, then
     /// the three that scatter its absolute magnitude, then how deep into its
-    /// sphere it sits, then the two that point it, then its twinkle.
-    fn spawn(&mut self) -> Star {
+    /// sphere it sits, then the two that point it, then its twinkle. The
+    /// translation below happens after all of them and draws nothing, so a
+    /// seeded sky is the sky it always was.
+    fn spawn(&mut self, origin: [f64; 3]) -> Star {
         // Bounded rather than a bare loop. Nothing here can reject forever —
         // the brightest class clears [`NEAREST_STAR`] by three orders of
         // magnitude at any limit worth flying — but a rejection loop with no
@@ -933,7 +953,15 @@ impl Universe {
         let radius = reach * (hole + (1.0 - hole) * depth).cbrt();
         let dir = self.anywhere();
         Star {
-            pos: [dir[0] * radius, dir[1] * radius, dir[2] * radius],
+            // Spelled exactly the way the recycle in `advance` spells it, which
+            // is the point rather than a coincidence: the two are the same
+            // question — where does a star sit relative to the ship — asked at
+            // two moments, and they used to answer it differently.
+            pos: [
+                (origin[0] + (dir[0] * radius) as f64) as f32,
+                (origin[1] + (dir[1] * radius) as f64) as f32,
+                (origin[2] + (dir[2] * radius) as f64) as f32,
+            ],
             class,
             lumen,
             reach_sq,
@@ -2337,6 +2365,74 @@ mod tests {
         // the tunnel, the bubble and the hull are looked at with nothing
         // streaming past them.
         assert_eq!(Universe::population(-2.0), 0);
+    }
+
+    #[test]
+    fn a_sky_asked_for_mid_flight_arrives_around_the_ship() {
+        // Regression, and the shape of it is the one this tree keeps warning
+        // about: every guard on `set_limit` flew a ship that had never left the
+        // origin, so all of them passed a `spawn` that placed its stars about
+        // the world's origin rather than about the observer. Ten minutes of
+        // warp put the ship three thousand light years out, and the stars the
+        // `+` key added arrived in a clump directly astern — outside their own
+        // reach, so the next `advance` recycled every one of them to exactly
+        // the limiting magnitude, where a star is at no brightness at all. The
+        // key changed the count and did not change the picture.
+        //
+        // Asked as isotropy rather than as a position, because that is what
+        // went wrong: the mean direction from the ship to a fresh star is about
+        // nothing over a sky that surrounds it, and about -1 along the track
+        // over one that is all behind.
+        let mut sky = Universe::new(6.0, 11);
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        ship.toggle_warp();
+        fly(&mut sky, &mut ship, 6000);
+        assert!(
+            ship.distance_ly > 100.0,
+            "the ship needs to be well clear of the origin, and reached {}",
+            ship.distance_ly
+        );
+
+        let before = sky.len();
+        sky.set_limit(6.5);
+        let fresh = &sky.positions()[before..];
+        assert!(!fresh.is_empty(), "a fainter limit found nothing new");
+
+        let mut mean = [0.0f32; 3];
+        for star in fresh {
+            let away = [
+                (star[0] as f64 - ship.position[0]) as f32,
+                (star[1] as f64 - ship.position[1]) as f32,
+                (star[2] as f64 - ship.position[2]) as f32,
+            ];
+            let range = length_of_3([0.0; 3], away).max(f32::MIN_POSITIVE);
+            for (axis, component) in mean.iter_mut().zip(away) {
+                *axis += component / range;
+            }
+        }
+        let bias = length_of_3([0.0; 3], mean.map(|axis| axis / fresh.len() as f32));
+        assert!(
+            bias < 0.1,
+            "the {} stars a fainter limit added lean {bias} off the ship",
+            fresh.len()
+        );
+
+        // And each one is somewhere it can actually be seen from, which is the
+        // same statement one level down: a star outside its own reach is one
+        // the very next step throws away and puts back at exactly the limiting
+        // magnitude, where it is at no brightness at all. Every one of them
+        // used to be such a star.
+        let strays = sky.stars[before..]
+            .iter()
+            .filter(|star| distance_sq(star.pos, ship.position) > star.reach_sq)
+            .count();
+        assert_eq!(
+            strays,
+            0,
+            "{strays} of {} fresh stars were placed past their own reach",
+            sky.len() - before
+        );
     }
 
     #[test]
