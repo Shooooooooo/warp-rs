@@ -161,6 +161,24 @@
 #                 by property tests in `universe.rs`, which is the level it
 #                 belongs at: it is a variant, not a region.
 #
+#   Panel.        All ten move for a change to the instrument panel, and that is
+#                 the one shape here that separates *nothing*. The panel is
+#                 stamped into the character grid after `compose`, so it is
+#                 inside these bytes; but no case passes `--magnitude` and every
+#                 case draws the same panel, so an edit up there deletes or
+#                 shifts the same characters in all ten files and tells the ten
+#                 apart not at all. Read a sweep like that as a change to the
+#                 glass rather than to the sky, and go looking in `hud.rs`.
+#
+#                 Two pairs still say something while it happens.
+#                 `truecolor.txt` and `ansi256.txt` are one flight in two
+#                 spellings, so a panel edit has to move both or it landed in
+#                 the writer. And `ascii.txt` is the only frame that can say the
+#                 panel's ASCII face still emits nothing outside printable
+#                 ASCII afterwards, which the `headless` job greps — from the
+#                 file the previous step wrote, so it never runs at all if
+#                 `sha256sum -c` has already failed.
+#
 #   Autopilot.    `drift.txt` shares every flag with `steer.txt` but the view,
 #                 which makes the pair one flight watched from inside and from
 #                 outside — the relationship `ansi256.txt` has to
@@ -193,13 +211,13 @@
 #
 # Regenerating: build a release binary and run the ten commands in `CLAUDE.md`,
 # then put this block back. Say in the commit message which moved and why.
-0206d88b033c7247d807a412784a2f5906c737e9840119edbd13a4c7d68f865c  truecolor.txt
-525588a213e9d8ae94c63427d06661aefd7858eb5605b15b47d0f211f03987a3  ascii.txt
-78fd737c9eb1be6663a8c3ccd4fda4d3d6777271e7845669c19708af69c3b56b  ansi256.txt
-5d64af98c873792051c69ea92228eeb7698cdfaefa71d06afb53eb9e00f84406  warp.txt
-91e2033c5ca031d1dc7ab333c83cc08755705d6714ef1405c22f720d389e7892  side.txt
-ca75c8a37b405449dd902be7ce64b5ac6fb3383c778a5ffb4c7d67848e9bf775  orbit.txt
-a794b38002dcf5da1fe7d34269cf2a8ab163b62f97867d55dbb086c0cb4299e8  astern.txt
-8ef5fda498e765cb6fb06fd626ffd93560a51588999890aeb12067bde37bccfa  steer.txt
-342a2e3713c566117f1f89b10b7d43dc72d4ac2e7e16fc8fd765bc06a2f84ed3  drift.txt
-9f19f8bf8a18ee2ab0bb98f6d991cb16750b9aa07ea535b2e4124951852f7ba3  ahead.txt
+73e9c4fe47da9237fec53bd26060b5611b11fc644f406ee517398c7bef6407a2  truecolor.txt
+5cc1dd4a61cf82ef84830baace7784acafb873f1212cb410674c74073d7e6200  ascii.txt
+eaf92a6c41192aa12bd294f9e3aec9a3813e1dce0577e5a9eb496ebb88413802  ansi256.txt
+3eae495ec537236bc880110be2e5c01996051a17a84e95eb0d3b632da78d21a5  warp.txt
+72e97a6213f371b47dbb92c071ac27eae6e62efdbb502304d7f94b7fd2ead436  side.txt
+92050a4240270b02aecf13fbec4b162a9cfae9e2c14d9c759f25c54db86b97c1  orbit.txt
+afa19913b9cf0def24fe776feabe56d15a452f53c2b1b39e968df2815c0ccaf1  astern.txt
+e7f32c6a76c81a885202fcbf5502a58a30419749f57fd4bad63a963bba521b2b  steer.txt
+d5a431758d1feb96dac876b6c4175316eceed14f3951a7dc784b122f9612c2f4  drift.txt
+3f4880f3483e83abb8a2457996f409483cb7953172622373ae26cd54222d1dd7  ahead.txt

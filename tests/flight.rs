@@ -93,8 +93,31 @@ fn a_flight_can_be_left_to_fly_itself() {
         "the autopilot never moved the camera it was given"
     );
     // And it really flew: ten seconds is past the run-up, so the drive is lit.
-    let glyphs = String::from_utf8_lossy(&out);
-    assert!(glyphs.contains("WARP"), "the panel never showed the drive");
+    //
+    // Asked of the banner by the whole phrase rather than of the word `WARP`,
+    // which is what this used to look for and which the NAV panel stamped as a
+    // label every frame at every speed — so the assertion was satisfied by a
+    // panel that had drawn, not by a drive that had lit, and went on being
+    // satisfied after that label was taken out for saying what the banner
+    // already says.
+    //
+    // Two things come out first, and a phrase needs both. The escape codes, the
+    // way the sibling above does it and for the same reason — the sky shows
+    // through the panel, so a star behind a word puts a colour code in the
+    // middle of it. And the half block itself, because `Screen::stamp` skips
+    // its own spaces: every gap between these words keeps the glyph `compose`
+    // drew there, and one cell of sky is exactly the one space the banner
+    // wrote, so putting it back is a reading of the frame rather than a
+    // loosening of the test.
+    let glyphs: String = String::from_utf8_lossy(&out)
+        .split('\u{1b}')
+        .map(|chunk| chunk.split_once('m').map_or(chunk, |(_, rest)| rest))
+        .collect::<String>()
+        .replace('\u{2580}', " ");
+    assert!(
+        glyphs.contains("WARP DRIVE ENGAGED"),
+        "the panel never showed the drive"
+    );
 }
 
 #[test]
