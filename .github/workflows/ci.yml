@@ -69,6 +69,19 @@ jobs:
       - run: cargo package --locked --list
       - run: cargo package --locked
 
+      # The cheapest mechanical guard there is on the prose, which is otherwise
+      # the one thing in this tree nothing checks. `docs.rs` builds this crate
+      # with all features on purpose, and rustdoc's own complaints are the only
+      # warning anybody gets that a published page has gone wrong: sixteen had
+      # accumulated, fifteen of them public documentation pointing at private
+      # items — which renders as plain text rather than as a link — and one a
+      # reference to `models::attitude` that resolved to nothing at all.
+      #
+      # `--no-deps` because the dependencies' documentation is their business,
+      # and `-D warnings` for the same reason clippy takes it: a warning nobody
+      # is required to read is a warning that accumulates.
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
+
   # `rust-version` in Cargo.toml is a promise to anyone on an older toolchain,
   # and an untested promise is a guess. Checking rather than testing: this is
   # about whether the crate and its locked dependencies still compile there,
@@ -189,6 +202,34 @@ jobs:
           if LC_ALL=C grep -qP '[^\x20-\x7e\n]' ascii.txt; then
             echo "::error::--color ascii emitted bytes outside printable ascii"
             LC_ALL=C grep -nP '[^\x20-\x7e\n]' ascii.txt | head -5
+            exit 1
+          fi
+
+      # `--headless` exists to be read by something else, so being read by
+      # something that stops early is the ordinary case rather than a fault.
+      # Rust ignores `SIGPIPE`, so the write returns an error instead of ending
+      # the process, and that error used to travel all the way out to `main`
+      # and print `warp: Broken pipe (os error 32)` on the way to exit 1.
+      #
+      # Checked here rather than in a unit test because what is under test is
+      # the process's own exit status against a pipe a shell built, and there
+      # is no honest way to ask that question from inside the library.
+      - name: a closed pipe is not an error
+        run: |
+          # stdout into a pipe `head` abandons after 50 bytes, stderr into a
+          # file so it can be read back. 500 frames of 120x36 truecolor is
+          # megabytes, so the pipe buffer is long gone by the time head exits
+          # and the write really does come back EPIPE.
+          err=$(mktemp)
+          ./target/release/warp --headless --frames 500 --seed 1 \
+            --size 120x36 --demo --color truecolor 2>"$err" | head -c 50 >/dev/null
+          status=${PIPESTATUS[0]}
+          if [ -s "$err" ]; then
+            echo "::error::warp complained when its reader went away: $(cat "$err")"
+            exit 1
+          fi
+          if [ "$status" != "0" ]; then
+            echo "::error::warp exited $status when its reader went away"
             exit 1
           fi
 
