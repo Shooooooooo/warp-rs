@@ -19,7 +19,7 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::{terminal, QueueableCommand};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 /// Physics runs on a fixed step so the flight model behaves the same whether
@@ -713,6 +713,32 @@ fn handle_mouse(mouse: MouseEvent, flight: &mut Flight) {
 }
 
 fn run_interactive(args: &Args) -> io::Result<()> {
+    // Refused by name, the way `--stars` and `--color auto` are refused, and
+    // for the same reason: the mistake is worth telling somebody about.
+    //
+    // Without a terminal this is where the flight ended anyway, but it ended
+    // as `warp: No such device or address (os error 6)` — `RawGuard::new`'s
+    // ioctl, travelling out through `main` — on a command line that answers
+    // every other absurd argument with a sentence naming the limit. And with
+    // a tty on stdin but not on stdout it did something worse than fail:
+    // crossterm takes raw mode against the tty while every frame goes to
+    // stdout, so `warp > frames.txt` turned the terminal's echo and line
+    // editing off, never entered the alternate screen — that escape went into
+    // the file — and left the user looking at a blank shell that appears
+    // hung. `Esc` still quits it, which nothing on screen says.
+    //
+    // A fact read off a file descriptor rather than a capability guessed at
+    // from the environment, which is the distinction `ColorMode::detect` was
+    // deleted over: this decides whether to take the terminal over at all, not
+    // how to spell a colour at one. `--headless` and `--snapshot` never reach
+    // here, so the two modes that legitimately have no terminal are untouched.
+    if !io::stdout().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no terminal on stdout; use --headless to write frames somewhere else",
+        ));
+    }
+
     // Not `terminal::size()` directly: tmux runs a `lock-command` against a
     // tty whose window size is not set yet, so it can report zero.
     let (cols, rows) = resolved_size(args);
