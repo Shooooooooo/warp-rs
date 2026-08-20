@@ -20,7 +20,7 @@ const FALLBACK_SIZE: (u16, u16) = (160, 48);
 /// the four buffers a frame needs — two subpixels of HDR float, two of resolved
 /// RGB, and a front and back cell — so this is roughly 110 MB. Far past any
 /// real terminal, and small enough that it allocates instead of aborting.
-const MAX_CELLS: usize = 2_000_000;
+pub(crate) const MAX_CELLS: usize = 2_000_000;
 /// And no single dimension past this, so the error names the obvious mistake
 /// rather than quoting a product.
 const MAX_DIM: u16 = 10_000;

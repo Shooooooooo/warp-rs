@@ -498,7 +498,7 @@ impl Flight {
         self.renderer.present_plain(out)
     }
 
-    /// Adapt to a new terminal size. Reports whether anything actually moved,
+    /// Adapt to a new terminal size. Reports whether the canvas actually moved,
     /// so the caller can skip the repaint a resize otherwise forces.
     pub fn resize(&mut self, args: &Args, cols: usize, rows: usize) -> bool {
         // `--size` is a fixed size, not a starting point. Without this the flag
@@ -507,7 +507,29 @@ impl Flight {
         if args.size.is_some() {
             return false;
         }
-        let (cols, rows) = (cols.max(1), rows.max(1));
+        // Through the same gate `--size` goes through, and here rather than at
+        // the one call site for the reason `advance` clamps its own `dt`: this
+        // is `pub`, and `lib.rs` offers a flight to any program that cares to
+        // fly one, so the guard belongs with the allocation it protects.
+        //
+        // It used to bound nothing but zero, which left the only unvetted door
+        // into the canvas wide open. `cli::resolved_size` runs an ioctl answer
+        // through `clamp_size` on the argument that "a terminal that claims to
+        // be enormous should not be believed to the point of exhausting
+        // memory over it" — and then every *later* answer, arriving as
+        // `Event::Resize`, went straight through. A `stty cols 30000 rows
+        // 30000` against the pane a flight is running in is 9e8 cells against
+        // a `MAX_CELLS` of two million, and a failed allocation aborts the
+        // process outright: no unwind, no `Drop`, no panic hook, so `RawGuard`
+        // never restores and the user is dropped back into a shell in raw mode
+        // on the alternate screen with no cursor and no prompt. That is the
+        // exact outcome `Flight::new` is built before `RawGuard::new` to
+        // prevent, reached through the other end of the same program.
+        let (cols, rows) = cli::clamp_size(
+            cols.clamp(1, u16::MAX as usize) as u16,
+            rows.clamp(1, u16::MAX as usize) as u16,
+        );
+        let (cols, rows) = (cols as usize, rows as usize);
         if self.renderer.screen().dims() == (cols, rows) {
             return false;
         }
@@ -1995,6 +2017,12 @@ mod tests {
             (46, 12), // and just over: the full panel comes back
             (37, 13),
             (1, 1),
+            // And a terminal claiming to be the largest thing a resize event
+            // can express. `--size` refuses this at the command line; the
+            // ioctl door had nothing on it, and 4.3e9 cells is an allocation
+            // that aborts rather than fails — taking the terminal down with
+            // it, since an abort runs no `Drop`.
+            (u16::MAX as usize, u16::MAX as usize),
             (120, 40),
         ] {
             flight.resize(&args, cols, rows);
@@ -2021,8 +2049,45 @@ mod tests {
                 (sc, sr * 2),
                 "canvas and screen disagree at {cols}x{rows}"
             );
+            assert!(
+                sc * sr <= cli::MAX_CELLS,
+                "a resize to {cols}x{rows} was believed, at {} cells",
+                sc * sr
+            );
             flight.renderer.present(&mut Vec::new()).unwrap();
         }
+    }
+
+    #[test]
+    fn a_preposterous_resize_is_clamped_rather_than_believed() {
+        // The sibling of `a_preposterous_terminal_is_clamped_rather_than_
+        // believed` in `cli.rs`, and it exists because that one only ever
+        // watched the *first* answer. `resolved_size` runs the opening ioctl
+        // through `clamp_size`; every later answer arrives as `Event::Resize`
+        // and went straight into the canvas, so a `stty cols 30000 rows 30000`
+        // against a running flight asked for nine hundred million cells. A
+        // failed allocation aborts — no unwind, no `Drop`, no panic hook — so
+        // the terminal is never handed back.
+        //
+        // Asserted as the ratio rather than as an absolute pair, because both
+        // axes scale by the same factor and what has to survive is the shape.
+        let args = args_for(&["--magnitude", "3.5"]);
+        let mut flight = Flight::new(&args, 80, 24);
+        assert!(flight.resize(&args, 30_000, 30_000));
+
+        let (cols, rows) = flight.renderer.screen().dims();
+        assert!(
+            cols * rows <= cli::MAX_CELLS,
+            "a preposterous resize was believed, at {cols}x{rows}"
+        );
+        assert!(
+            cols.abs_diff(rows) * 10 < cols.max(rows),
+            "a square terminal came back {cols}x{rows}"
+        );
+
+        // And a sane one is still left exactly alone.
+        assert!(flight.resize(&args, 100, 30));
+        assert_eq!(flight.renderer.screen().dims(), (100, 30));
     }
 
     #[test]
