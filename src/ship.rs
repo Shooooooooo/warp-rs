@@ -115,7 +115,7 @@ pub struct Ship {
     /// one sky now and two cameras looking at it, so a rotation applied to the
     /// stars would have to be undone for whichever camera did not want it.
     /// Stepped by exactly the arithmetic the cockpit's field used to apply to
-    /// every star — see [`Ship::steer`] — so the view from the seat is the one
+    /// every star — see `Ship::steer` — so the view from the seat is the one
     /// it always was.
     ///
     /// Note what this is *not*: [`Self::heading`], [`Self::pitch`] and

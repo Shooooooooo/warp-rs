@@ -55,7 +55,7 @@ const _: () = assert!(
 /// star's image was moving on the leg that *leaves* it.
 ///
 /// The pace is what makes a streak an exposure rather than a shape, and it is
-/// there because [`spread`] needs it: a star lays its light down in proportion
+/// there because `spread` needs it: a star lays its light down in proportion
 /// to how long its image dwelt on a place, and dwelling is a fact about pace.
 /// It is measured as the length the whole exposure would have covered had the
 /// image kept this pace throughout — so for a streak flown straight through it
@@ -92,7 +92,7 @@ struct Ramp {
     total: f32,
     /// The star's whole light. It is divided down per *leg* rather than once
     /// for the path, because how far the light is spread depends on how fast
-    /// the image was moving there — see [`spread`].
+    /// the image was moving there — see `spread`.
     intensity: f32,
     color: [f32; 3],
 }
@@ -460,7 +460,7 @@ impl Canvas {
     ///
     /// It consults the segment and not the canvas, which is a change from what
     /// it used to do and is the whole of what makes it agree with
-    /// [`Self::draw_path`]. See [`spread`]: a streak's light is spread along
+    /// [`Self::draw_path`]. See `spread`: a streak's light is spread along
     /// the track it flew, and where the window happens to cut that track is not
     /// a fact about the streak.
     pub fn streak_spread(&self, from: (f32, f32), to: (f32, f32)) -> f32 {
@@ -642,7 +642,7 @@ impl Canvas {
     ///
     /// The *falloff* is per leg, and that is not the same mistake: it is asked
     /// of each leg's own pace, which subdividing a leg does not change. See
-    /// [`spread`].
+    /// `spread`.
     pub fn draw_path(&mut self, points: &[Trace], color: [f32; 3], intensity: f32) {
         if intensity.is_nan() || intensity <= 0.0 || points.is_empty() {
             return;

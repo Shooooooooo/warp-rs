@@ -126,7 +126,7 @@ const TRAIL_SECONDS: f32 = 3.0;
 ///
 /// The answer is to leave them out rather than to move them: a star whose
 /// sphere does not reach this far is not visible from anywhere it could
-/// actually be, so [`Universe::spawn`] draws another. That shifts the census
+/// actually be, so `Universe::spawn` draws another. That shifts the census
 /// toward the luminous classes as the limit comes down, which is not a side
 /// effect but the observation — a magnitude-two sky really is all giants, and
 /// the M dwarfs really are all too faint to be in it.
@@ -214,7 +214,7 @@ const TEN_PARSECS_LY: f32 = PARSEC_LY * 10.0;
 /// break the correlation.
 const ABSOLUTE_SPREAD: f32 = 1.5;
 
-/// How many times [`Universe::spawn`] will redraw a star too faint to be as far
+/// How many times `Universe::spawn` will redraw a star too faint to be as far
 /// off as the nearest one really is.
 const TRIES: usize = 32;
 
@@ -549,7 +549,7 @@ impl Universe {
     /// How far back along the track the exposure currently reaches, in light
     /// years.
     ///
-    /// State rather than an answer worked out on demand — see [`Self::trail`]
+    /// State rather than an answer worked out on demand — see `Self::trail`
     /// — so a caller that wants to know how much history is being drawn has to
     /// ask the sky that drew it rather than recompute it from the ship, which
     /// is the whole of the bug that field exists to have fixed. The reference
@@ -614,12 +614,12 @@ impl Universe {
     /// further, then take away whatever has fallen past the limit and put the
     /// same number back where the flow is bringing them in from.
     ///
-    /// The ship does the moving — see [`crate::ship::Ship::coast`] — so there
+    /// The ship does the moving — see `crate::ship::Ship::coast` — so there
     /// is nothing to translate here and no screen for anything to fall off.
     /// What is left is one sample and one distance test per star.
     ///
     /// It is handed the whole attitude rather than the nose alone, and the
-    /// other two axes are [`Self::track`]'s: a camera bolted to the hull rolls
+    /// other two axes are `Self::track`'s: a camera bolted to the hull rolls
     /// with it, so an exposure drawn from where the ship *was* has to be drawn
     /// through how it was pointed as well. The recycle reads the nose out of it
     /// and draws in exactly the place in the sequence it always did — `--seed`
@@ -637,7 +637,7 @@ impl Universe {
         self.track.record(origin, axes);
         // The exposure lengthens by the distance the ship actually flew and not
         // one light year more, which is what keeps a trail behind its star
-        // rather than reaching past it. See [`Self::trail`]; shortening is not
+        // rather than reaching past it. See `Self::trail`; shortening is not
         // held back, because a shorter trail moves its tail *outward* and that
         // is the direction a tail is allowed to move.
         let settled = TRAIL_SECONDS * warp * speed;

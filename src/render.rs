@@ -110,11 +110,10 @@ impl Renderer {
     /// Build the camera for this instant, shake included.
     ///
     /// The lean into a turn is deliberately *not* here, and neither is it in
-    /// the view from outside — see [`crate::ship::Ship::steer`], which is that
+    /// the view from outside — see `crate::ship::Ship::steer`, which is that
     /// rotation moved off the sky and onto the hull and carries the argument.
-    /// It leans the hull instead, by way of
-    /// [`crate::models::attitude`], which is the one place it can be seen
-    /// without also being flown.
+    /// It leans the hull instead, by way of `crate::models::attitude`, which is
+    /// the one place it can be seen without also being flown.
     pub fn camera(&self, ship: &Ship, time: f64) -> Camera {
         let (w, h) = self.canvas.dims();
         let mut cam = Camera::new(w, h);
