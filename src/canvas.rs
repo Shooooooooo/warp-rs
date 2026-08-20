@@ -597,7 +597,7 @@ impl Canvas {
         travelled: f32,
         ramp: &Ramp,
         resume_at: &mut Option<(f32, f32)>,
-    ) {
+    ) -> f32 {
         let (max_x, max_y) = (self.max_x(), self.max_y());
         let span = length_of(b.0 - a.0, b.1 - a.1);
         // How thinly this leg spreads what it caught, from the pace the image
@@ -616,7 +616,9 @@ impl Canvas {
         // against the clipped one, which would stretch the ramp back out
         // over whatever fragment survived.
         let Some((from, to)) = self.clip(a, b) else {
-            return;
+            // Nothing of this leg is on the canvas, but the ramp is a fact
+            // about the whole streak, so the caller still has to walk past it.
+            return span;
         };
         // A segment the canvas did not cut is the overwhelming case,
         // and there all three of these are already in hand: the near
@@ -656,6 +658,7 @@ impl Canvas {
             let y = (from.1 + dy * s).clamp(0.0, max_y);
             self.splat_inside(x, y, ramp.color, per_sample * level);
         }
+        span
     }
 
     /// Draw a streak that has been bent into a curve: the same light a
@@ -717,8 +720,11 @@ impl Canvas {
 
         for pair in points.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            self.draw_leg(a, b, travelled, &ramp, &mut resume_at);
-            travelled += length_of(b.0 - a.0, b.1 - a.1);
+            // The span comes back from the leg that just measured it, rather
+            // than being measured again here: it is the same two subtractions
+            // and the same root, and a bent exposure has up to twenty-three of
+            // them per star.
+            travelled += self.draw_leg(a, b, travelled, &ramp, &mut resume_at);
         }
     }
 
@@ -1880,6 +1886,33 @@ mod tests {
                 "{a:?} to {b:?} drew nothing, so the comparison said nothing"
             );
         }
+    }
+
+    #[test]
+    fn a_leg_that_caught_no_light_lays_none_down() {
+        // The sentinel `Universe::walk_back` writes when a leg stands for none
+        // of the exposure, checked at the end that reads it. It used to write
+        // `f32::INFINITY`, described as how the falloff says a leg caught
+        // nothing — and `draw_leg` tests a pace with `a.2 > 0.0 &&
+        // a.2.is_finite()`, so infinity passed the first and failed the second
+        // and took the branch meaning "no pace given, use the whole streak's
+        // length". The leg came out at an ordinary brightness. Two spellings of
+        // one idea, in two files, disagreeing about which.
+        //
+        // Asked against a leg with an ordinary pace beside it, so the
+        // comparison cannot be satisfied by a canvas that drew nothing at all.
+        let mut canvas = Canvas::new(64, 32);
+        canvas.draw_path(&[(4.0, 8.0, 40.0), (44.0, 8.0, 40.0)], [1.0; 3], 6.0);
+        let ordinary: f32 = (0..64).map(|x| canvas.buf[8 * 64 + x][0]).sum();
+        assert!(ordinary > 0.0, "the control leg drew nothing");
+
+        let mut canvas = Canvas::new(64, 32);
+        canvas.draw_path(&[(4.0, 8.0, f32::MAX), (44.0, 8.0, 40.0)], [1.0; 3], 6.0);
+        let spent: f32 = (0..64).map(|x| canvas.buf[8 * 64 + x][0]).sum();
+        assert!(
+            spent <= ordinary * 1e-6,
+            "a leg that caught none of the exposure laid down {spent} against {ordinary}"
+        );
     }
 
     #[test]

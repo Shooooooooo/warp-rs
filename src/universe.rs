@@ -1313,7 +1313,17 @@ fn walk_back(
         points[i].2 = if share > f32::MIN_POSITIVE {
             span / share
         } else {
-            f32::INFINITY
+            // Large and *finite*, which is a correction. This said
+            // `f32::INFINITY`, described as how the falloff says a leg caught
+            // no light — and `Canvas::draw_leg` reads a pace with
+            // `a.2 > 0.0 && a.2.is_finite()`, so infinity passed the first test,
+            // failed the second, and took the branch meaning "no pace given,
+            // use the whole streak's length". A leg standing for none of the
+            // exposure was drawn at an ordinary brightness. `f32::MAX` puts
+            // `spread` past what an `f32` holds, so the per-sample light really
+            // is nothing, and `is_finite` goes back to meaning what it says:
+            // a NaN, and therefore no pace at all.
+            f32::MAX
         };
     }
     lo

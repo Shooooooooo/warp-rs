@@ -427,7 +427,10 @@ spelling a colour into one stack sequence instead of seven capacity-checked
 pushes (−30% of the write column), `canvas::length_of` in place of `hypot`
 (−6% of an exterior frame), `Lens::inv_axes` (−1.8%), `draw_path` reusing the
 span it already measured (−2.5%), and the twinkle `sin` skipped at warp, where
-its amount is a hard zero (−2%). Together they took the expensive frame — the
+its amount is a hard zero (−2%). `draw_leg` handing back the span it measured,
+so the walk above it does not measure the same leg a second time, is the newest
+and is measured against the sky as it is now: −2% of the outside view at warp
+with the stick held, which is the frame with the most legs in it. Together they took the expensive frame — the
 outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2.
 
 **Those figures are from before the sky went world-space and none of them is
