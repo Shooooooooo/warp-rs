@@ -179,9 +179,24 @@ const TAIL_COS: f32 = 0.15;
 ///
 /// A ceiling on the subdivision and not on the exposure, for the reason
 /// [`crate::bend`] has one: a hard turn is drawn in full, and what this bounds
-/// is how much work drawing it may become. Twenty-four points is twenty-three
-/// legs, which covers the yaw stop's whole 146-degree sweep at [`SAGITTA`] on
-/// every terminal up to about 200x60 and facets very slightly past that.
+/// is how much work drawing it may become.
+///
+/// Twenty-four points is twenty-three legs, and it used to say here that this
+/// covers the yaw stop's whole sweep at [`SAGITTA`] up to about 200x60. It does
+/// not, and the arithmetic is worth writing out because the two constants work
+/// against each other and this one silently wins. At the stop the *attitude*
+/// turns about 3.1 radians over an exposure, against a per-leg budget of 0.131
+/// on a 200x60 canvas: 24 legs before the near stars' parallax is counted, and
+/// that multiplies it by five. So a buried stick asks for something over a
+/// hundred legs and is given twenty-three.
+///
+/// The consequence is not a fault — a hard turn washes the sky out rather than
+/// drawing it wrong, and the rates decay in under a second — but it is the
+/// reason two plausible optimisations do not pay. Cutting the pose count by a
+/// star's own parallax saves almost nothing, because the count is not set by
+/// parallax at the stop; it is set here. And loosening `SAGITTA` saves nothing
+/// either, for the same reason. What a turn costs is the arc length rasterised,
+/// which is a question for `Canvas::draw_leg` rather than for either of these.
 ///
 /// It is also the width of the array a frame walks, on the stack and reused by
 /// every star, so it is a hundred and ninety bytes rather than an allocation.
@@ -2365,6 +2380,126 @@ mod tests {
         // the tunnel, the bubble and the hull are looked at with nothing
         // streaming past them.
         assert_eq!(Universe::population(-2.0), 0);
+    }
+
+    #[test]
+    fn the_exposure_is_cut_finely_enough_to_be_a_curve() {
+        // `SAGITTA` and the spacing it drives were named by no test at all, and
+        // the first attempt at one asserted *counts* — a handful of legs for a
+        // weave, the ceiling for a buried stick. It caught nothing: a count
+        // compared against `MAX_STATIONS` moves with it, and a bound written as
+        // a multiple of `SAGITTA` moves with that. What the spacing is for is
+        // the picture, so this measures the picture: how far the drawn polyline
+        // falls from the curve it stands for, against a finely sampled walk of
+        // the same track, at an absolute number of subpixels.
+        //
+        // Measured rather than chosen. The spacing as written holds a moderate
+        // turn to 0.022 subpixels; dropping the parallax term from `swing` —
+        // the one CLAUDE.md records as having been measured and kept — cuts the
+        // same exposure from fifteen legs to three and takes it to 0.447. A
+        // quarter of a subpixel sits an order of magnitude clear of the first
+        // and half an order below the second, which is the margin that catches
+        // a regression rather than merely passing.
+        //
+        // Asked at a turn the ceiling does not bind, on purpose: at the yaw
+        // stop `MAX_STATIONS` wins and the exposure is faceted well past what
+        // the budget asks for, so the deviation there is a fact about the cap
+        // rather than about the spacing. That is written up beside the constant.
+        let (legs, worst) = fit_of_the_exposure(&Camera::new(60, 36), 0.01);
+        assert!(
+            legs < MAX_STATIONS - 1,
+            "the ceiling bound this turn at {legs} legs, so it says nothing about the spacing"
+        );
+        assert!(
+            worst < 0.25,
+            "a {legs}-leg exposure fell {worst} subpixels short of its own curve"
+        );
+    }
+
+    /// Fly a turn, then ask how many legs one star's exposure was cut into and
+    /// how far the drawn polyline strays from the curve it stands for.
+    ///
+    /// The reference curve is walked independently of the thing under test:
+    /// `Track::pose_at` is sampled two hundred times over the exposure's reach
+    /// and each pose is projected the way `Observer::cockpit` projects the
+    /// current one, so a wrong spacing shows as distance rather than as a
+    /// different count.
+    fn fit_of_the_exposure(cam: &Camera, stick: f32) -> (usize, f32) {
+        // A sky dense enough that the band below holds a few hundred stars
+        // rather than a few: what is being sampled is the *curve*, and one star
+        // is one curve however finely it is walked.
+        let mut sky = Universe::new(6.0, 4);
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        ship.toggle_warp();
+        for _ in 0..1200 {
+            ship.nudge_yaw(stick);
+            ship.nudge_pitch(-stick);
+            fly(&mut sky, &mut ship, 1);
+        }
+
+        let reach = sky.exposure();
+        let eye = seated(&ship);
+        let mut stations = [Station::HELD; MAX_STATIONS];
+        let legs = sky.stations(cam, &eye, reach, &mut stations);
+        assert!(legs > 0, "the flight never turned enough to cut anything");
+
+        let mut worst = 0.0f32;
+        let mut checked = 0;
+        let mut points = [(0.0f32, 0.0f32, 0.0f32); MAX_STATIONS];
+        for star in &sky.stars {
+            let pos = eye.place(star.pos);
+            let Some(head) = cam.project_beyond(pos, STAR_NEAR) else {
+                continue;
+            };
+            // Out where the budget was derived, and on screen: the spacing is
+            // set by the frame corner, so a star near the axis is inside the
+            // budget however coarsely it is cut.
+            let radius = crate::canvas::length_of(head.0, head.1);
+            if radius < cam.width * 0.2 || radius > cam.width * 0.6 {
+                continue;
+            }
+            let lo = walk_back(&stations[..legs], pos, head, cam, &mut points);
+            if lo > legs - 1 {
+                continue;
+            }
+            let drawn = &points[lo..=legs];
+
+            // The same exposure, walked finely and independently.
+            for i in 0..=200 {
+                let back = reach * i as f32 / 200.0;
+                let (origin, axes) = sky.track.pose_at(back);
+                let then = Observer::cockpit(axes, origin, ship.warp_intensity());
+                let Some(p) = cam.project_beyond(then.place(star.pos), STAR_NEAR) else {
+                    continue;
+                };
+                let away = drawn
+                    .windows(2)
+                    .map(|leg| distance_to_segment(p, (leg[0].0, leg[0].1), (leg[1].0, leg[1].1)))
+                    .fold(f32::INFINITY, f32::min);
+                if away.is_finite() && away > worst {
+                    worst = away;
+                }
+                checked += 1;
+            }
+            if checked > 4000 {
+                break;
+            }
+        }
+        assert!(checked > 600, "only {checked} samples were compared");
+        (legs, worst)
+    }
+
+    /// How far `p` is from the segment `a`-`b`.
+    fn distance_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let square = dx * dx + dy * dy;
+        let t = if square > f32::MIN_POSITIVE {
+            (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / square).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        crate::canvas::length_of(a.0 + dx * t - p.0, a.1 + dy * t - p.1)
     }
 
     #[test]

@@ -655,6 +655,34 @@ mod tests {
         }
     }
 
+    /// The noses this module's properties are asked at, which is more than the
+    /// one they were all written against.
+    ///
+    /// `ABEAM` is the shot the whole module was written from, and it is the one
+    /// angle where `offsets` takes its `sin == 0.0` branch — an exact swizzle
+    /// with the rotation switched off. That branch exists because a broadside
+    /// bubble ought not to depend on `√(RING_MAJOR²)` surviving IEEE
+    /// arithmetic, and it is a measured five percent of drawing a warp frame,
+    /// since it sits under the two hottest gates in the program. The cost of
+    /// having it is that every property here was asserted with the *other*
+    /// branch — the one every frame off the beam actually runs — never taken.
+    ///
+    /// So: abeam, a little off it, well off it, head-on down the barrel, dead
+    /// astern, and two corners with the elevation off zero as well, which is
+    /// where the outline is foreshortened and turned at once.
+    fn noses() -> impl Iterator<Item = [f32; 3]> {
+        [
+            [1.0, 0.0, 0.0],
+            [0.94, 0.0, -0.34],
+            [0.5, 0.0, -0.87],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0],
+            [0.61, 0.5, -0.61],
+            [-0.61, -0.5, -0.61],
+        ]
+        .into_iter()
+    }
+
     /// A ring's worth of directions to sweep a property over, so nothing is
     /// asserted about the long axis that is not also asserted about the waist.
     /// The bubble is not round any more, and a test that only ever probes along
@@ -666,11 +694,25 @@ mod tests {
         })
     }
 
-    /// The point `m` Einstein radii from the centre along `(ux, uy)`.
+    /// The point `m` Einstein radii from the centre along `(ux, uy)`, where the
+    /// direction is read in the *bubble's* own frame.
+    ///
+    /// The rotation at the end is not decoration and its absence did not show
+    /// for as long as every test here was written at one nose: abeam, `turn` is
+    /// exactly `(1, 0)` and this is the arithmetic it always was. Off the beam
+    /// the outline is turned, so a point placed as though the ellipse were
+    /// square to the frame is not `m` rings out at all — which reads as the
+    /// lens having moved an image the wrong way rather than as the fixture
+    /// having asked about the wrong point.
     fn at(lens: &Lens, dir: (f32, f32), m: f32) -> (f32, f32) {
         let (a, b) = lens.semi_axes();
         let scale = m / (dir.0 / a).hypot(dir.1 / b);
-        (lens.center.0 + dir.0 * scale, lens.center.1 + dir.1 * scale)
+        let (along, across) = (dir.0 * scale, dir.1 * scale);
+        let (cos, sin) = lens.turn();
+        (
+            lens.center.0 + along * cos - across * sin,
+            lens.center.1 + along * sin + across * cos,
+        )
     }
 
     #[test]
@@ -693,42 +735,58 @@ mod tests {
         // the bubble around the ship swept clear of stars. Said in offsets, so
         // it is a statement about the ellipse and not about a circle that
         // happens to be inscribed in it.
-        let lens = lens();
-        for dir in directions() {
-            for i in 0..80 {
-                let m = i as f32 * 0.1;
-                let p = at(&lens, dir, m);
-                let out = lens.map(p, Image::Primary);
-                let imaged = lens.offset(out.at);
-                assert!(
-                    imaged >= 1.0 - 1e-3,
-                    "a source {m} rings out along {dir:?} imaged at {imaged}"
-                );
-                // And it only ever moves outward, never back toward the centre.
-                assert!(imaged >= m - 1e-3);
+        //
+        // Asked at every nose rather than only abeam, which is a correction:
+        // abeam is the one angle where `offsets` takes its `sin == 0.0` branch,
+        // so every property in this module was written with the rotated
+        // arithmetic — the arithmetic every frame off the beam runs — never
+        // exercised.
+        for nose in noses() {
+            let lens = Lens::for_warp((100.0, 50.0), 1.0, 10.0, nose);
+            for dir in directions() {
+                for i in 0..80 {
+                    let m = i as f32 * 0.1;
+                    let p = at(&lens, dir, m);
+                    let out = lens.map(p, Image::Primary);
+                    let imaged = lens.offset(out.at);
+                    assert!(
+                        imaged >= 1.0 - 1e-3,
+                        "at nose {nose:?}, a source {m} rings out along {dir:?} imaged at {imaged}"
+                    );
+                    // And it only ever moves outward, never toward the centre.
+                    assert!(
+                        imaged >= m - 1e-3,
+                        "at nose {nose:?}, {m} imaged at {imaged}"
+                    );
+                }
             }
         }
     }
 
     #[test]
     fn the_counter_image_is_inside_the_ring_and_on_the_far_side() {
-        let lens = lens();
-        for dir in directions() {
-            for m in [0.4, 1.0, 2.5, 7.0] {
-                let p = at(&lens, dir, m);
-                let inner = lens.map(p, Image::Secondary);
-                assert!(
-                    lens.offset(inner.at) <= 1.0 + 1e-3,
-                    "the counter-image escaped the ring: {:?}",
-                    inner.at
-                );
-                // Opposite side means the two offsets point against each other.
-                let (dx, dy) = (p.0 - lens.center.0, p.1 - lens.center.1);
-                let (ix, iy) = (inner.at.0 - lens.center.0, inner.at.1 - lens.center.1);
-                assert!(
-                    ix * dx + iy * dy < 0.0,
-                    "{dir:?} at {m} imaged to {ix},{iy}"
-                );
+        // At every nose, for the reason the test above sweeps them: abeam is
+        // the one angle whose arithmetic skips the rotation.
+        for nose in noses() {
+            let lens = Lens::for_warp((100.0, 50.0), 1.0, 10.0, nose);
+            for dir in directions() {
+                for m in [0.4, 1.0, 2.5, 7.0] {
+                    let p = at(&lens, dir, m);
+                    let inner = lens.map(p, Image::Secondary);
+                    assert!(
+                        lens.offset(inner.at) <= 1.0 + 1e-3,
+                        "at nose {nose:?} the counter-image escaped the ring: {:?}",
+                        inner.at
+                    );
+                    // Opposite side means the two offsets point against each
+                    // other.
+                    let (dx, dy) = (p.0 - lens.center.0, p.1 - lens.center.1);
+                    let (ix, iy) = (inner.at.0 - lens.center.0, inner.at.1 - lens.center.1);
+                    assert!(
+                        ix * dx + iy * dy < 0.0,
+                        "at nose {nose:?}, {dir:?} at {m} imaged to {ix},{iy}"
+                    );
+                }
             }
         }
     }
