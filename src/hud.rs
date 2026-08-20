@@ -61,10 +61,13 @@ const ASCII_HINTS: [&str; 3] = [
 /// spare, and `tests/flight.rs` flies at exactly sixty, so a longer word there
 /// would shed the tier and lose the *throttle* to gain the camera.
 ///
-/// The zoom still appears on the widest tier and no further, which is where
-/// `C view` and `M ships` already stop. It runs the other way from the rest —
-/// the one control that does nothing from the pilot's seat, since there is no
-/// ship in there to be looking at.
+/// The zoom appears on the widest tier and no further, which is where `M
+/// ships`, `P pause` and `R reset` already stop. `C view` is the exception on
+/// this face and is on all three, which is deliberate rather than an oversight:
+/// out here it is the way *back*, and a control that takes you somewhere ought
+/// not to be the one a narrow window sheds. The zoom runs the other way from
+/// the rest — the one control that does nothing from the pilot's seat, since
+/// there is no ship in there to be looking at.
 const SIDE_HINTS: [&str; 3] = [
     "SPACE warp  \u{2191}\u{2193} throttle  WASDQE cam  [] zoom  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  \u{2191}\u{2193} throttle  WASDQE cam  C view  ESC quit",

@@ -27,7 +27,7 @@ years a second, the near sky tears past a far one that barely moves, which is
 the depth cue the old three-hundred-unit-deep volume could not have had.
 
 One crate, `warp-rs`, with a binary named `warp`. `src/lib.rs` carries
-everything; `src/main.rs` is sixteen lines of entry point. That split is
+everything; `src/main.rs` is thirty-odd lines of entry point. That split is
 load-bearing, and what holds it is `tests/flight.rs`, which drives a whole
 flight through the public surface without touching the binary — so the library
 cannot quietly grow a dependency on `main.rs` having done something first. Note
@@ -55,9 +55,21 @@ restores. Weigh a dependency by what it adds to the *tree* and what nothing
 else can do, not by the length of the list in `Cargo.toml`.
 
 That the rule is real rather than aspirational is worth knowing when you next
-touch the manifest: it is enforced, by the committed `Cargo.lock` and the
-`--locked` every cargo invocation in CI passes. A features slip or a stray
-`cargo add` fails with *cannot update the lock file* rather than landing green.
+touch the manifest, and so is exactly how far the enforcement goes. The
+committed `Cargo.lock` and the `--locked` every cargo invocation in CI passes
+catch a manifest edit whose lock was *not* regenerated: re-enabling crossterm's
+`derive-more` adds packages, so it fails with *cannot update the lock file*
+rather than landing green. What they do not catch is a feature that pulls no
+new package, or a `cargo add` whose regenerated lock is committed alongside it
+— which is what that command produces by default. So `--locked` guards against
+a forgotten regeneration, and the rule itself is guarded by whoever reads the
+diff.
+
+The other consequence of pinning the tree is that it will never drift into a
+fix either, so nothing here would ever report an advisory against one of the 41
+crates. That is what the `audit` job is for; it runs on a schedule rather than
+on pull requests, because it takes minutes to build the auditor and says
+nothing about a diff.
 
 `tests/golden.rs` is the rule taken to its conclusion: it spells SHA-256 out in
 a page of shifts and adds rather than adding a dependency for one test, and
@@ -69,8 +81,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 315 unit + 9 flight + 3 golden, ~20s
-cargo test --locked --all-features      # 319 unit — adds the snapshot-gated ones
+cargo test                              # 325 unit + 16 elsewhere, about 25s
+cargo test --locked --all-features      # 329 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -133,9 +145,13 @@ come out 480x272 and stack with their edges in line. The hero used to ask for
 right of the page for no reason anyone had written down. A reshoot that reaches
 for `--size` puts it back.
 
-Nothing pins these bytes — `tests/golden/frames.sha256` is the *text* frames and
-knows nothing about the PNGs — so a reshoot is checked by looking at it. What
-the flags guarantee is only that the drive is lit and fully spooled: 600 warmup
+The `headless` CI job hashes these two now, so a reshoot that changed the sky
+turns it red rather than going unnoticed — which is what happened for the whole
+life of the renderer before anybody compared. That is a check on staleness and
+not on taste: a moved hash is a reshoot to be looked at and committed, and
+whether the picture is *good* is still a judgement nothing can make for you.
+What the flags guarantee is only that the drive is lit and fully spooled: 600
+warmup
 frames at the default `--fps 60` is ten simulated seconds, and `run_snapshot`
 prints the velocity it finished at, which at `--throttle 1.0` is 2000 c.
 
@@ -153,10 +169,17 @@ The in-process half is the reason `render_headless` is public and separate from
 `run_headless`. It costs about four seconds — most of `cargo test`'s wall clock
 after the unit tests — and is **Linux-gated**, for the reason below.
 
-**Ten flights, and the case list lives in three places** — the comment block
-in `frames.sha256`, `CASES` in `tests/golden.rs`, and the `headless` CI job.
-Adding one means adding it to all three, and `.gitignore` needs the file's name
-too, which is a list that has fallen behind that recipe twice. They share
+**Ten flights, and the case list lives in four places** — `CASES` in
+`tests/golden.rs`, the comment block in `frames.sha256`, the `headless` CI job,
+and `.gitignore`. It is *checked* in all four now:
+`the_case_list_says_the_same_thing_in_all_four_places` reads the workflow and
+the ignore list and asks that each act on every flight, in both directions, so a
+new one cannot be added to `CASES` alone and a deleted one cannot be left
+behind. It matches on the redirect that writes a file and the line that ignores
+it rather than on the name appearing anywhere, which is the difference between a
+check and a formality: both files carry a paragraph naming all ten, and deleting
+`/drift.txt` from `.gitignore` passed a plain substring search. The prose is
+still prose and still yours to keep level. They share
 `--headless --frames 120 --seed 1 --size 120x36` and differ in what they make
 the renderer do: three `--demo` runs in truecolor, ascii and 256, one
 `--engage --throttle 1.0`, one of those from `--view side`, the same again with
@@ -483,10 +506,33 @@ grounds. It is self-limiting — the steering rates decay in under a second and
 the exposure forgets in three, so a hard turn costs a few seconds and cannot be
 held. And the light is spread along the arc it was smeared over, so what a
 hammered turn does is wash the sky out rather than blind it, which is both the
-honest picture and the reason nothing is saturating while it happens. If it ever
-wants bounding, the shape to reach for is not a shorter exposure but fewer poses
-for the *far* stars: the count follows the worst parallax in the sky, which is
-the nearest star there is, and most of the pool needs a fraction of it.
+honest picture and the reason nothing is saturating while it happens.
+
+**The escape hatch this paragraph used to name does not work, and that was
+measured rather than argued.** It said the shape to reach for is fewer poses for
+the *far* stars, on the reasoning that the count follows the worst parallax in
+the sky — the nearest star there is — and most of the pool needs a fraction of
+it. The pool statistics agree: at `--magnitude 8` the median star is 133 ly out
+against an exposure reaching 16.4, so only 2 297 of 72 363 stars need more than
+half the legs the nearest one does. It was built anyway. `Universe::stations`
+already spaces one station list by equal *turn*, so a star can walk a stride
+through it for nothing, and the whole thing is a per-star integer. It bought
+**13%** — 46.57 ms to 40.59 in the cockpit, 54.40 to 47.19 from outside, with
+every straight-flight case unchanged to the hundredth of a millisecond.
+
+Two reasons, and both are worth knowing before anyone reaches for it again. The
+pose count is not set by parallax at the stop, it is set by `MAX_STATIONS`: the
+attitude alone asks for about 24 legs there against a ceiling of 23, so the
+whole pool is already pinned at the ceiling and there is no spread to exploit.
+And a stride that still tracks the arc rasterises the same arc — `draw_leg`
+takes one sample per subpixel of span, so halving the legs while following the
+same curve halves nothing. Forcing a straight chord beyond 50 ly, which is far
+outside the sagitta budget and changes the picture, gets 24.01 ms, and that win
+comes from drawing a *shorter polyline* rather than from fewer poses.
+
+So the turn's cost is the arc length sampled. If it ever wants bounding the
+lever is the sample budget in `Canvas::draw_leg`, not the pose count in
+`Universe::stations` and not `SAGITTA`.
 
 ## Layout
 
@@ -516,6 +562,8 @@ src/snapshot.rs   PNG writer, behind `--features snapshot`
 tests/flight.rs   a whole flight through the public surface, and nothing else
 tests/golden.rs   the reference frames, reproduced in process; its own SHA-256
 tests/golden/     frames.sha256 — the pinned bytes, and how to remake them
+tests/terminal.rs a real terminal, from `script`: that a flight hands it back,
+                  on the deadline and on a signal, and says so when there is none
 examples/bench.rs where a frame's 16.7 ms goes
 docs/             the README's screenshots; excluded from the published crate
 ```
@@ -553,9 +601,13 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
 2. Streaks: `sky.sweep(cam, &observer, time, draw)` hands each star's exposure
    to a closure as the track it swept — two points where the ship flew straight
    through the shutter's whole reach, and a path of up to twenty-four where it
-   turned. Two points go to `canvas.draw_streak` in the cockpit and anything
-   longer to `draw_path`; the two share `draw_leg`, so which one runs decides
-   nothing about the picture. The same sky, through a different `Observer`, and the side view
+   turned. Every one of them goes to `canvas.draw_path`, two points or
+   twenty-four. It used to pick `draw_streak` for a pair on the grounds that
+   the two share `draw_leg` and so lay down the same light — true of the light
+   and false of the *pace*, which is the third component of a point and the one
+   thing a `Streak` has nowhere to carry. `draw_streak` is still what the
+   drive's own trail goes through, since a plume has a length rather than a
+   track. The same sky, through a different `Observer`, and the side view
    hands the result to `bend::Bend::draw`, which bends the ones
    the lens actually reaches — chopping each into arcs and drawing both images
    — and leaves the rest, which at sublight is all of them, on the ordinary
@@ -606,34 +658,52 @@ lays a swing of its own on top of whatever `--orbit` parked the shot at.
 `--demo 5 --headless` does not stop after five seconds; headless always runs
 exactly `--frames` frames. The deadline is checked only in the interactive loop.
 
-**`--fps` means two different things.** Interactively it is only a frame budget,
-and only while nothing is being typed — see the drain loop below, which spends
-it waiting and abandons what is left of it the moment a key has moved the
-flight. The panel shows a smoothed measurement, which is why it reads high for a
-moment when the stick is worked. In headless and snapshot it *is* the simulation
-timestep — `dt = 1.0 / args.fps` — so changing it changes the flight, and
-changing how it is used moves the golden frames.
+**`--fps` means two different things**, and `--help` says both now — leaving
+the second out is how somebody sets `--fps 10` on a headless run to save time
+and gets a twelve-second flight instead of a two-second one. Interactively it
+is only a frame budget, and only while nothing is being typed — see the drain
+loop below, which spends it waiting and abandons what is left of it the moment
+a key has moved the flight. The panel shows a smoothed measurement, which is
+why it reads high for a moment when the stick is worked. In headless and
+snapshot it *is* the simulation timestep — `dt = 1.0 / args.fps` — so changing
+it changes the flight, and changing how it is used moves the golden frames.
 
-Three more asymmetries worth knowing before you touch the loops: `P` gates only
-`advance`, so a paused `--demo` still runs its autopilot, still repaints, and
-still exits at its deadline. **One thing about that had to be qualified**, and
-the qualification is not a hedge: the step handed to `fly_itself` is zero while
-paused. The throttle and the camera are closed forms of the clock and so are
-unaffected either way, but the stick is an impulse against a damper and the
-damper is in `advance` — so a pause that stopped the damping and not the
-impulse ratcheted the rate with nothing bleeding it off. Eleven seconds of `P`
-pinned the yaw at `MAX_YAW_RATE`, held the hull at its full lean, drove
+Three more asymmetries worth knowing before you touch the loops. **`P` stops the
+flight, including the schedule it is flying to**, which took two corrections to
+arrive at and neither was a hedge.
+
+It gated `advance` alone, and the paragraph here said a paused `--demo` goes on
+flying itself, repainting and exiting at its deadline. The first correction was
+the *step*: the stick is an impulse against a damper and the damper is in
+`advance`, so a pause that stopped the damping and not the impulse ratcheted the
+rate with nothing bleeding it off — eleven seconds of `P` pinned the yaw at
+`MAX_YAW_RATE`, held the hull at its full lean, drove
 `models::drive_behind_hull` to a hard one, and snapped the ship into a turn on
-the way out. In screensaver mode `handle_key` is never reached
-at all — any non-release key breaks the loop, so there are no controls, not even
-pause. And `R` restores what the *command line* asked for rather than any fixed
-number: `args.throttle` rather than `Ship::new()`'s 0.18, and `args.orbit`
-rather than `Orbit::LEVEL`. The zoom has no flag, so it goes back to
-`ZOOM_DEFAULT`. All three are snapped rather than eased — `R` is the key for
-when the view has got away from you, and watching it saunter back is not what
-is wanted — and the snap is load-bearing beyond taste: the orbit ease is
-asymptotic, so only an exact reset gets the camera back to the bitwise-level
-shot the fast paths below are written for.
+the way out. The second was the *clock*, and it was left on wall time on the
+argument that the throttle and the camera are closed forms of it and so are
+unaffected either way. True of the throttle and false of the camera: the closed
+form gives the orbit *target*, and a frame is built from `Flight::orbit`, which
+eases toward it in `advance` — which the pause also stops. So the target walked
+and the camera stood still, at `CAMERA_TURN`'s turn every 43 seconds, and the
+ease closes 7.2% of the gap per sim step: ten seconds of `P` whipped the camera
+most of the way round the hull inside a second of resuming, saturating at half a
+turn after about twenty-one.
+
+`fly_itself` is handed `Flight::time` now, which `advance` is the only thing
+that moves, so there is no second accumulator to keep in step. What that costs
+is the sentence about flying itself: a paused demo does not, and the throttle
+holds where it was. The two things it goes on doing are the two that were worth
+having — it repaints, and it exits at its deadline, which still reads the wall.
+
+In screensaver mode `handle_key` is never reached at all — any non-release key
+breaks the loop, so there are no controls, not even pause. And `R` restores
+what the *command line* asked for rather than any fixed number: `args.throttle`
+rather than `Ship::new()`'s 0.18, and `args.orbit` rather than `Orbit::LEVEL`.
+The zoom has no flag, so it goes back to `ZOOM_DEFAULT`. All three are snapped
+rather than eased — `R` is the key for when the view has got away from you, and
+watching it saunter back is not what is wanted — and the snap is load-bearing
+beyond taste: the orbit ease is asymptotic, so only an exact reset gets the
+camera back to the bitwise-level shot the fast paths below are written for.
 
 The interactive loop handles **input at the end of the frame**, in an
 event-drain loop that blocks on `event::poll` rather than sleeping — so a key
@@ -913,7 +983,7 @@ the ship — `azimuth` round it, `elevation` over it, `roll` about the view axis
 — and `Eye` is `Orbit::basis()` plus the standoff `ship_distance(zoom)`. They
 live there rather than beside the hull because they are what the *sky* is
 streamed against as well as what the hull is posed by; putting them in
-`models.rs` would make `exterior.rs` reach through the ship models to find out
+`models.rs` would make `render.rs` reach through the ship models to find out
 which way it is being looked at.
 
 **All three angles are the camera's, and all three go all the way round.** None
@@ -1353,8 +1423,33 @@ reorder them and `Ctrl-C` cycles the camera.
 **Key releases are discarded.** They arrive only from kitty-protocol terminals,
 and acting on them counts a single press twice.
 
-**`--size` is a fixed size, not a starting point.** `Flight::resize` returns
-`false` immediately when it is set. Without that the flag held only until the
+**A resize goes through `cli::clamp_size`, and for a while only the *first* one
+did.** `resolved_size` runs the opening ioctl answer through it on the argument
+that a terminal claiming to be enormous should not be believed to the point of
+exhausting memory; every later answer arrives as `Event::Resize` and went
+straight into the canvas, which bounded nothing but zero. So a size the command
+line refuses by name — `--size 5000x5000` answers "25000000 cells, past the
+limit of 2000000" — was taken silently through the other door and allocated 1.1
+GB, and `stty cols 30000 rows 30000` against a running flight asks for nine
+hundred million cells. A failed allocation *aborts*: no unwind, no `Drop`, no
+panic hook, so `RawGuard` never restores and the user is dropped back into a
+shell in raw mode on the alternate screen — the exact outcome `Flight::new` is
+built before `RawGuard::new` to prevent, reached through the far end of the same
+program. The clamp lives in `Flight::resize` rather than at the call site for
+the reason `advance` holds its own `dt`: it is `pub`, and a guard belongs with
+the allocation it protects.
+
+**`--size` is a fixed size, not a starting point, and that answers one question
+rather than two.** `Flight::resize` returns `false` immediately when it is set —
+which is right about the *canvas* and was wrong about the repaint, because the
+terminal moved whatever the canvas did. The alternate screen discards the rows
+past a new smaller height, `Screen::front` goes on holding the cells it drew
+there, and `diff` re-emits none of them: a band of the frame stays blank until
+each cell in it happens to take a different value, which on a starfield is
+mostly never. The repaint follows the last size the *terminal* reported now and
+the canvas follows `resize`, and the reason the gate exists survives intact — a
+resize event that settles on the size already in use reports the same pair and
+still repaints nothing. Without that the flag held only until the
 first resize event. A resize no longer touches the sky at all — it resizes the
 canvas and stops. That is a stronger statement than the one that stood here for
 a while, which said it moved "the frustum the stars are laid out in, which is
@@ -1394,6 +1489,27 @@ the grid rather than to taste: at 6.5 a 120x36 canvas is asked for about a
 thousand stars across 8 640 subpixels, the faint end of the count law is most of
 them, and the picture comes out an even wash rather than a sky. Both were shot
 and looked at. If you move it, shoot it again.
+
+**A star is placed inside its own visibility sphere, and that sphere is centred
+on the ship rather than on the world's origin.** `Universe::spawn` centred it on
+the origin, which is right exactly once — at construction, before the ship has
+gone anywhere — and `set_limit` is the other caller, arriving from a key at any
+point in a flight. Ten minutes of full warp put the ship three thousand light
+years out, and the four and a half thousand stars a press of `+` added landed in
+a clump directly astern: a mean direction from ship to fresh star of (0.000,
+0.001, -0.989) against about nothing for a sky made fresh. Nobody reported a
+clump, because none of them survived a step — every one was outside its own
+`reach_sq`, so the next `advance` recycled it to exactly the limiting magnitude,
+where it is at no brightness at all. The key moved the readout, quadrupled the
+pool, and did not change the picture.
+
+`stock` reads the origin once and hands it down, spelled the way the recycle
+spells it. `Track::pose_at` answers `[0.0; 3]` on an empty ring, so construction
+is bit-identical and no reference hash moved. What is worth carrying forward is
+why nothing caught it: all three tests over this path — the two on `set_limit`
+and `no_direction_holds_a_thinner_sky_than_any_other`, which is the acceptance
+test for the whole world-space rebuild — fly a ship parked at the origin, which
+is the one place the bug cannot happen.
 
 **The `+`/`-` keys reach the two ends `--magnitude` reaches** — `cli::MIN_MAGNITUDE`
 and `cli::MAX_MAGNITUDE` — so a sky the keys walk to can never be one the
@@ -1550,7 +1666,28 @@ the ship's own attitude, and there is no horizon for an angle to be measured
 against. So `heading` and `pitch` are a *compass* — an
 instrument reading, and the panel's business — not a bearing off some fixed
 frame, and posing the hull from either tips it off the track and leaves it
-there. That was a real bug: a few seconds of `W` inside, then `C`, and the ship
+there.
+
+**They are read off the attitude rather than integrated beside it, and the
+direction of that is the whole of it.** `pitch` was an integral of the pitch
+rate with a clamp on top, under a comment saying the axis stops short of
+straight up because there is no way back over the top. The axis does not stop;
+only the number did — and a clamp discards the *input* rather than the rate, so
+what it threw away never came back. Five seconds of `W` and five of `S` leave
+the ship level, at a flown nose of -0.7 degrees, with the panel reading +76.5
+and staying there. `heading` was the same shape without a clamp to make it
+obvious: the yaw rate is about the ship's own vertical and rotations do not
+commute, so a yaw flown while rolled moved the compass by the amount it would
+have moved level.
+
+Posing or projecting *from* a compass is the bug this tree has shipped twice,
+because a reading is one number where an attitude is three axes and the missing
+two get invented. Reading a compass *off* the attitude is the other direction
+and cannot go that way: nothing in the frame depends on the answer. `roll` is
+the one that still cannot be read back, since it turns the ship about the axis
+it is flying along and leaves no trace in the nose — and it is what
+`models::attitude` poses the hull by, where the other two are instruments and
+nothing else. That was a real bug: a few seconds of `W` inside, then `C`, and the ship
 sat nose-high for the rest of the flight against stars streaming dead level.
 Pitch and yaw are leans off the *rates* for that reason, so they say the pilot
 is on the stick now and hand the ship back to its track when it is let go. Roll
@@ -1879,7 +2016,24 @@ all `== ViewMode::X` today, so a third view wants a third answer to each of the
 three — and a key matching none of them falls through to nothing at all, which
 is a control that has quietly gone missing rather than a compile error.
 
-**Changing the controls.** Four hint arrays in `src/hud.rs` — a face per colour
+**Changing the controls.** Five places now, and the fifth is the one a user
+reads. `CONTROLS` in `src/cli.rs` is an `after_help` block naming every key,
+split by view, and `the_help_names_every_key_that_does_something` holds it to
+the keyboard — it drives each key as well as looking it up, so the list cannot
+become a description of controls that no longer exist. It exists because the
+hint line is chosen by width: the widest cockpit tier is 89 characters and so
+wants 91 columns, and on the eighty-column terminal most people have it falls to
+a tier naming four keys of a dozen, with `+` and `-` on no tier at any width and
+nothing at all below `MIN_COLS`. Widening the tiers is the wrong answer twice
+over — it costs columns the narrow tiers have not got, and the ten reference
+flights render at 120 columns with hints on, so every hash would move to say it.
+Help text costs no columns and moves nothing.
+
+Watch how that guard first passed, because the shape recurs: `help.contains("M")`
+is true of a page that also spells `--magnitude <MAG>`, so it answered yes with
+the picker's whole line deleted. It reads the key *column* of the block now.
+
+Then the four hint arrays in `src/hud.rs` — a face per colour
 mode times a face per view — and one test holds all four to the same shape:
 exactly three tiers, strictly decreasing in width so the first that fits is the
 most detailed, and the shortest no wider than `MIN_COLS - 2`. It also pins what
@@ -1988,6 +2142,20 @@ usage line, and it is what lets it keep one for `cargo doc`.
 help rather than the source, because what went wrong was not where the words
 were written but where they came out.
 
+**Refusing to fly is done by name too.** Interactive mode asks whether stdout is
+a terminal before it takes one over, and says `no terminal on stdout; use
+--headless to write frames somewhere else` when it has not got one. Without it
+the answer was `RawGuard::new`'s ioctl travelling out through `main` as `No such
+device or address (os error 6)` — the worst message this program prints, on a
+command line that answers every other absurd argument with a sentence naming the
+limit. The second failure was worse for half-working: crossterm takes raw mode
+against the tty while frames go to stdout, so `warp > frames.txt` turned the
+terminal's echo and line editing off, never entered the alternate screen, and
+left a blank shell that looks hung. `IsTerminal` reads a fact off a file
+descriptor rather than guessing a capability from the environment, which is the
+distinction `ColorMode::detect` was deleted over, and `--headless` and
+`--snapshot` never reach that function.
+
 **Taking a flag away.** Do it by name rather than by silence. Clap's answer to a
 flag it does not know is "unexpected argument", which is no use to a shell
 history or a script — so `--stars` is still declared, `hide = true`, with a
@@ -2043,7 +2211,13 @@ callgrind_annotate --auto=no callgrind.out.*
 
 ## CI
 
-`.github/workflows/ci.yml`, four jobs:
+`.github/workflows/ci.yml`, five jobs, under a workflow-level `permissions:
+contents: read`. That one line is worth knowing about: GitHub hands a job the
+repository's default token scope when a workflow says nothing, nothing here
+writes, and it is the mitigation that does not depend on trusting an action —
+`dtolnay/rust-toolchain@master` is a mutable branch reference rather than a
+commit, and so are the `actions/*` majors. Pinning those to hashes is the other
+half and is not done.
 
 - **test** — `cargo test --locked` then `cargo test --locked --all-features`, on
   Linux, macOS and Windows. The matrix is the point: the renderer's whole job is
@@ -2067,11 +2241,36 @@ callgrind_annotate --auto=no callgrind.out.*
   tree renders those pages, so nothing noticed.
 - **msrv** — reads `rust-version` from `Cargo.toml` (currently **1.85**) and
   `cargo check`s against it. Bumping the floor means editing that field.
+- **audit** — `cargo audit`, on the schedule and on pushes to main rather than
+  on every pull request: it takes minutes to build the auditor and says nothing
+  about a diff. It exists because pinning the tree has a second consequence
+  beside the one above — nothing will ever drift into a fix either, so an
+  advisory against one of the 41 crates would sit there indefinitely under a
+  green tick. The point is the notification; an update would fight the lock
+  file on purpose.
 - **headless** — same seed twice gives the same bytes, different seeds give
   different ones, the bytes match `tests/golden/frames.sha256`, `--color ascii`
-  is really ASCII, a closed pipe is not an error, and a snapshot can still be
-  written. The pipe check is here rather than in a unit test because what is
+  is really ASCII, a closed pipe is not an error, a flight without a terminal
+  says which flag was wanted, the three documented benchmark recipes still run,
+  a snapshot can still be written, and the two images on the README's front page
+  are still the sky the renderer draws.
+  The pipe check is here rather than in a unit test because what is
   under test is the process's own exit status against a pipe a shell built, and
   there is no honest way to ask that from inside the library: Rust ignores
   `SIGPIPE`, so a write to a reader that has gone away comes back as an error
-  and travels out to `main` rather than ending the process where it stood.
+  and travels out to `main` rather than ending the process where it stood. The
+  terminal check is here for the same reason and against a real file
+  descriptor. The benchmark recipes are here because documentation that can be
+  run is worth keeping runnable and those three had stopped being: the third
+  argument became a limiting magnitude when the sky did, and every recipe went
+  on passing a star count and aborting.
+
+  **The screenshot check is the one that closes a hole this file used to
+  describe as unclosable.** It said of `docs/warp.png` and `docs/astern.png`
+  that nothing pins these bytes, so a reshoot is checked by looking at it —
+  which is how the hero came to advertise twice the sky a default run draws for
+  the whole life of the renderer. They are exactly reproducible from the recipes
+  written down here, on the same Linux-only caveat as the text frames and with
+  the same `--locked` pinning the encoder, so they are simply hashed. A moved
+  hash means the sky has changed and the front page has not: that is a reshoot
+  to be looked at and committed, not a build to be fixed.

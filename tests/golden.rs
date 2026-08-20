@@ -614,6 +614,27 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
          reaching past the nearest star, so nothing pins the near-plane cut"
     );
 
+    // And every colour mode is spelled by some flight, which is the one region
+    // the prose at the top of `frames.sha256` names that nothing here was
+    // asking about. It matters most for the mode nobody is handed: detection is
+    // gone and `--color` defaults to truecolor, so `ansi256.txt` is the only
+    // thing in the tree that draws `quantize_256` or the palette-index path
+    // under it, and if it were ever dropped every other flight would go on
+    // passing while that writer went unwatched. Asked of the parsed mode, so a
+    // renamed value cannot satisfy it by spelling.
+    for mode in [
+        warp_rs::term::ColorMode::Truecolor,
+        warp_rs::term::ColorMode::Ansi256,
+        warp_rs::term::ColorMode::Ascii,
+    ] {
+        assert!(
+            CASES
+                .iter()
+                .any(|(_, case)| reference_args(case).color.resolve() == mode),
+            "no reference flight is recorded in {mode:?}, so nothing watches how it spells a cell"
+        );
+    }
+
     // Some flight has to *bend* an exposure, which is a different question from
     // whether some flight steers. An exposure is drawn along the track the ship
     // actually flew, so it is a curve only where it reaches back past a turn —
