@@ -329,6 +329,67 @@ fn committed() -> Vec<(String, String)> {
 }
 
 #[test]
+fn the_case_list_says_the_same_thing_in_all_four_places() {
+    // `CASES` above, the comment block at the top of `frames.sha256`, the
+    // `headless` job's shell in `.github/workflows/ci.yml`, and `.gitignore`.
+    // Two of the four were already held together — the hashes below check the
+    // names — and the other two were held by a note asking the next editor to
+    // remember. `.gitignore`'s own comment records that the note has been
+    // forgotten twice, each time leaving the documented regeneration recipe
+    // with an untracked file waiting to be swept into somebody's `git add .`.
+    //
+    // Asked of the *file names*, which is the part that has to agree; what each
+    // flight is for is prose and belongs to whoever writes it. Guarded on the
+    // files existing rather than assumed, because `exclude` in `Cargo.toml`
+    // keeps `.github/` out of the published crate and this test travels with
+    // the package.
+    // Matched against what each file *does* with a flight rather than against
+    // anywhere its name appears, which is the difference between a check and a
+    // formality: both files carry a prose block naming all ten, so a plain
+    // substring search finds a flight in the paragraph about it long after the
+    // line that acts on it has gone. Deleting `/drift.txt` from `.gitignore`
+    // passed that way.
+    let root = env!("CARGO_MANIFEST_DIR");
+    for (place, path, acts_on) in [
+        (
+            "the CI job",
+            "/.github/workflows/ci.yml",
+            // The `headless` job writes each flight with a redirect.
+            (|line: &str, name: &str| line.contains(&format!("> {name}")))
+                as fn(&str, &str) -> bool,
+        ),
+        (
+            "the ignore list",
+            "/.gitignore",
+            // An ignore entry is the whole line, anchored to the root.
+            |line: &str, name: &str| line.trim() == format!("/{name}"),
+        ),
+    ] {
+        let Ok(text) = std::fs::read_to_string(format!("{root}{path}")) else {
+            continue;
+        };
+        for (name, _) in CASES {
+            assert!(
+                text.lines().any(|line| acts_on(line, name)),
+                "{place} does not act on {name}, which is one of the reference flights"
+            );
+        }
+        // And nothing is named there that the list has since dropped, which is
+        // the other direction and the one a deletion goes wrong in.
+        for line in text.lines() {
+            for word in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_')) {
+                if word.ends_with(".txt") {
+                    assert!(
+                        CASES.iter().any(|(name, _)| *name == word),
+                        "{place} names {word}, which is not a reference flight"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn the_digest_agrees_with_the_published_answers() {
     // The hasher above is only worth as much as this: a wrong constant in it
     // would fail every comparison below and read exactly like a renderer that

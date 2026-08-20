@@ -5,9 +5,27 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # For the advisory job below, which has nothing to do with a push: a
+  # dependency tree is pinned by a committed lock file and `--locked`
+  # everywhere, so nothing in it will ever move on its own and an advisory
+  # published against any of the 41 crates would sit there indefinitely with a
+  # green tick above it. The only thing that changes between runs is the
+  # database.
+  schedule:
+    - cron: "0 7 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
+
+# Read-only by default, for every job. GitHub hands a job the repository's
+# default token scope when a workflow says nothing, and nothing here needs to
+# write: these jobs build, test and lint. It is one line and it is the mitigation
+# that does not depend on trusting an action — the `msrv` job below runs
+# `dtolnay/rust-toolchain@master`, a mutable branch reference rather than a
+# commit, and so do the `actions/*` majors, so what any of them can do if one
+# day it is not what it was is bounded here rather than there.
+permissions:
+  contents: read
 
 jobs:
   # The renderer's whole job is to behave the same across terminals and
@@ -118,6 +136,24 @@ jobs:
 
       - run: cargo check --locked --all-targets --all-features
 
+  # Nothing in this repository will otherwise ever report a vulnerability
+  # against the dependency tree, which is a direct consequence of pinning it:
+  # `Cargo.lock` is committed and every cargo invocation above passes
+  # `--locked`, so the tree cannot drift into a fix any more than it can drift
+  # into a break. The point is the notification, not an automatic update — an
+  # update would fight the lock file on purpose.
+  #
+  # Not on pull requests: it takes a few minutes to build the auditor and it
+  # says nothing about a diff. On the schedule, on a push to main, and by hand.
+  audit:
+    name: security advisories
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+
   # `--headless` renders on a fixed timestep with no terminal control, so a
   # fixed seed has to produce the same bytes every time. That is what makes it
   # possible to tell whether a change to the renderer changed only what was
@@ -197,6 +233,40 @@ jobs:
 
       # The mode exists for terminals that cannot be sent colour, and such a
       # terminal is generally not one to send U+2588 to either.
+      # Documentation that can be run is worth keeping runnable, and these
+      # three lines are the ones a maintainer reaches for at exactly the moment
+      # the notes insist on measuring rather than guessing. They aborted for a
+      # while: the third argument became a limiting magnitude when the sky did,
+      # and every recipe in `bench.rs` and `CLAUDE.md` went on passing a star
+      # count. Run once each, for the exit status rather than the numbers —
+      # a timing on a shared runner is not worth reading.
+      - name: the documented benchmark recipes still run
+        run: |
+          cargo build --release --locked --examples
+          ./target/release/examples/bench 200 60 8 > /dev/null
+          ./target/release/examples/bench 200 60 8 side 256 > /dev/null
+          ./target/release/examples/bench 200 60 8 side truecolor > /dev/null
+
+      # A terminal is what interactive mode needs and what a pipeline has not
+      # got, and this is the sentence somebody meets first if they leave
+      # `--headless` off. Checked here rather than in a unit test for the same
+      # reason the closed pipe below is: what is under test is the process's own
+      # exit status against a real file descriptor.
+      - name: a flight without a terminal says which flag was wanted
+        run: |
+          set +e
+          message=$(./target/release/warp --demo 1 --size 60x20 2>&1 >/dev/null </dev/null)
+          status=$?
+          set -e
+          if [ "$status" = "0" ]; then
+            echo "::error::warp took over a terminal it has not got"
+            exit 1
+          fi
+          case "$message" in
+            *--headless*) ;;
+            *) echo "::error::the refusal does not name the flag that would have worked: $message"; exit 1 ;;
+          esac
+
       - name: ascii mode really is ascii
         run: |
           if LC_ALL=C grep -qP '[^\x20-\x7e\n]' ascii.txt; then
@@ -238,3 +308,34 @@ jobs:
           ./target/release/warp --snapshot frame.png --engage --throttle 1.0 \
             --warmup 120 --scale 1 --seed 1 --size 120x36
           test -s frame.png
+
+      # The README's front page, checked the way the reference frames are. Those
+      # two images are the first thing anybody sees of this program and nothing
+      # pinned them: CLAUDE.md's own note said a reshoot is checked by looking
+      # at it, which is how the hero came to advertise twice the sky a default
+      # run draws for the whole life of the renderer before anyone thought to
+      # compare. The bytes turn out to be exactly reproducible from the recipes
+      # written down beside them — same Linux-only caveat as the text frames,
+      # and the same `--locked` pinning the PNG encoder — so they can simply be
+      # hashed.
+      #
+      # A moved hash here means the sky has changed and the front page has not.
+      # That is a reshoot to be looked at and committed, not a build to be
+      # fixed: run the two commands in CLAUDE.md and put the new files in
+      # `docs/`.
+      - name: the screenshots are the sky the renderer draws
+        run: |
+          common="--engage --throttle 1.0 --warmup 600 --scale 2"
+          ./target/release/warp --snapshot shot-warp.png   $common --seed 6
+          ./target/release/warp --snapshot shot-astern.png $common --view side --orbit 245,30,0 --seed 8
+          for pair in "shot-warp.png docs/warp.png" "shot-astern.png docs/astern.png"; do
+            set -- $pair
+            fresh=$(sha256sum "$1" | cut -d' ' -f1)
+            shipped=$(sha256sum "$2" | cut -d' ' -f1)
+            if [ "$fresh" != "$shipped" ]; then
+              echo "::error::$2 is not what the renderer draws any more; reshoot it with the recipe in CLAUDE.md"
+              echo "  shipped $shipped"
+              echo "  fresh   $fresh"
+              exit 1
+            fi
+          done
