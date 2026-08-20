@@ -15,9 +15,6 @@ use crate::camera::Streak;
 /// Per-sample brightness falls off with streak length, so a long smear spreads
 /// its light instead of burning a line through the frame.
 const LENGTH_FALLOFF: f32 = 0.12;
-/// A streak's tail is this fraction as bright as its head, which leaves a
-/// visible star at the leading end instead of a uniform dash.
-const TAIL_BRIGHTNESS: f32 = 0.32;
 /// Backstop on samples per streak; clipping already bounds this in practice.
 const MAX_SAMPLES: usize = 4096;
 
@@ -54,13 +51,99 @@ const _: () = assert!(
     "the default sample count is outside the range the command line admits"
 );
 
-/// The curve `LENGTH_FALLOFF` describes, in one place.
+/// One point of a streak's track: where it is on the canvas, and how fast the
+/// star's image was moving on the leg that *leaves* it.
 ///
-/// `draw_streak` measures the length it passes here *after* clipping and
-/// `draw_path` measures the whole polyline before it, which is a real
-/// difference rather than an oversight — a bent streak is subdivided, and
-/// measuring only the visible part of each piece would change the picture with
-/// the subdivision. Only the shape of the falloff is shared.
+/// The pace is what makes a streak an exposure rather than a shape, and it is
+/// there because [`spread`] needs it: a star lays its light down in proportion
+/// to how long its image dwelt on a place, and dwelling is a fact about pace.
+/// It is measured as the length the whole exposure would have covered had the
+/// image kept this pace throughout — so for a streak flown straight through it
+/// is simply the streak's own length, which is the number the falloff always
+/// took.
+///
+/// Carried per point rather than worked out from the points, and that is the
+/// decision here. It could be derived by handing each vertex the *moment* it
+/// sits at and dividing, and that was tried: it is the same number for a star
+/// and the wrong one the instant [`crate::lens`] re-images the streak, because
+/// the bubble's own stretching would then be charged to the star's motion —
+/// where it belongs to the magnification the bend already applies. Measured, it
+/// repainted seventy percent of every exterior frame. A pace travels through a
+/// bend unchanged, which is the honest thing for it to do.
+///
+/// The last point's pace is never read: a path of `n` points has `n - 1` legs.
+pub type Trace = (f32, f32, f32);
+
+/// What a leg of a streak needs that does not vary along it.
+///
+/// A bundle rather than six more arguments to [`Canvas::draw_leg`], which is
+/// one past where clippy — run as an error in CI — starts asking what all of
+/// them are for. It is also the honest unit: every field here is a fact about
+/// the *whole* streak, which is exactly what a leg is not allowed to work out
+/// for itself.
+struct Ramp {
+    /// Reciprocal of the whole streak's length, so a leg can say where along it
+    /// it sits without a division per sample.
+    inv_total: f32,
+    /// That length itself, which is the pace a leg falls back on when it has
+    /// not been given one — see [`Trace`]. It is the right answer for a streak
+    /// that is one leg, and the only answer available for a path whose pace
+    /// nobody knows.
+    total: f32,
+    /// The star's whole light. It is divided down per *leg* rather than once
+    /// for the path, because how far the light is spread depends on how fast
+    /// the image was moving there — see [`spread`].
+    intensity: f32,
+    color: [f32; 3],
+}
+
+/// The curve `LENGTH_FALLOFF` describes, asked of how fast the image was moving
+/// rather than of how far it went.
+///
+/// The argument it is handed is a *pace*: the length the whole exposure would
+/// have covered had the image moved this fast for all of it. For a streak flown
+/// straight through that is simply its length, and this is the number it always
+/// was. For one the ship turned through it is not, and the difference is the
+/// whole of why this takes a pace now.
+///
+/// A star lays its light down in proportion to how long its image dwelt on a
+/// place. Dividing by the *total* length instead says the light is spread
+/// evenly along the track, which is only true at a constant pace — and a
+/// turning exposure is the opposite of that. Its tail swings toward the near
+/// plane, where the projection accelerates hyperbolically, so the image spends
+/// almost no time out there and should leave almost nothing behind it. Measured
+/// against the even model, over a sweep from the axis out to
+/// `universe::TAIL_COS`: the visible near-axis part of the track was being
+/// drawn 4.6 times too dim on the axis and about 3 times at the frame edge,
+/// with the light that belonged there charged to an excursion five canvas
+/// heights off the side of the picture. Worse, the size of the error was set by
+/// where that cut happens to sit rather than by anything about the star.
+///
+/// It reduces to what it replaced exactly when the pace is even, at any
+/// subdivision — a path cut into 1, 2, 5 or 23 equal-paced legs lays down
+/// identical bytes — which is what keeps every straight streak, every sublight
+/// frame and every piece [`crate::bend`] chops a streak into where they were.
+///
+/// Every caller measures the *whole* streak here, before any clipping, and the
+/// two used to disagree: `draw_path` measured the polyline it was handed and
+/// `draw_streak` measured what survived the window. Both readings are
+/// defensible on their own and they cannot both be right about one star. The
+/// unclipped one is, because the falloff is a statement about light: a star
+/// lays its brightness down along the track it flew, so the part of that track
+/// on screen carries the part of the light that fell on it. Measured on the
+/// clipped remainder, the whole star's light was poured into whatever fragment
+/// the frame happened to keep — an edge streak burned up to three times
+/// brighter per subpixel than the same streak on a wider terminal, which is the
+/// one thing this test suite exists to stop. It is also the argument the lance
+/// has always made — where the window cuts a plume is not a fact about the
+/// plume — and there was never a reason it stopped at the lance.
+///
+/// What it buys past the honesty is that a two-point [`Canvas::draw_path`] is
+/// now the bytes [`Canvas::draw_streak`] lays down whether the segment was
+/// clipped or not, rather than only when it was not. That is what lets one star
+/// swap between the two mid-flight — which is what the sky does the moment a
+/// hand touches the stick — without the frame changing brightness underneath
+/// it.
 fn spread(length: f32) -> f32 {
     1.0 + length * LENGTH_FALLOFF
 }
@@ -375,130 +458,175 @@ impl Canvas {
     /// how bright the drive burns, and the same flight would not look the same
     /// on two machines.
     ///
-    /// Measured on the clipped segment, and answering 1.0 for the short-streak
-    /// case, because both are what `draw_streak` will actually do — a caller
-    /// dividing this out wants the number that is going to be applied, not the
-    /// one the geometry suggests.
+    /// It consults the segment and not the canvas, which is a change from what
+    /// it used to do and is the whole of what makes it agree with
+    /// [`Self::draw_path`]. See [`spread`]: a streak's light is spread along
+    /// the track it flew, and where the window happens to cut that track is not
+    /// a fact about the streak.
     pub fn streak_spread(&self, from: (f32, f32), to: (f32, f32)) -> f32 {
-        let Some((from, to)) = self.clip(from, to) else {
-            return 1.0;
-        };
-        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-        let length = (dx * dx + dy * dy).sqrt();
-        if length < 0.75 {
+        let total = length_of(to.0 - from.0, to.1 - from.1);
+        if !total.is_finite() || total < 0.75 {
             return 1.0;
         }
-        spread(length)
+        spread(total)
     }
 
-    /// Draw one star's contribution: a line from where it was to where it is,
-    /// brightening toward the head.
-    pub fn draw_streak(&mut self, streak: &Streak) {
-        self.streak_with_tail::<false>(streak);
-    }
-
-    /// The same segment, for a caller whose tail is where the light *runs out*
-    /// rather than where it has been: the ramp goes to nothing instead of
-    /// stopping at [`TAIL_BRIGHTNESS`].
+    /// Draw one streak: a line from where the light ran out to where it is,
+    /// brightening toward the head and running out at nothing.
     ///
-    /// The floor is right for a star, whose tail is simply where it was a frame
-    /// ago — light that stopped dead there would read as a dash with no star on
-    /// it. The engine lance is the other case. It is aimed at the point its own
-    /// direction vanishes at, and every bell on a ship shares that one point, so
-    /// a floor puts a third of full brightness from every lane of every bell on
-    /// the same subpixel: a bead hanging in the sky exactly where the exhaust
-    /// was meant to have gone. Ramping to nothing is what lets the lance be
-    /// aimed at the point at all — the sample that lands on it carries a ramp of
-    /// exactly zero, so the margin that used to hold it back buys nothing.
+    /// There used to be two of these. A star's ramp stopped at a floor of a
+    /// third and only the engine lance ran out at nothing, on the argument that
+    /// a star's tail "is simply where it was a frame ago" and that light
+    /// stopping dead there would read as a dash with no star on it. A frame ago
+    /// a floor is harmless, because nothing ever leaves a streak through its
+    /// tail. That premise went when a streak became an exposure seconds long:
+    /// the tail is now where the shutter closes, everything that ages out of
+    /// the picture leaves through exactly that edge, and a floor made it leave
+    /// at a *third of full brightness*. Eight bits' worth: level 178 against a
+    /// head of 237, and the next subpixel zero.
     ///
-    /// The ramp is measured on the *whole* streak here, and for the star path it
-    /// is measured on what survived clipping. That is the whole of what
-    /// separates the two, and it is not a detail of where. A lance abeam is
-    /// stretched to the frame's diagonal and leaves by the edge, so its tail is
-    /// off-screen; ramped over the clipped remainder it would fade to nothing at
-    /// the edge of the picture, and a drive whose reach is the frame's would
+    /// What that looked like is what it was — a hard bright edge dragged across
+    /// the frame. Hold a turn at low warp, where the whole trail is the smear
+    /// the turn left, and the sky holds its streaks steady for a second after
+    /// the stick comes back and is then wiped: measured, the lit subpixels sat
+    /// at 59 000 for a second and fell to 9 000 over the next one and three
+    /// quarters. Every star shares one shutter, so they all went together.
+    ///
+    /// So there is one ramp, it runs out at nothing, and the argument that got
+    /// the lance there first is now the argument for all of it: where a streak
+    /// ends is where its light ran out. For the lance that means it may be
+    /// aimed exactly at the point its own exhaust vanishes toward — every bell
+    /// shares that point, and a floor put a third of full brightness from every
+    /// lane of every one of them on the single subpixel they all end on, a bead
+    /// hanging in the sky precisely where the exhaust was meant to have gone.
+    /// For a star it means the oldest light in the exposure is the faintest,
+    /// which is what makes a trail thin away as it ages instead of being cut.
+    ///
+    /// The ramp is measured on the *whole* streak rather than on what survived
+    /// clipping. A lance abeam is stretched to the frame's diagonal and leaves
+    /// by the edge, so its tail is off-screen; ramped over the clipped
+    /// remainder it would fade to nothing at the edge of the *picture* instead
+    /// of at the end of the plume, and a drive whose reach is the frame's would
     /// stop short of the frame on every terminal. Where the window happens to
-    /// cut a plume is not a fact about the plume.
-    pub fn draw_fading_streak(&mut self, streak: &Streak) {
-        self.streak_with_tail::<true>(streak);
-    }
-
-    /// The body both of those share.
-    ///
-    /// Both ramps come out as `tail + lift * t` over the drawn segment, so the
-    /// two differ in a pair of coefficients worked out once and not in anything
-    /// the sampling loop does. The star path's pair are the constants the
-    /// expression here used to hold literally, so it is the same multiply, the
-    /// same add and the same bits it was, and no reference frame moved for the
-    /// split.
-    ///
-    /// `FADING` is a const parameter rather than an argument so that each caller
-    /// is monomorphised with its own coefficients folded in, and the star loop
-    /// keeps the immediates it has always had instead of taking them from
-    /// registers behind a branch. That is an argument from what the compiler is
-    /// left able to do, not from a measurement: at 20 000 stars on 200x60 from
-    /// the side, six interleaved runs put this at 22.14 ms of drawing against
-    /// 22.26 before the split and 22.37 with a runtime flag, which is half a
-    /// percent across the three and inside the run-to-run spread of any one of
-    /// them. Measuring the builds in separate sittings said otherwise and said
-    /// it consistently; interleave them before believing a number here.
-    fn streak_with_tail<const FADING: bool>(&mut self, streak: &Streak) {
+    /// cut a streak is not a fact about the streak.
+    pub fn draw_streak(&mut self, streak: &Streak) {
         // A dark star has nothing to add, and a NaN one would spread across the
         // buffer — nothing recovers a pixel once it is not a number.
         if streak.intensity.is_nan() || streak.intensity <= 0.0 {
             return;
         }
-        let Some((from, to)) = self.clip(streak.from, streak.to) else {
-            return;
-        };
-        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-        let length = (dx * dx + dy * dy).sqrt();
-        // Clipping put both ends on the canvas. The clamps below are for the
-        // last of the floating-point slack: an interpolated point can land a
-        // hair outside the box its endpoints were clipped to.
-        let (max_x, max_y) = (self.max_x(), self.max_y());
-
-        if length < 0.75 {
-            let (x, y) = (to.0.clamp(0.0, max_x), to.1.clamp(0.0, max_y));
+        let total = length_of(streak.to.0 - streak.from.0, streak.to.1 - streak.from.1);
+        // A streak that went nowhere, or one with a NaN in it, is a point — and
+        // it is asked of the streak rather than of what survived the window, so
+        // a long streak clipped down to a sliver is still drawn as the streak it
+        // is. It used to be the other way round, and the short branch skips the
+        // falloff, so such a streak came out at *full* intensity: a bright dot
+        // in the corner of the frame where a fading smear belonged.
+        if !total.is_finite() || total < 0.75 {
+            let Some((_, head)) = self.clip(streak.from, streak.to) else {
+                return;
+            };
+            let (max_x, max_y) = (self.max_x(), self.max_y());
+            let (x, y) = (head.0.clamp(0.0, max_x), head.1.clamp(0.0, max_y));
             self.splat_inside(x, y, streak.color, streak.intensity);
             return;
         }
 
+        let ramp = Ramp {
+            inv_total: 1.0 / total,
+            total,
+            intensity: streak.intensity,
+            color: streak.color,
+        };
+        // A straight streak is one leg and the whole exposure, so its pace is
+        // its own length and the falloff comes out at exactly the number it
+        // always did.
+        let (from, to) = (
+            (streak.from.0, streak.from.1, total),
+            (streak.to.0, streak.to.1, total),
+        );
+        self.draw_leg(from, to, 0.0, &ramp, &mut None);
+    }
+
+    /// Lay one leg of a streak down, with the ramp and the falloff evaluated
+    /// against the whole streak the leg is part of.
+    ///
+    /// One body, shared by the straight primitive and the bent one, and the
+    /// sharing is the point rather than a tidiness: a star swaps between them
+    /// mid-flight — the sky does it the moment a hand touches the stick — and
+    /// two nearly-agreeing spellings would step the whole frame's brightness
+    /// as it happened. Written once, they cannot.
+    ///
+    /// `travelled` is how far along the whole streak this leg begins, which is
+    /// what lets the ramp be a fact about the streak rather than about the leg.
+    /// `resume_at` carries where the previous leg stopped, so a shared vertex is
+    /// not splatted twice; without it every joint is a bright bead and a finely
+    /// subdivided curve is a dotted line.
+    fn draw_leg(
+        &mut self,
+        a: Trace,
+        b: Trace,
+        travelled: f32,
+        ramp: &Ramp,
+        resume_at: &mut Option<(f32, f32)>,
+    ) {
+        let (max_x, max_y) = (self.max_x(), self.max_y());
+        let span = length_of(b.0 - a.0, b.1 - a.1);
+        // How thinly this leg spreads what it caught, from the pace the image
+        // was moving at rather than from the length of the whole track. A leg
+        // handed no pace at all falls back to its own length, which is what a
+        // single-leg streak's pace is anyway.
+        let pace = if a.2 > 0.0 && a.2.is_finite() {
+            a.2
+        } else {
+            ramp.total
+        };
+        let per_sample = ramp.intensity / spread(pace);
+        let (a, b) = ((a.0, a.1), (b.0, b.1));
+        // Clipping moves the endpoints, so the ramp has to be evaluated
+        // against where they ended up along the *original* segment — not
+        // against the clipped one, which would stretch the ramp back out
+        // over whatever fragment survived.
+        let Some((from, to)) = self.clip(a, b) else {
+            return;
+        };
+        // A segment the canvas did not cut is the overwhelming case,
+        // and there all three of these are already in hand: the near
+        // end is exactly where the walk had got to, the far end exactly
+        // one span further on, and the length is that span. Measuring
+        // them again is three roots for numbers already known.
+        let (t0, t1, length) = if from == a && to == b {
+            (
+                travelled * ramp.inv_total,
+                (travelled + span) * ramp.inv_total,
+                span,
+            )
+        } else {
+            let at = |p: (f32, f32)| (travelled + length_of(p.0 - a.0, p.1 - a.1)) * ramp.inv_total;
+            (at(from), at(to), length_of(to.0 - from.0, to.1 - from.1))
+        };
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
-        // One reciprocal per streak rather than a division per sample. At warp
+        // One reciprocal per leg rather than a division per sample. At warp
         // a frame walks a couple of million of them, and a float divide is
         // several times dearer than the multiply that replaces it: about six
-        // percent of the time spent drawing, at twenty thousand stars. It buys
-        // that for nothing — the frames come out byte-identical, so the
-        // reference hashes did not move.
+        // percent of the time spent drawing, at twenty thousand stars.
         let inv_steps = 1.0 / steps as f32;
-        let per_sample = streak.intensity / spread(length);
-        // Where the drawn segment starts and finishes on the ramp. For a star
-        // that is the whole of it, by the constants the ramp was written with.
-        // For a fading one it is where clipping left the two ends of the *full*
-        // streak, so a lance running out of the frame is as bright at the edge
-        // as the plume is that far from its nozzle, rather than being faded out
-        // by the window it is seen through.
-        let (tail, lift) = if FADING {
-            let full = (streak.to.0 - streak.from.0, streak.to.1 - streak.from.1);
-            // The clipped length is at least 0.75, so the full one cannot be
-            // zero and this cannot divide by it.
-            let inv_full = 1.0 / (full.0 * full.0 + full.1 * full.1);
-            let along = |p: (f32, f32)| {
-                ((p.0 - streak.from.0) * full.0 + (p.1 - streak.from.1) * full.1) * inv_full
-            };
-            let (near, far) = (along(from), along(to));
-            (near, far - near)
-        } else {
-            (TAIL_BRIGHTNESS, 1.0 - TAIL_BRIGHTNESS)
-        };
-        for i in 0..=steps {
-            let t = i as f32 * inv_steps;
-            // `from` is the tail, `to` the head: ramp brightness along it.
-            let ramp = tail + lift * t;
-            let x = (from.0 + dx * t).clamp(0.0, max_x);
-            let y = (from.1 + dy * t).clamp(0.0, max_y);
-            self.splat_inside(x, y, streak.color, per_sample * ramp);
+        let first = usize::from(*resume_at == Some(from));
+        *resume_at = Some(to);
+        for i in first..=steps {
+            let s = i as f32 * inv_steps;
+            // How far along the whole streak this sample sits, which is the
+            // brightness it carries: `from` is where the light ran out and `to`
+            // is the head. See [`Canvas::draw_streak`] for why there is no
+            // floor under it.
+            let level = t0 + (t1 - t0) * s;
+            // Clipping put both ends on the canvas. The clamps are for the
+            // last of the floating-point slack: an interpolated point can land
+            // a hair outside the box its endpoints were clipped to.
+            let x = (from.0 + dx * s).clamp(0.0, max_x);
+            let y = (from.1 + dy * s).clamp(0.0, max_y);
+            self.splat_inside(x, y, ramp.color, per_sample * level);
         }
     }
 
@@ -506,12 +634,16 @@ impl Canvas {
     /// [`Canvas::draw_streak`] would lay down, following a polyline instead of
     /// a straight segment.
     ///
-    /// The ramp and the length falloff are measured over the *whole* path
-    /// rather than per segment. Doing it per segment would scallop the streak —
-    /// every joint would restart at the tail brightness — and would dim a
-    /// finely subdivided curve far more than a coarsely subdivided one, so the
-    /// picture would change with the subdivision rather than with the physics.
-    pub fn draw_path(&mut self, points: &[(f32, f32)], color: [f32; 3], intensity: f32) {
+    /// The *ramp* is measured over the whole path rather than per segment.
+    /// Doing it per segment would scallop the streak — every joint would
+    /// restart at the tail brightness — and would dim a finely subdivided curve
+    /// far more than a coarsely subdivided one, so the picture would change
+    /// with the subdivision rather than with the physics.
+    ///
+    /// The *falloff* is per leg, and that is not the same mistake: it is asked
+    /// of each leg's own pace, which subdividing a leg does not change. See
+    /// [`spread`].
+    pub fn draw_path(&mut self, points: &[Trace], color: [f32; 3], intensity: f32) {
         if intensity.is_nan() || intensity <= 0.0 || points.is_empty() {
             return;
         }
@@ -523,59 +655,29 @@ impl Canvas {
         if !total.is_finite() || total < 0.75 {
             let head = points[points.len() - 1];
             self.draw_streak(&Streak {
-                from: head,
-                to: head,
+                from: (head.0, head.1),
+                to: (head.0, head.1),
                 color,
                 intensity,
             });
             return;
         }
 
-        let (max_x, max_y) = (self.max_x(), self.max_y());
-        let per_sample = intensity / spread(total);
-        let inv_total = 1.0 / total;
+        let ramp = Ramp {
+            inv_total: 1.0 / total,
+            total,
+            intensity,
+            color,
+        };
         let mut travelled = 0.0f32;
         // Where the previous segment stopped, so the vertex the next one
-        // starts from is not splatted twice. Without this every joint comes
-        // out as a bright bead, and a finely subdivided curve is a dotted
-        // line rather than a smooth one.
+        // starts from is not splatted twice.
         let mut resume_at: Option<(f32, f32)> = None;
 
         for pair in points.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            let span = length_of(b.0 - a.0, b.1 - a.1);
-            // Clipping moves the endpoints, so the ramp has to be evaluated
-            // against where they ended up along the *original* segment — not
-            // against the clipped one, which would stretch the ramp back out
-            // over whatever fragment survived.
-            if let Some((from, to)) = self.clip(a, b) {
-                // A segment the canvas did not cut is the overwhelming case,
-                // and there all three of these are already in hand: the near
-                // end is exactly where the walk had got to, the far end exactly
-                // one span further on, and the length is that span. Measuring
-                // them again is three roots for numbers already known.
-                let (t0, t1, length) = if from == a && to == b {
-                    (travelled * inv_total, (travelled + span) * inv_total, span)
-                } else {
-                    let at =
-                        |p: (f32, f32)| (travelled + length_of(p.0 - a.0, p.1 - a.1)) * inv_total;
-                    (at(from), at(to), length_of(to.0 - from.0, to.1 - from.1))
-                };
-                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-                let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
-                let inv_steps = 1.0 / steps as f32;
-                let first = usize::from(resume_at == Some(from));
-                resume_at = Some(to);
-                for i in first..=steps {
-                    let s = i as f32 * inv_steps;
-                    let t = t0 + (t1 - t0) * s;
-                    let ramp = TAIL_BRIGHTNESS + (1.0 - TAIL_BRIGHTNESS) * t;
-                    let x = (from.0 + dx * s).clamp(0.0, max_x);
-                    let y = (from.1 + dy * s).clamp(0.0, max_y);
-                    self.splat_inside(x, y, color, per_sample * ramp);
-                }
-            }
-            travelled += span;
+            self.draw_leg(a, b, travelled, &ramp, &mut resume_at);
+            travelled += length_of(b.0 - a.0, b.1 - a.1);
         }
     }
 
@@ -1118,41 +1220,35 @@ mod tests {
     }
 
     #[test]
-    fn a_fading_streak_runs_out_where_a_star_streak_stops_dead() {
-        // What the engine lance is drawn with, and why it is allowed to be
-        // aimed at the point its own exhaust vanishes at. A star's tail is
-        // where it was a frame ago and holds `TAIL_BRIGHTNESS`, which on a
-        // lance puts a third of full brightness from every lane of every bell
-        // on the one subpixel they all end on — a bead sitting exactly where
-        // the exhaust was meant to have gone.
-        let ends = |fading: bool| {
-            let mut canvas = Canvas::new(64, 64);
-            let s = streak((8.0, 32.0), (56.0, 32.0));
-            if fading {
-                canvas.draw_fading_streak(&s);
-            } else {
-                canvas.draw_streak(&s);
-            }
-            (canvas.light_at(8, 32), canvas.light_at(56, 32))
-        };
-        let (star_tail, star_head) = ends(false);
-        let (fading_tail, fading_head) = ends(true);
-        assert_eq!(
-            fading_tail, 0.0,
-            "a fading streak left {fading_tail} at the end it runs out at"
-        );
+    fn a_streak_runs_out_at_the_end_the_light_ran_out_at() {
+        // There is one ramp and it ends at nothing. It used to end at a third
+        // of the head for a star, on the argument that a tail is where the star
+        // was a frame ago — true then, and false since a streak became an
+        // exposure seconds long. What leaves through that edge now is light
+        // ageing out of the shutter, and a third of full brightness is a bright
+        // edge dragged across the frame rather than a trail thinning away.
+        //
+        // It is also what lets the engine lance be aimed exactly at the point
+        // its own exhaust vanishes toward: every bell shares that point, so a
+        // floor would put a third of full brightness from every lane of every
+        // one of them on the single subpixel they all end on.
+        let mut canvas = Canvas::new(64, 64);
+        canvas.draw_streak(&streak((8.0, 32.0), (56.0, 32.0)));
+        let (tail, head) = (canvas.light_at(8, 32), canvas.light_at(56, 32));
+        assert_eq!(tail, 0.0, "the streak left {tail} where its light ran out");
+        assert!(head > 0.0, "the streak drew no head at all");
+        // And it climbs the whole way rather than stepping: a quarter along is
+        // dimmer than half, which is dimmer than the head.
+        let quarter = canvas.light_at(20, 32);
+        let half = canvas.light_at(32, 32);
         assert!(
-            (star_tail - star_head * TAIL_BRIGHTNESS).abs() < 1e-6,
-            "a star's tail is {star_tail}, not {TAIL_BRIGHTNESS} of its head"
-        );
-        assert!(
-            (fading_head - star_head).abs() < 1e-6,
-            "the two disagree about the head: {fading_head} against {star_head}"
+            quarter < half && half < head,
+            "the ramp is not monotone: {quarter}, {half}, {head}"
         );
     }
 
     #[test]
-    fn a_fading_streak_is_ramped_by_its_own_length_and_not_by_the_window() {
+    fn a_lance_is_ramped_by_its_own_length_and_not_by_the_window() {
         // The bug this is here for. A lit warp drive's lance is stretched to
         // the frame's diagonal and leaves by the edge, so from the beam its
         // tail is off-screen. Ramped over what survived clipping it faded to
@@ -1163,11 +1259,10 @@ mod tests {
         //
         // Drawn the way `draw_trail` draws it, `Canvas::streak_spread` divided
         // back out, so what is being compared is the ramp and not the length
-        // falloff — which is measured on the clipped segment by design and
-        // would otherwise be the whole of the difference.
+        // falloff.
         let lance = |canvas: &mut Canvas, from, to| {
             let held = canvas.streak_spread(from, to);
-            canvas.draw_fading_streak(&Streak {
+            canvas.draw_streak(&Streak {
                 intensity: held,
                 ..streak(from, to)
             });
@@ -1699,17 +1794,80 @@ mod tests {
         // off, so the bent and unbent code paths have to agree pixel for pixel
         // — not merely look alike — or engaging warp would visibly re-render
         // the whole field rather than bending it.
-        let (a, b) = ((12.0, 20.0), (96.0, 51.0));
-        let mut straight = Canvas::new(128, 64);
-        straight.draw_streak(&Streak {
-            from: a,
-            to: b,
-            color: [0.8, 0.9, 1.0],
-            intensity: 1.3,
-        });
-        let mut path = Canvas::new(128, 64);
-        path.draw_path(&[a, b], [0.8, 0.9, 1.0], 1.3);
-        assert_eq!(straight.buf, path.buf);
+        //
+        // The second pair is the one that used to fail, and it is the reason
+        // the two now share `draw_leg` rather than each spelling the walk out.
+        // A streak running off the canvas was measured by the two of them
+        // differently — the falloff over what survived the window here, over
+        // the whole segment there — so the same star was up to three times
+        // brighter per subpixel depending on which primitive drew it. A sky
+        // that swaps between them mid-flight, which is what it does the moment
+        // a hand touches the stick, would have stepped in brightness as it
+        // happened.
+        for (a, b) in [
+            ((12.0, 20.0), (96.0, 51.0)),
+            ((-260.0, -90.0), (70.0, 44.0)),
+            ((40.0, 30.0), (600.0, 400.0)),
+        ] {
+            let mut straight = Canvas::new(128, 64);
+            straight.draw_streak(&Streak {
+                from: a,
+                to: b,
+                color: [0.8, 0.9, 1.0],
+                intensity: 1.3,
+            });
+            let mut path = Canvas::new(128, 64);
+            path.draw_path(&[(a.0, a.1, 0.0), (b.0, b.1, 1.0)], [0.8, 0.9, 1.0], 1.3);
+            assert_eq!(
+                straight.buf, path.buf,
+                "the two primitives disagree on {a:?} to {b:?}"
+            );
+            assert!(
+                total_light(&straight) > 0.0,
+                "{a:?} to {b:?} drew nothing, so the comparison said nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_streak_is_ramped_by_its_own_length_and_not_by_the_window() {
+        // The star's half of what the lance has always claimed, and the
+        // sibling of the test that claims it. A streak's light is spread along
+        // the track it flew, and the track is a fact about the star — so the
+        // visible part of it has to carry the light that fell on it and no
+        // more. Measured on the clipped remainder instead, the whole star's
+        // brightness was poured into whatever fragment the frame happened to
+        // keep, and the same flight came out brighter at the edges on a
+        // narrower terminal.
+        //
+        // Asked as the two windows a real pair of terminals would give: draw
+        // the same streak on a wide canvas and on a narrow one, and compare
+        // the subpixels they both hold.
+        let (a, b) = ((10.0, 20.0), (300.0, 20.0));
+        let mut wide = Canvas::new(320, 64);
+        let mut narrow = Canvas::new(96, 64);
+        for canvas in [&mut wide, &mut narrow] {
+            canvas.draw_streak(&Streak {
+                from: a,
+                to: b,
+                color: [1.0; 3],
+                intensity: 2.0,
+            });
+        }
+        let mut compared = 0;
+        for x in 20..90 {
+            let (w, n) = (wide.buf[20 * 320 + x][0], narrow.buf[20 * 96 + x][0]);
+            assert!(w > 0.0, "the wide canvas drew nothing at {x}");
+            assert!(
+                (w - n).abs() <= w * 1e-5,
+                "subpixel {x} is {n} on a narrow terminal against {w} on a wide one"
+            );
+            compared += 1;
+        }
+        assert!(
+            compared > 50,
+            "only {compared} subpixels were in both frames"
+        );
     }
 
     #[test]
@@ -1717,14 +1875,17 @@ mod tests {
         // Subdividing a streak more finely must not change how it looks. If the
         // ramp restarted at every joint the curve would come out scalloped, and
         // the picture would depend on the subdivision instead of the physics.
-        let ends = [(8.0, 32.0), (120.0, 32.0)];
+        // One pace throughout, which is what a subdivision must not disturb:
+        // the star did not speed up, it was merely asked about more often.
+        let pace = 112.0;
+        let ends = [(8.0, 32.0, pace), (120.0, 32.0, pace)];
         let mut coarse = Canvas::new(128, 64);
         coarse.draw_path(&ends, [1.0; 3], 1.0);
 
-        let fine: Vec<(f32, f32)> = (0..=16)
+        let fine: Vec<Trace> = (0..=16)
             .map(|i| {
                 let t = i as f32 / 16.0;
-                (ends[0].0 + (ends[1].0 - ends[0].0) * t, 32.0)
+                (ends[0].0 + (ends[1].0 - ends[0].0) * t, 32.0, pace)
             })
             .collect();
         let mut subdivided = Canvas::new(128, 64);
@@ -1744,14 +1905,132 @@ mod tests {
     }
 
     #[test]
+    fn a_path_flown_at_one_pace_is_the_streak_it_always_was() {
+        // The reduction the whole change rests on, and what every reference
+        // frame rests on through it: a track crossed at an even pace is the
+        // streak this replaced, bit for bit, however finely it is cut up. Only
+        // a track whose pace *varies* may come out differently.
+        let (a, b) = ((9.0, 17.0), (103.0, 44.0));
+        let pace = length_of(b.0 - a.0, b.1 - a.1);
+        let mut straight = Canvas::new(128, 64);
+        straight.draw_streak(&Streak {
+            from: a,
+            to: b,
+            color: [0.7, 0.85, 1.0],
+            intensity: 1.1,
+        });
+        for cuts in [1usize, 2, 5, 23] {
+            let path: Vec<Trace> = (0..=cuts)
+                .map(|i| {
+                    let t = i as f32 / cuts as f32;
+                    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, pace)
+                })
+                .collect();
+            let mut cut = Canvas::new(128, 64);
+            cut.draw_path(&path, [0.7, 0.85, 1.0], 1.1);
+            if cuts == 1 {
+                // One leg is the same arithmetic in the same order, so this
+                // half is exact — and it is the half every reference frame
+                // rests on, since not one of them bends an exposure past a
+                // single leg.
+                assert_eq!(straight.buf, cut.buf, "one leg was not the streak");
+                continue;
+            }
+            // Past one leg the sampling is per leg — `ceil` of each piece's
+            // own length — and the ramp is measured against a total summed
+            // piece by piece rather than taken in one. Neither is something
+            // this change introduced or touches, and they are why the joint
+            // test beside this one carries the same tolerance. What has to
+            // hold exactly is the falloff, and it does: the pace is one number
+            // on every piece, so `spread` is asked the same question whatever
+            // the subdivision.
+            for (i, (want, got)) in straight.buf.iter().zip(&cut.buf).enumerate() {
+                assert!(
+                    (want[0] - got[0]).abs() < 0.02,
+                    "cutting an evenly paced track into {cuts} moved subpixel {i}: \
+                     {} against {}",
+                    want[0],
+                    got[0]
+                );
+            }
+        }
+        assert!(total_light(&straight) > 0.0, "the comparison drew nothing");
+    }
+
+    #[test]
+    fn a_leg_is_lit_by_how_fast_the_star_crossed_it() {
+        // The falloff asks how fast the image was moving, not how far it went.
+        // Two legs of the same length, one crossed ten times as fast as the
+        // other, must not come out equally bright — which is exactly what
+        // measuring the whole track instead would give.
+        let mut canvas = Canvas::new(160, 32);
+        let slow = 40.0;
+        canvas.draw_path(
+            &[
+                (10.0, 16.0, slow),
+                (70.0, 16.0, slow * 10.0),
+                (130.0, 16.0, 0.0),
+            ],
+            [1.0; 3],
+            2.0,
+        );
+        let (near, far) = (canvas.buf[16 * 160 + 40][0], canvas.buf[16 * 160 + 100][0]);
+        assert!(near > 0.0 && far > 0.0, "one of the legs drew nothing");
+        // The ramp climbs toward the head, so the fast leg is favoured by it
+        // and still has to come out the dimmer of the two.
+        assert!(
+            near > far * 2.0,
+            "the slow leg is {near} against the fast one's {far}"
+        );
+    }
+
+    #[test]
+    fn an_excursion_off_the_frame_leaves_what_is_on_it_alone() {
+        // The regression this fixes, as the property that rules it out. A star
+        // whose exposure swings far off the canvas spends almost no time out
+        // there — the projection accelerates as the track nears the eye — so
+        // what it leaves on the visible stretch must not depend on how far the
+        // invisible one ran.
+        let visible = [(20.0, 16.0, 40.0), (60.0, 16.0, 40.0)];
+        let mut alone = Canvas::new(80, 32);
+        alone.draw_path(&visible, [1.0; 3], 2.0);
+
+        // The same visible stretch, with a tail that tears off the side of the
+        // frame at a hundred times the pace.
+        let with_tail = [
+            (-4000.0, 16.0, 4000.0),
+            (20.0, 16.0, 40.0),
+            (60.0, 16.0, 40.0),
+        ];
+        let mut trailed = Canvas::new(80, 32);
+        trailed.draw_path(&with_tail, [1.0; 3], 2.0);
+
+        let mut compared = 0;
+        for x in 25..58 {
+            let (a, b) = (alone.buf[16 * 80 + x][0], trailed.buf[16 * 80 + x][0]);
+            assert!(a > 0.0, "nothing was drawn at {x}");
+            // Not equality: the ramp is still measured over the whole track, so
+            // the visible stretch sits further up it. What must not happen is
+            // the twenty-three-fold collapse measuring the whole length gave.
+            assert!(
+                b > a * 0.25,
+                "the excursion dimmed subpixel {x} from {a} to {b}"
+            );
+            compared += 1;
+        }
+        assert!(compared > 30, "only {compared} subpixels were compared");
+    }
+
+    #[test]
     fn a_curved_path_bends_where_it_is_told_to() {
         // The whole point of the primitive: light lands on the arc, not on the
         // chord between its ends.
-        let arc: Vec<(f32, f32)> = (0..=12)
+        let arc: Vec<Trace> = (0..=12)
             .map(|i| {
                 let t = i as f32 / 12.0;
                 let angle = std::f32::consts::PI * t;
-                (64.0 + 40.0 * angle.cos(), 60.0 - 40.0 * angle.sin())
+                let along = std::f32::consts::PI * 40.0;
+                (64.0 + 40.0 * angle.cos(), 60.0 - 40.0 * angle.sin(), along)
             })
             .collect();
         let mut canvas = Canvas::new(128, 64);
@@ -1769,15 +2048,20 @@ mod tests {
         assert_eq!(total_light(&canvas), 0.0, "an empty path is not a point");
 
         for path in [
-            vec![(10.0, 10.0)],
-            vec![(f32::NAN, 2.0), (5.0, 5.0)],
-            vec![(1e9, 1e9), (-1e9, 4.0), (2.0, 2.0)],
-            vec![(3.0, 3.0), (3.0, 3.0), (3.0, 3.0)],
+            vec![(10.0, 10.0, 0.0)],
+            vec![(f32::NAN, 2.0, 0.0), (5.0, 5.0, 1.0)],
+            vec![(1e9, 1e9, 0.0), (-1e9, 4.0, 0.5), (2.0, 2.0, 1.0)],
+            vec![(3.0, 3.0, 0.0), (3.0, 3.0, 0.5), (3.0, 3.0, 1.0)],
+            // A leg that took none of the exposure, and one that took all of it
+            // twice over: neither is a thing the sky can hand over, and neither
+            // may put a NaN in the buffer.
+            vec![(4.0, 4.0, 0.5), (40.0, 20.0, 0.5)],
+            vec![(4.0, 4.0, f32::NAN), (40.0, 20.0, 1.0)],
         ] {
             canvas.draw_path(&path, [1.0; 3], 1.0);
         }
         for intensity in [0.0, -1.0, f32::NAN] {
-            canvas.draw_path(&[(4.0, 4.0), (40.0, 20.0)], [1.0; 3], intensity);
+            canvas.draw_path(&[(4.0, 4.0, 0.0), (40.0, 20.0, 1.0)], [1.0; 3], intensity);
         }
         assert_eq!(canvas.buf.len(), 64 * 32, "the buffer must not have grown");
         assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));

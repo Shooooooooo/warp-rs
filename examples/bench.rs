@@ -42,10 +42,25 @@ const FRAMES: usize = 240;
 const WARMUP: usize = 300;
 
 /// One row of the sweep: a canvas, how faint a sky over it, whether the drive
-/// is lit, and which camera in which colour mode. A named type because six
-/// fields in a tuple is where clippy stops reading, and because the third one
-/// stopped being a plain count.
-type Case<'a> = (usize, usize, Option<f32>, bool, &'a str, &'a str);
+/// is lit and whether the stick is buried, and which camera in which colour
+/// mode. A struct rather than a tuple, which it was until the seventh field:
+/// `run` takes them one by one and clippy — an error in CI — starts asking at
+/// seven what all of them are for, which is a fair question of a bare tuple.
+struct Case<'a> {
+    cols: usize,
+    rows: usize,
+    magnitude: Option<f32>,
+    warp: bool,
+    /// Whether the stick is held over. It is the *worst* case rather than a
+    /// typical one, and deliberately: an exposure is only drawn as a curve when
+    /// the ship turned while the shutter was open, so what wants measuring is
+    /// the most curve the renderer can be asked for. The autopilot's weave
+    /// cannot stand in for it — it sweeps about a twentieth of what a hand on
+    /// the stick does, and asks for two poses where this asks for twenty-two.
+    turn: bool,
+    view: &'a str,
+    color: &'a str,
+}
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -64,18 +79,77 @@ fn main() {
         // colour mode is: a sweep that rides the default measures something
         // else the day the default moves.
         let mag: Option<f32> = argv.get(2).and_then(|a| a.parse().ok());
-        vec![(n(0), n(1), mag, true, view, color)]
+        // The command line does not spell the turn: a sweep of one case is for
+        // looking at one number, and a flag that changes what is being measured
+        // belongs in the list below where it is written down.
+        vec![Case {
+            cols: n(0),
+            rows: n(1),
+            magnitude: mag,
+            warp: true,
+            turn: false,
+            view,
+            color,
+        }]
     } else {
         vec![
-            (80, 24, None, false, "cockpit", "truecolor"),
-            (80, 24, None, true, "cockpit", "truecolor"),
-            (200, 60, None, true, "cockpit", "truecolor"),
-            (200, 60, Some(8.0), true, "cockpit", "truecolor"),
+            Case {
+                cols: 80,
+                rows: 24,
+                magnitude: None,
+                warp: false,
+                turn: false,
+                view: "cockpit",
+                color: "truecolor",
+            },
+            Case {
+                cols: 80,
+                rows: 24,
+                magnitude: None,
+                warp: true,
+                turn: false,
+                view: "cockpit",
+                color: "truecolor",
+            },
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: None,
+                warp: true,
+                turn: false,
+                view: "cockpit",
+                color: "truecolor",
+            },
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: Some(8.0),
+                warp: true,
+                turn: false,
+                view: "cockpit",
+                color: "truecolor",
+            },
             // The outside view at warp is the expensive frame in the program:
             // every streak near the ship is chopped into arcs and drawn twice,
             // once for each image the lens forms of it.
-            (200, 60, None, true, "side", "truecolor"),
-            (200, 60, Some(8.0), true, "side", "truecolor"),
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: None,
+                warp: true,
+                turn: false,
+                view: "side",
+                color: "truecolor",
+            },
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: Some(8.0),
+                warp: true,
+                turn: false,
+                view: "side",
+                color: "truecolor",
+            },
             // And the cockpit at the same size and pool in the palette
             // spelling — the fourth row's flight, not the two `side` ones
             // directly above, which is what this comment claimed for as long as
@@ -86,20 +160,79 @@ fn main() {
             // terminals fell into and keeps it now that none do: the quantiser
             // is still on the frame path of everyone who asks for it, and a
             // column nobody times is a column nobody notices regressing.
-            (200, 60, Some(8.0), true, "cockpit", "256"),
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: Some(8.0),
+                warp: true,
+                turn: false,
+                view: "cockpit",
+                color: "256",
+            },
+            // The stick buried, which is the only thing here that asks the
+            // sky for a curve. An exposure the ship flew straight through is
+            // two points and the arithmetic it always was, so these are the
+            // rows that say what the curve costs — and they are last so the
+            // seven above stay comparable with the figures written down before
+            // there was one.
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: None,
+                warp: true,
+                turn: true,
+                view: "cockpit",
+                color: "truecolor",
+            },
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: Some(8.0),
+                warp: true,
+                turn: true,
+                view: "cockpit",
+                color: "truecolor",
+            },
+            Case {
+                cols: 200,
+                rows: 60,
+                magnitude: Some(8.0),
+                warp: true,
+                turn: true,
+                view: "side",
+                color: "truecolor",
+            },
         ]
     };
 
     println!(
-        "{:>9}  {:>8}  {:>9}  {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>6}",
-        "size", "view", "color", "stars", "sim ms", "draw ms", "write ms", "total ms", "fps"
+        "{:>9}  {:>8}  {:>9}  {:>5}  {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>6}",
+        "size",
+        "view",
+        "color",
+        "stick",
+        "stars",
+        "sim ms",
+        "draw ms",
+        "write ms",
+        "total ms",
+        "fps"
     );
-    for (cols, rows, magnitude, warp, view, color) in cases {
-        run(cols, rows, magnitude, warp, view, color);
+    for case in cases {
+        run(&case);
     }
 }
 
-fn run(cols: usize, rows: usize, magnitude: Option<f32>, warp: bool, view: &str, color: &str) {
+fn run(case: &Case<'_>) {
+    let &Case {
+        cols,
+        rows,
+        magnitude,
+        warp,
+        turn,
+        view,
+        color,
+    } = case;
     let mut argv = vec![
         "warp".to_string(),
         "--seed".into(),
@@ -121,12 +254,20 @@ fn run(cols: usize, rows: usize, magnitude: Option<f32>, warp: bool, view: &str,
     let mut flight = Flight::new(&args, cols, rows);
     let dt = 1.0 / 60.0;
     for _ in 0..WARMUP {
+        if turn {
+            flight.nudge_stick(1.0, -0.35, 0.0);
+        }
         flight.advance(dt);
     }
 
     let (mut sim, mut draw, mut write) = (0.0, 0.0, 0.0);
     let mut out = Vec::with_capacity(1 << 20);
     for _ in 0..FRAMES {
+        // Outside the clock: the stick is what the case is measuring the
+        // consequences of, not part of the frame being timed.
+        if turn {
+            flight.nudge_stick(1.0, -0.35, 0.0);
+        }
         let a = Instant::now();
         flight.advance(dt);
         let b = Instant::now();
@@ -146,10 +287,11 @@ fn run(cols: usize, rows: usize, magnitude: Option<f32>, warp: bool, view: &str,
     let ms = |total: f64| total * 1000.0 / FRAMES as f64;
     let total = ms(sim) + ms(draw) + ms(write);
     println!(
-        "{:>9}  {:>8}  {:>9}  {:>7}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}  {:>6.0}",
+        "{:>9}  {:>8}  {:>9}  {:>5}  {:>7}  {:>8.2}  {:>8.2}  {:>8.2}  {:>8.2}  {:>6.0}",
         format!("{cols}x{rows}"),
         view,
         color,
+        if turn { "held" } else { "-" },
         flight.stars(),
         ms(sim),
         ms(draw),

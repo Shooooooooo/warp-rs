@@ -98,6 +98,51 @@ fn a_flight_can_be_left_to_fly_itself() {
 }
 
 #[test]
+fn a_turn_at_warp_can_be_flown_from_the_library_alone() {
+    // The stick, through the surface another program would have to use. It is
+    // here because a turn is the one thing the sky draws differently — an
+    // exposure the ship flew straight through is a segment and one it turned
+    // through is a curve — so a turn nothing outside this crate could fly is a
+    // feature the library cannot be said to offer. `Flight::nudge_stick` is the
+    // whole of what that needs, and it is the third of the trio beside
+    // `nudge_orbit` and `nudge_zoom`.
+    let fly = |steer: bool| {
+        let args = Args::try_parse_from([
+            "warp",
+            "--seed",
+            "12",
+            "--magnitude",
+            "5.5",
+            "--size",
+            "60x20",
+            "--engage",
+            "--throttle",
+            "1.0",
+            "--color",
+            "truecolor",
+        ])
+        .expect("arguments should parse");
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut out = Vec::new();
+        for _ in 0..300 {
+            if steer {
+                flight.nudge_stick(1.0, -0.35, 0.0);
+            }
+            flight.advance(1.0 / 60.0);
+        }
+        flight.draw(60.0, false, true);
+        flight.present_plain(&mut out).expect("writing to a Vec");
+        out
+    };
+    let (turned, straight) = (fly(true), fly(false));
+    assert!(
+        turned != straight,
+        "a turn at warp drew the frame a straight flight drew"
+    );
+    assert!(!turned.is_empty(), "the turning flight drew nothing at all");
+}
+
+#[test]
 fn the_seed_is_the_whole_of_the_state() {
     let a = fly(&["--seed", "5", "--magnitude", "4.5"], 60, 20, 20);
     let b = fly(&["--seed", "5", "--magnitude", "4.5"], 60, 20, 20);

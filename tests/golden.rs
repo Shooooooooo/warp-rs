@@ -427,8 +427,8 @@ fn the_frames_are_the_ones_committed_as_the_reference() {
 #[test]
 fn the_reference_flights_between_them_reach_the_whole_renderer() {
     // The hashes are only worth what they cover, and what they covered was
-    // discovered the hard way: a deliberate change to `TAIL_BRIGHTNESS` — the
-    // ramp along a warp streak — did not move them at all, because two seconds
+    // discovered the hard way: a deliberate change to the ramp along a warp
+    // streak did not move them at all, because two seconds
     // of `--demo` never leaves sublight and a sublight streak is shorter than a
     // subpixel, so it takes the branch that never reads the constant.
     //
@@ -539,7 +539,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
             ship.update(dt);
             sky.advance(
                 ship.position,
-                ship.axes[2],
+                ship.axes,
                 dt,
                 ship.warp_intensity(),
                 ship.velocity_ly_per_s(),
@@ -551,6 +551,59 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         ahead,
         "no reference flight ever gets ahead of the ship with the exposure \
          reaching past the nearest star, so nothing pins the near-plane cut"
+    );
+
+    // Some flight has to *bend* an exposure, which is a different question from
+    // whether some flight steers. An exposure is drawn along the track the ship
+    // actually flew, so it is a curve only where it reaches back past a turn —
+    // and a flight that steers hard at impulse, or lights the drive after it
+    // has stopped steering, does not draw one. The two `--demo --fps 10` cases
+    // qualify because their drive lights at frame 60 of a twelve-second flight
+    // and the weave never stops.
+    //
+    // Asked by flying each case's own ship and autopilot rather than by reading
+    // the flags, for the same reason the clause above is: it is a fact about
+    // what a flight *did*, and `--demo` on the command line is not that fact.
+    //
+    // What it deliberately does not claim: no reference flight sweeps far
+    // enough for the drawn curve to be more than a chord between the right two
+    // points. The autopilot's weave turns about a twentieth of what a hand on
+    // the stick does, which asks for one leg. The *shape* of a curve is pinned
+    // by property tests in `universe.rs` and by nothing here, which is the
+    // right level for it — it is a variant, not a region.
+    let bent = CASES.iter().any(|(_, case)| {
+        let args = reference_args(case);
+        let Some(demo) = args.demo else {
+            return false;
+        };
+        let mut ship = warp_rs::ship::Ship::new();
+        let mut sky = warp_rs::universe::Universe::new(args.magnitude, args.seed.unwrap_or(0));
+        let mut autopilot = warp_rs::autopilot::Autopilot::default();
+        if args.engage {
+            ship.toggle_warp();
+        }
+        ship.throttle = args.throttle;
+        let dt = 1.0 / args.fps as f32;
+        let _ = demo;
+        let mut ever = false;
+        for frame in 0..args.frames {
+            autopilot.update(&mut ship, frame as f64 * dt as f64, dt);
+            ship.update(dt);
+            sky.advance(
+                ship.position,
+                ship.axes,
+                dt,
+                ship.warp_intensity(),
+                ship.velocity_ly_per_s(),
+            );
+            ever |= sky.exposure() > sky.straight();
+        }
+        ever
+    });
+    assert!(
+        bent,
+        "no reference flight ever draws an exposure that reaches back past a \
+         turn, so nothing pins the track the sky is drawn along"
     );
 
     // And the warp cases really are at warp rather than nominally engaged: a
