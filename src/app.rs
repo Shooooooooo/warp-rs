@@ -877,9 +877,22 @@ fn run_headless(args: &Args) -> io::Result<()> {
     out.flush()
 }
 
+/// The canvas a snapshot falls back to when `--size` is not given.
+///
+/// Named rather than written into `run_snapshot`, because the two recipes in
+/// CLAUDE.md that shoot the README's front page both depend on it and neither
+/// passes `--size`: a cell is two subpixels tall, so both come out 480x272 at
+/// `--scale 2` and the pair stacks with its edges in line. The hero used to ask
+/// for `--size 220x60`, came out 440x240, and put a forty-pixel step down the
+/// side of the page that nobody had written down a reason for. A reshoot that
+/// reaches for `--size` puts it back, and nothing but this constant and the
+/// test beside it says so.
+#[cfg(feature = "snapshot")]
+pub const SNAPSHOT_SIZE: (u16, u16) = (240, 68);
+
 #[cfg(feature = "snapshot")]
 fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
-    let (cols, rows) = args.size.unwrap_or((240, 68));
+    let (cols, rows) = args.size.unwrap_or(SNAPSHOT_SIZE);
     let mut flight = Flight::new(args, cols as usize, rows as usize);
     let dt = 1.0 / args.fps as f32;
 
@@ -2264,6 +2277,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(feature = "snapshot")]
+    #[test]
+    fn the_two_documented_snapshots_come_out_the_same_size() {
+        // The README's front page is two images stacked, and they line up only
+        // because neither recipe passes `--size`: both fall back to
+        // `SNAPSHOT_SIZE`, a cell is two subpixels tall, and at `--scale 2`
+        // both come out 480x272. The hero used to ask for `--size 220x60`,
+        // came out 440x240, and put a forty-pixel step down the side of the
+        // page that no commit message explained.
+        //
+        // Nothing pins the bytes of those files — `frames.sha256` is the text
+        // frames and knows nothing about the PNGs — so this pins the one
+        // property that makes the pair a pair. Asked of the real canvas rather
+        // than of `SNAPSHOT_SIZE` doubled by hand, so it goes through the
+        // arithmetic a snapshot actually uses.
+        let common = [
+            "--engage",
+            "--throttle",
+            "1.0",
+            "--warmup",
+            "600",
+            "--scale",
+            "2",
+        ];
+        let recipe = |extra: &[&str]| {
+            let mut argv = vec!["--snapshot", "docs/shot.png"];
+            argv.extend_from_slice(&common);
+            argv.extend_from_slice(extra);
+            args_for(&argv)
+        };
+        let hero = recipe(&["--seed", "6"]);
+        let astern = recipe(&["--view", "side", "--orbit", "245,30,0", "--seed", "8"]);
+
+        let image = |args: &Args| {
+            assert!(
+                args.size.is_none(),
+                "a docs recipe that passes --size is what put the step back"
+            );
+            let (cols, rows) = SNAPSHOT_SIZE;
+            let flight = Flight::new(args, cols as usize, rows as usize);
+            let (w, h) = flight.renderer.canvas_dims();
+            (w * args.scale, h * args.scale)
+        };
+
+        assert_eq!(
+            image(&hero),
+            image(&astern),
+            "the two images on the README's front page no longer stack"
+        );
+        assert_eq!(
+            image(&hero),
+            (480, 272),
+            "the documented recipe stopped producing the size CLAUDE.md quotes"
+        );
     }
 
     #[test]
