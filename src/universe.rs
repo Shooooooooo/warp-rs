@@ -56,19 +56,47 @@ const REFERENCE_COUNT: f32 = 9_110.0;
 
 /// The apparent magnitude that lands on one unit of canvas light.
 ///
-/// Derived rather than chosen, and derived against what the renderer used to
-/// draw so `--exposure` does not have to move. A typical star under the old
-/// model laid down `luminosity·magnitude·depth^1.4`, which averages
-/// `1.05 · 0.355 · 0.417 = 0.155`. Under the count law the mean of
+/// Derived, and then deliberately moved a fifth of a magnitude off the
+/// derivation — which is the part to read before restoring it. The derivation
+/// is still the anchor: a typical star under the renderer this replaced laid
+/// down `luminosity·magnitude·depth^1.4`, which averages
+/// `1.05 · 0.355 · 0.417 = 0.155`, and under the count law the mean of
 /// `10^(-0.4 m)` over everything brighter than the limit is
-/// `slope/(slope − 0.4) · 10^(-0.4 · limit)`, or `0.00754` at 6.5 — so the two
-/// agree when `10^(0.4 z) = 20.6`, which is this.
+/// `slope/(slope − 0.4) · 10^(-0.4 · limit)`, or `0.00754` at 6.5. The two
+/// agree at `10^(0.4 z) = 20.6`, which is 3.28, which is what stood here.
 ///
-/// What it puts on the canvas: a star at the limit comes out at 0.05, the
-/// median one at 0.08, a fourth-magnitude star at 0.5, and the handful brighter
-/// than second magnitude past 3 and into the tonemap's shoulder. That last
-/// group is meant to saturate. There are eighteen of them in the whole sky.
-const ZERO_POINT: f32 = 3.28;
+/// The fifth of a magnitude is spent on [`shift_light`]. A lit drive throws the
+/// light forward, and from the pilot's seat every star that can be seen at all
+/// is ahead of the ship — the cockpit's frame reaches only about 49 degrees off
+/// the nose — so the shift has nowhere to push a star except brighter. Left at
+/// 3.28 the whole tunnel would simply climb the tonemap's shoulder together and
+/// lose the gradient it is drawn for. Coming down 0.20 is the headroom the
+/// shift spends: the sky is 0.83 of what it was at every speed, and at full
+/// warp it comes back to 1.28 down the throat, 1.03 at the corner of the frame
+/// and 0.50 dead astern, for a whole sky at 0.78.
+///
+/// It is the only constant here that is *purely* brightness, and
+/// [`Universe::photometry`] had to be respelled to make that true rather than
+/// merely arguable — see the note there. So the catalogue, the census, the
+/// count law and every star's place do not know it moved, and that is measured
+/// rather than reasoned: a build either side of this line puts all 4 565 stars
+/// of a default seeded sky in byte-identical places.
+///
+/// Which is also why it is the knob for this and `--exposure` is not. That one
+/// is the tonemap, so it would take the tunnel glare, the hull, the plume and
+/// the flash down with the sky; this dims the stars and leaves everything else
+/// exactly where it was, which is what lets the shift read as light being
+/// thrown forward rather than as the frame being turned up. Somebody who wants
+/// the old level back can have it exactly — the tonemap is
+/// `1 − exp(−v·exposure)`, so `--exposure 2.28` cancels this precisely — at the
+/// price of brightening everything that is not a star along with it.
+///
+/// What it puts on the canvas now: a star at the 6.5 limit comes out at 0.043,
+/// the median one at 0.068, a fourth-magnitude star at 0.43, and the handful
+/// brighter than second magnitude past 2.7 and into the tonemap's shoulder.
+/// That last group is meant to saturate. There are eighteen of them in the
+/// whole sky.
+const ZERO_POINT: f32 = 3.08;
 
 /// How much of the faint end is spent fading up out of nothing, in magnitudes.
 ///
@@ -308,24 +336,102 @@ const BLUE_SHIFT: [f32; 3] = [0.45, 0.66, 1.00];
 /// Colour a star shifts toward out at the edges, where it is falling behind.
 const RED_SHIFT: [f32; 3] = [1.00, 0.42, 0.24];
 
-/// Blend a star's rest colour toward blue ahead and red at the periphery.
-/// `forward` is cos of the angle off the nose; `amount` is the 0..=1 strength.
+/// How far a star is carried toward blue and how far toward red, as the two
+/// weights the whole Doppler shift is spelled in.
 ///
-/// Visible to the crate because the exterior view Doppler-shifts the same way,
-/// about the ship's direction of travel rather than about the vanishing point:
-/// it is the same physics seen from beside the ship instead of from inside it.
-pub(crate) fn shift_color(rgb: [f32; 3], forward: f32, amount: f32) -> [f32; 3] {
+/// One function with two callers rather than the same pair of expressions in
+/// each, and what it holds together is that [`shift_color`] and [`shift_light`]
+/// change their minds at the *same angle*. A brightness curve that had drifted
+/// off the colour's would put a faintly red star that is nonetheless brighter
+/// than at rest in a ring round the ship, which is not a shift of anything.
+///
+/// The two weights are not symmetric and the asymmetry is the whole of the
+/// shaping. Blue goes as the *cube* of `forward`, so it climbs steeply over the
+/// last few degrees off the nose; red is linear over the whole back half at
+/// three quarters weight. That is what puts the interesting part of the curve
+/// inside the cockpit's own field of view, which reaches 48.8 degrees off the
+/// axis at the corner of the frame — `Camera::focal` is `0.85` of the canvas
+/// height and every terminal this is flown on has about ten cells across for
+/// every three down — and so never sees `forward` below about 0.83.
+fn shift_weights(forward: f32, amount: f32) -> (f32, f32) {
+    (amount * forward.powi(3), amount * (1.0 - forward) * 0.75)
+}
+
+/// Blend a star's rest colour toward blue ahead and red at the periphery.
+/// `forward` is cos of the angle off the nose folded onto 0..=1; `amount` is
+/// the 0..=1 strength.
+///
+/// One of two halves; [`shift_light`] is the other. It used to say here that
+/// this is visible to the crate because the exterior view shifts the same way,
+/// which had stopped being true: both views go through [`Universe::sweep`], so
+/// nothing outside this module has called it since the two skies became one.
+fn shift_color(rgb: [f32; 3], forward: f32, amount: f32) -> [f32; 3] {
     if amount <= 0.0 {
         return rgb;
     }
-    let blue = amount * forward.powi(3);
-    let red = amount * (1.0 - forward) * 0.75;
+    let (blue, red) = shift_weights(forward, amount);
     let mut out = [0.0; 3];
     for i in 0..3 {
         let toward_blue = rgb[i] + (BLUE_SHIFT[i] - rgb[i]) * blue;
         out[i] = toward_blue + (RED_SHIFT[i] - toward_blue) * red;
     }
     out
+}
+
+/// What one unit of Doppler shift is worth in light.
+///
+/// A single number rather than a gain and a loss, and the single number is the
+/// point: with one constant on the *difference* of the two weights, a star
+/// brightens exactly while it is being carried toward blue and dims exactly
+/// while it is being carried toward red, so the light turns over at precisely
+/// the angle the colour stops leaning blue — 73.3 degrees off the nose, where
+/// `forward³` meets `0.75·(1 − forward)`. A gain and a loss tuned apart put
+/// those two angles twelve degrees away from each other, which buys a second
+/// knob and sells the only statement worth making about the pair.
+///
+/// What it comes to at full warp, where `amount` is 0.9 — as a multiplier on
+/// the light a star laid down before any of this: dead ahead 1.28, at the
+/// corner of the cockpit's frame 1.03, square abeam 0.72, dead astern 0.50,
+/// with the whole sky averaging 0.78 and the cockpit's own cone 1.15. Through
+/// the tonemap that is an eight-bit median star reading 141 down the throat
+/// against 95 astern, from 128 before.
+///
+/// It is a gain rather than an offset in magnitudes because it is applied per
+/// star per frame across the whole pool. `10f32.powf` at seventy thousand stars
+/// is a libm call, and the twinkle's `sin` was measured worth skipping at warp
+/// for less; a polynomial in a number the frame already has costs four flops.
+const SHIFT_LIGHT: f32 = 0.6;
+
+/// A star astern is dimmed, never put out. The red weight tops out at 0.75 when
+/// `amount` is one, so the gain floors at `1 − 0.75·SHIFT_LIGHT` — 0.55, and
+/// there is no value of this worth flying that reaches zero. It fails the build
+/// rather than a frame because a gain of zero deletes a star instead of letting
+/// it fall behind, and the sky's faint end is supposed to leave through the
+/// fade in [`Universe::sweep`] instead.
+const _: () = assert!(SHIFT_LIGHT * 0.75 < 1.0);
+
+/// What the same shift does to a star's *light*: brighter ahead, fainter
+/// astern. `forward` and `amount` are exactly [`shift_color`]'s, and by
+/// [`shift_weights`] so is the curve.
+///
+/// A scalar of its own rather than a fourth component on the colour, for two
+/// reasons. A colour here is a chromaticity that `colours_stay_in_gamut` holds
+/// inside the unit cube and this runs past 1.5. And [`crate::bend`] already
+/// multiplies an intensity by the bubble's own magnification, so the two
+/// scalars that scale one star's light belong in one place.
+///
+/// Exactly one at rest, and the exactness is load-bearing rather than tidy:
+/// `intensity · 1.0` is exact for every finite value, so a frame flown below
+/// light speed is the frame this function is not there for, down to the byte.
+/// The early return is *not* what makes that true — the body gives exactly one
+/// at an amount of zero as well — it is what keeps a `powi` and four flops off
+/// every star of every sublight frame.
+fn shift_light(forward: f32, amount: f32) -> f32 {
+    if amount <= 0.0 {
+        return 1.0;
+    }
+    let (blue, red) = shift_weights(forward, amount);
+    1.0 + SHIFT_LIGHT * (blue - red)
 }
 
 /// One star, in the inertial world frame.
@@ -373,8 +479,9 @@ pub struct Observer {
     /// branched around — a branch here would be a second spelling of the
     /// composition, and two spellings of one idea is how the two come apart.
     mount: [[f32; 3]; 3],
-    /// 0..=1 across the superluminal range: it sets the Doppler shift and how
-    /// much twinkle is left.
+    /// 0..=1 across the superluminal range: it sets the Doppler shift — the
+    /// colour in [`shift_color`] and the brightness in [`shift_light`], which are
+    /// effect drawn twice — and how much twinkle is left.
     ///
     /// It used to set the exposure as well, multiplied by a velocity carried
     /// beside it. Both went to [`Universe::trail`], which is where a length
@@ -719,14 +826,14 @@ impl Universe {
             eye.nose[1] * reach,
             eye.nose[2] * reach,
         ];
-        // `FADE_MAGNITUDES` expressed as the brightness ratio the arithmetic
-        // below actually works in, taken once for the frame rather than written
-        // out as a second constant that could disagree with the first.
         // Where the exposure was open from, when the ship did not simply fly
         // straight through it. Empty is the fast path: `back` above is then the
         // whole answer and this frame is the frame it always was, to the bit.
         let mut stations = [Station::HELD; MAX_STATIONS];
         let legs = self.stations(cam, eye, reach, &mut stations);
+        // `FADE_MAGNITUDES` expressed as the brightness ratio the arithmetic
+        // below actually works in, taken once for the frame rather than written
+        // out as a second constant that could disagree with the first.
         let fade_ratio = 10f32.powf(0.4 * FADE_MAGNITUDES);
         let doppler = eye.warp * 0.9;
         let twinkle_amt = (1.0 - eye.warp * 3.0).clamp(0.0, 1.0) * 0.22;
@@ -759,8 +866,9 @@ impl Universe {
                 continue;
             }
 
-            // How far off the nose it sits. Dead ahead blue-shifts; astern,
-            // where it is falling behind, it reddens.
+            // How far off the nose it sits. Dead ahead blue-shifts and
+            // brightens; astern, where it is falling behind, it reddens and
+            // dims.
             let along = pos[0] * eye.nose[0] + pos[1] * eye.nose[1] + pos[2] * eye.nose[2];
             let forward = if range_sq > f32::MIN_POSITIVE {
                 (0.5 + 0.5 * along / range_sq.sqrt()).clamp(0.0, 1.0)
@@ -768,6 +876,15 @@ impl Universe {
                 0.5
             };
             let color = shift_color(CLASSES[star.class].rgb, forward, doppler);
+            // Multiplied onto the finished intensity and deliberately not into
+            // `lumen`, `reach_sq` or the limit. The fade above is what makes a
+            // recycled star arrive at nothing, and the recycle puts it on the
+            // *entering* hemisphere — dead ahead, where this gain is largest.
+            // After the fade, `0 · gain` is still zero and nothing pops into
+            // view; folded into the catalogue instead it would brighten a star
+            // right across its own visibility sphere and the seam would be
+            // back.
+            let intensity = intensity * shift_light(forward, doppler);
 
             // Where the star was while the shutter was open. On the fast path
             // that is one point, cut against the near plane by [`tail_of`] —
@@ -992,11 +1109,26 @@ impl Universe {
     /// `absolute + 5·log10(d / 10 pc)`, so intensity is
     /// `10^(-0.4(absolute − ZERO_POINT)) · (10 pc / d)²`, and the reach is
     /// where that falls to what the limit allows.
+    ///
+    /// The reach carries no zero point, and it is spelled that way on purpose.
+    /// It is a *ratio* of two brightnesses — `lumen / faintest` — so the zero
+    /// point cancels out of it algebraically, and it used to be written as that
+    /// quotient on exactly that reasoning. The cancellation was only on paper.
+    /// Both terms went through their own `powf`, and `10^x` turns an ulp on the
+    /// exponent into a part in a million on the answer, so moving the zero point
+    /// nudged every reach by about 4e-7 — measured, 51% of a default sky —
+    /// and with it every `reach.sqrt()`, every `radius`, and therefore every
+    /// star's place. Worse in principle than in practice: a star landing within
+    /// that of [`NEAREST_STAR`] would flip the rejection loop in [`Self::spawn`],
+    /// take four more draws out of the RNG, and redraw the entire seeded sky
+    /// from that index on — which no hash could tell from the brightness change
+    /// that prompted it. Spelled from the limit directly it cannot happen: a
+    /// dimmer sky is a dimmer switch, and the pool is where it was.
     fn photometry(&self, absolute: f32) -> (f32, f32) {
         let at_ten = 10f32.powf(-0.4 * (absolute - ZERO_POINT));
         let lumen = at_ten * TEN_PARSECS_LY * TEN_PARSECS_LY;
-        let faintest = 10f32.powf(-0.4 * (self.limit - ZERO_POINT));
-        (lumen, lumen / faintest.max(f32::MIN_POSITIVE))
+        let at_limit = 10f32.powf(0.4 * (self.limit - absolute));
+        (lumen, at_limit * TEN_PARSECS_LY * TEN_PARSECS_LY)
     }
 
     /// A sample from a bell about zero, of unit width and bounded at three.
@@ -1372,6 +1504,138 @@ mod tests {
     }
 
     #[test]
+    fn a_sublight_sky_is_the_one_the_drive_is_not_lit_for() {
+        // Bitwise, and it is the whole of the guard. Every other statement of
+        // "a sublight frame is the frame this code is not there for" in the
+        // tree is backed by a reference flight coming out byte-identical; this
+        // one cannot be, because the baseline dim that arrived with the shift is
+        // not gated on the drive and moved all ten of them.
+        //
+        // Measured against a shift given a small floor rather than an early
+        // return, which it catches at `amount + 0.01` and does not catch at
+        // `amount + 1e-8` — and the second is not a hole. A perturbation four
+        // orders of magnitude under an `f32` ulp of one really is the identity
+        // here, so there is nothing left for a test to see.
+        for f in 0..=40 {
+            let forward = f as f32 / 40.0;
+            assert_eq!(
+                shift_light(forward, 0.0),
+                1.0,
+                "a cold drive changed a star at forward {forward}"
+            );
+            // A star's light times the gain has to be the star's light, not a
+            // number very near it: this is the multiply `sweep` performs.
+            let light = 0.037_213_5f32;
+            assert_eq!(light * shift_light(forward, 0.0), light);
+        }
+    }
+
+    #[test]
+    fn the_shift_brightens_ahead_and_dims_astern() {
+        // Brighter where it blues, fainter where it reddens, at every strength
+        // the ramp can reach. Ahead has to beat one and astern has to lose to
+        // it — a curve that only ever brightened would be a floodlight rather
+        // than a shift.
+        for step in 1..=9 {
+            let amount = step as f32 / 10.0 * 0.9;
+            let (ahead, abeam, astern) = (
+                shift_light(1.0, amount),
+                shift_light(0.5, amount),
+                shift_light(0.0, amount),
+            );
+            assert!(
+                ahead > abeam && abeam > astern,
+                "at {amount} the beam ran {ahead} / {abeam} / {astern}"
+            );
+            assert!(
+                ahead > 1.0 && astern < 1.0,
+                "at {amount} the shift did not straddle one: {ahead} / {astern}"
+            );
+            assert!(
+                astern > 0.0,
+                "at {amount} the shift put a star out rather than dimming it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_light_turns_over_where_the_colour_stops_leaning_blue() {
+        // The best thing the shared weights buy, and the reason [`SHIFT_LIGHT`]
+        // is one constant on their difference rather than a gain and a loss
+        // tuned apart: a star is drawn brighter than at rest exactly while it
+        // is being carried toward blue, and fainter exactly while it is being
+        // carried toward red. Asked as a sign agreement rather than by hunting
+        // the root, which makes it exact and makes it cover the whole domain
+        // instead of one curve through it.
+        for f in 0..=200 {
+            let forward = f as f32 / 200.0;
+            for step in 1..=9 {
+                let amount = step as f32 / 10.0 * 0.9;
+                let (blue, red) = shift_weights(forward, amount);
+                assert_eq!(
+                    blue > red,
+                    shift_light(forward, amount) > 1.0,
+                    "at forward {forward} the colour and the light disagree \
+                     about which way the sky is going"
+                );
+                assert_eq!(blue < red, shift_light(forward, amount) < 1.0);
+            }
+        }
+
+        // And the angle itself, so a reshaping of either weight has to say so.
+        // `forward³ = 0.75(1 − forward)` puts it at 0.644, which is 73 degrees
+        // off the nose — outside the cockpit's own 49, so from the seat the sky
+        // only ever brightens and the dimming half is a view from outside.
+        let mut lo = 0.0f32;
+        let mut hi = 1.0f32;
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if shift_light(mid, 0.9) < 1.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let turnover = (2.0 * (0.5 * (lo + hi)) - 1.0).acos().to_degrees();
+        assert!(
+            (72.0..75.0).contains(&turnover),
+            "the sky stops brightening at {turnover} degrees off the nose"
+        );
+    }
+
+    #[test]
+    fn the_drive_spends_a_little_less_light_than_it_was_given() {
+        // Over a whole sky the shift is meant to move light about rather than
+        // make it. `forward` is `(1 + cos)/2` and a uniform sky is uniform in
+        // cos, so `forward` is itself uniform on 0..=1 and a flat sweep of it is
+        // the honest average — worth saying, because the obvious alternative is
+        // to integrate over the *angle*, which weights the poles wrongly and
+        // would quietly answer a different question.
+        //
+        // The mean of the cube is a quarter against three eighths for the red
+        // weight, so one constant on the difference of the two lands a whole
+        // sky a little under where it started however hard it is driven. Both
+        // ends of the band are held. Over one and the drive is a free light
+        // source pushing the bright end into the tonemap's shoulder, which is
+        // what the baseline dim was spent to get *out* of; well under and it is
+        // a dimmer switch with a bright spot, which is a different picture from
+        // the one this draws.
+        for step in 1..=9 {
+            let amount = step as f32 / 10.0 * 0.9;
+            const SAMPLES: usize = 20_001;
+            let mut total = 0.0f64;
+            for i in 0..SAMPLES {
+                total += shift_light(i as f32 / (SAMPLES - 1) as f32, amount) as f64;
+            }
+            let mean = total / SAMPLES as f64;
+            assert!(
+                (0.90..1.0).contains(&mean),
+                "at {amount} a whole sky came out at {mean} of its light"
+            );
+        }
+    }
+
+    #[test]
     fn spectral_weights_are_positive() {
         assert!(CLASSES
             .iter()
@@ -1729,6 +1993,86 @@ mod tests {
         ship.toggle_warp();
         fly(&mut sky, &mut ship, 1200);
         (sky, ship)
+    }
+
+    #[test]
+    fn the_drive_throws_the_sky_forward() {
+        // The shift at the level it is applied at rather than the level it is
+        // defined at, which is the difference between knowing the curve is
+        // right and knowing it is wired to anything.
+        //
+        // One sky, swept twice through observers that differ in `warp` and in
+        // nothing else — same pool, same exposure, same camera — so the ratio
+        // of a star's two intensities is the ratio of its two gains and nothing
+        // else. Both warps sit above a third, where `twinkle_amt` is already a
+        // hard zero, so the twinkle cannot get into the comparison.
+        //
+        // The oracle is deliberately *not* a replay of `sweep`'s own dot
+        // product. Each path's head is where the star projected to, and from
+        // outside at `Orbit::LEVEL` the nose is exactly `(1, 0, 0)` in camera
+        // space — so a star's direction is `(u, v, 1)` for `u`, `v` the head's
+        // offset from the vanishing point in focal lengths, and `forward` falls
+        // out of screen geometry. A shift applied twice, or applied to the
+        // colour instead, or folded into `lumen`, misses this by tens of
+        // percent; an ulp of disagreement between two spellings of one dot
+        // product would not.
+        let (sky, ship) = spooled_up(6.5, 5);
+        let cam = cam();
+        let watching = |warp: f32| {
+            let orbit = crate::view::Orbit::LEVEL;
+            let eye = Observer::outside(
+                ship.axes,
+                ship.position,
+                &Eye::new(orbit, crate::view::ZOOM_DEFAULT),
+                orbit.nose_in_camera(),
+                warp,
+            );
+            let mut out = Vec::new();
+            sky.sweep(&cam, &eye, 3.5, |points, _, intensity| {
+                let head = *points.last().expect("an exposure with no points");
+                out.push((head.0, head.1, intensity));
+            });
+            out
+        };
+
+        let (soft, hard) = (0.4f32, 0.9f32);
+        let (dim, lit) = (watching(soft), watching(hard));
+        assert_eq!(
+            dim.len(),
+            lit.len(),
+            "the drive changed which stars were drawn, not only how brightly"
+        );
+        assert!(!dim.is_empty(), "nothing was drawn to compare");
+
+        let (mut ahead, mut astern) = (0, 0);
+        for (a, b) in dim.iter().zip(&lit) {
+            assert_eq!((a.0, a.1), (b.0, b.1), "the drive moved a star");
+            let (u, v) = ((a.0 - cam.cx) / cam.focal, (a.1 - cam.cy) / cam.focal);
+            let forward = 0.5 + 0.5 * u / (u * u + v * v + 1.0).sqrt();
+            if forward > 0.85 {
+                ahead += 1;
+            } else if forward < 0.25 {
+                astern += 1;
+            }
+            let want = shift_light(forward, hard * 0.9) / shift_light(forward, soft * 0.9);
+            let got = b.2 / a.2;
+            assert!(
+                (got - want).abs() <= want * 1e-3,
+                "a star at forward {forward} gained {got} where the shift asks {want}"
+            );
+            // Well clear of the turnover at 0.644 on both sides, so the bins
+            // say something about the shift rather than about the root.
+            if forward > 0.85 {
+                assert!(got > 1.05, "a star ahead of the ship did not brighten");
+            } else if forward < 0.25 {
+                assert!(got < 0.95, "a star astern of the ship did not dim");
+            }
+        }
+        assert!(
+            ahead > 20 && astern > 20,
+            "the camera saw {ahead} stars ahead and {astern} astern, which is \
+             not both halves of the effect"
+        );
     }
 
     #[test]
@@ -2642,6 +2986,25 @@ mod tests {
                 assert!(
                     over <= 1.0 + 1e-3,
                     "a recycled star arrived {over} times brighter than the limit"
+                );
+                // And the fade is what turns that into nothing *drawn*, which
+                // is the half `shift_light` has to leave alone. The recycle
+                // puts a star on the hemisphere the flow is coming from, so
+                // every arrival lands in the half of the sky the drive throws
+                // light at, where the shift reaches 1.54. That is safe because
+                // the shift is a multiplier and the fade it multiplies is
+                // nothing — but not because the fade is bitwise zero, which it
+                // is not: a star is put back at exactly its reach and then
+                // flies a step, so `over` sits a hair either side of one and
+                // this comes out around 1e-7. It enters squared, so what is
+                // asked here is the product the canvas would actually be
+                // handed, at the largest gain the drive can apply.
+                let fade_ratio = 10f32.powf(0.4 * FADE_MAGNITUDES);
+                let fade = ((over - 1.0) / (fade_ratio - 1.0)).clamp(0.0, 1.0);
+                let lit = fade * fade * shift_light(1.0, 0.9);
+                assert!(
+                    lit < 1e-9,
+                    "a recycled star arrived with {lit} of a unit already lit"
                 );
             }
         }

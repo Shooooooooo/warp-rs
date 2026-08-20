@@ -81,8 +81,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 325 unit + 16 elsewhere, about 25s
-cargo test --locked --all-features      # 329 unit — adds the snapshot-gated ones
+cargo test                              # 330 unit + 16 elsewhere, about 25s
+cargo test --locked --all-features      # 334 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -333,6 +333,26 @@ nobody moves `drift.txt` and only `drift.txt`. It is the one flight whose camera
 moves at all: the other three side-view runs hold `orbit_target - orbit` at an
 exact zero, so `Flight::advance`'s two eases add nothing to them, and the four
 cockpit flights never read the orbit or the zoom in the first place.
+
+**And by whether the drive is lit at all.** A change gated on `Ship::warp_intensity`
+moves the seven flights that light one and leaves the three 60 fps `--demo` runs
+byte for byte, whose ramp is an exact zero from the first frame to the last.
+Making the Doppler shift a brightness as well as a colour is the worked example,
+and so is the trap that came with it.
+
+**The trap: a commit can take the last control away, and then the split has to
+be measured on a build of its own.** That change landed beside two others — the
+zero point coming down a fifth of a magnitude, and `reach_sq` being respelled —
+and *both* of those move all ten, so with the three of them in the tree together
+there was no byte-identical hash left in this file to say the shift was
+warp-gated at all. The answer is not to skip the question. Build each half on
+its own, shoot the ten, and record which moved: the shift alone left
+`truecolor.txt`, `ascii.txt` and `ansi256.txt` untouched, the zero point alone
+moved ten, the respelling alone moved nine. That went into the commit message
+and into `frames.sha256`'s comment block, and it is the only reason any of it is
+known. A first attempt at it measured "the shift" on a tree that still carried
+the respelling and reported a leak that was not there — decompose to one change
+per build or the answer is noise.
 
 A hash moving outside the shape its change predicts has leaked.
 
@@ -923,16 +943,87 @@ mechanism, because the ship flies where it points and so the attitude's turn
 
 `intensity = 10^(−0.4·(m − ZERO_POINT))`, which is the one transform between a
 logarithmic scale and a linear buffer and is the only thing here that has to be
-exactly right. `ZERO_POINT` is **derived, not chosen**: the old renderer's
-typical star laid down `luminosity · magnitude · depth^1.4 ≈ 0.155`, and the
-mean of `10^(−0.4 m)` under the count law is `slope/(slope − 0.4) · 10^(−0.4 L)`,
-so the two agree at `10^(0.4 z) = 20.6`. Move the count law or the limit and
-this wants re-deriving, or `--exposure` stops meaning what it means.
+exactly right. `ZERO_POINT` is **derived, and then deliberately moved a fifth of
+a magnitude off the derivation** — which is the sentence to read before
+restoring it. The derivation is still the anchor: the old renderer's typical
+star laid down `luminosity · magnitude · depth^1.4 ≈ 0.155`, and the mean of
+`10^(−0.4 m)` under the count law is `slope/(slope − 0.4) · 10^(−0.4 L)`, so the
+two agree at `10^(0.4 z) = 20.6`, which is 3.28. It is 3.08. Move the count law
+or the limit and this wants re-deriving — and a re-derivation has to carry the
+offset forward or it silently undoes what the offset was for.
+
+**What it was for is the shift below.** Re-deriving `ZERO_POINT` and pocketing
+the fifth of a magnitude is the one edit here that would look like a correction
+and be a regression.
+
+**That the sky can be dimmed without moving is a property of how `photometry`
+is spelled, and it was not one until it was measured.** A star's reach is
+`lumen / faintest`, so the zero point cancels out of it *algebraically* — and
+that is what the code said, as that quotient. In `f32` it does not: each side
+went through its own `powf`, and `10^x` turns an ulp on the exponent into a part
+in a million on the answer. Moving the zero point moved every reach by about
+4e-7, and with it every `sqrt`, every radius and every star's place — 51% of a
+default seeded sky. Harmless as it happened, and not harmless in principle: a
+star landing that close to `NEAREST_STAR` flips the rejection loop in `spawn`,
+takes four more draws out of the RNG, and redraws the whole seeded sky from that
+index on, which no hash could tell from the brightness change that prompted it.
+`reach_sq` is taken from the limit directly now and carries no zero point at
+all, so a build either side of the constant puts all 4 565 stars of a default
+sky in byte-identical places. Do not put the quotient back.
+
+`--exposure` is the wrong knob for the same job and it is worth knowing why: it
+is the *tonemap*, so it takes the tunnel glare, the hull, the plume and the
+flash down with the sky. This dims the stars and leaves everything else exactly
+where it was. Somebody who wants the old level back can have it exactly — the
+curve is `1 − exp(−v·exposure)`, so `--exposure 2.28` cancels the 0.20 precisely
+— at the price of brightening everything that is not a star along with it.
 
 That replaced a `DEPTH_FALLOFF` of 1.4 and a cubed magnitude sample, both of
 which existed to fake a lopsided brightness distribution and to stop honest
 inverse-square making everything invisible. Neither problem survives a catalogue
 in which every star is by construction brighter than the limit.
+
+#### The Doppler shift is a brightness as well as a colour
+
+`shift_color` carries a star's rest colour toward blue ahead and red astern, and
+`shift_light` is the other half of the same shift: brighter ahead, fainter
+astern, on the strength `eye.warp * 0.9`. Both take their two weights from
+`shift_weights`, and the sharing is the design rather than a tidiness — with one
+constant, `SHIFT_LIGHT`, applied to the *difference* of the two weights, a star
+brightens exactly while it is being carried toward blue and dims exactly while
+it is being carried toward red. The light turns over at precisely the angle the
+colour stops leaning blue: 73.3 degrees off the nose, where `forward³` meets
+`0.75·(1 − forward)`. A gain and a loss tuned apart buy a second knob and sell
+that, putting the two turnovers twelve degrees from each other — a ring where a
+star reads faintly red and is nonetheless brighter than at rest.
+
+**From the seat nothing visible is receding**, and that is the fact that shapes
+the curve. `Camera::focal` is `0.85` of the canvas height, so the cockpit's
+frame reaches 48.8 degrees off the nose at the corner and `forward` never falls
+below about 0.83. Everything in view is approaching; what the cockpit shows is a
+*gradient of brightening*, steep down the throat and flat at the corners, and
+the dimming half is a view-from-outside effect. That is also why the blue weight
+is a **cube** and the red one linear: a curve that is gentle in `cos θ` spends
+almost all of its range where nobody in the seat can see it.
+
+At full warp, as a multiplier on the light a star laid down before any of this:
+1.28 dead ahead, 1.03 at the corner of the cockpit's frame, 0.72 square abeam,
+0.50 dead astern, a whole sky at 0.78 and the cockpit's own cone at 1.15. In
+eight bits a median star reads 141 down the throat against 95 astern, from 128
+before.
+
+`side.txt` is where it reads cleanest: `Orbit::LEVEL` puts the nose at exactly
+`(1, 0, 0)` in camera space, so it lies flat in the image plane and `forward`
+tracks screen *x* with no depth mixed into it at all.
+
+The gain multiplies `intensity` and never `lumen`, `reach_sq` or the limit, and
+it is applied **after** the `intensity <= 0.0` guard in `sweep`. Both matter.
+The fade is what makes a recycled star arrive at nothing, and the recycle puts
+it on the *entering* hemisphere — dead ahead, where the gain is largest — so a
+multiplier after the fade is what keeps nothing from popping into view. And
+leaving the guard in front keeps the set of stars drawn a function of their own
+photometry alone, which is what lets a test sweep one sky at two warps and pair
+the results by index.
 
 #### The transform chain
 
@@ -2169,9 +2260,17 @@ directly because no test says anything about them. Shoot a frame with
 `--features snapshot` and look at it — the density that reads as a sky rather
 than as static is a judgement, and `cli::DEFAULT_MAGNITUDE` was settled by
 shooting 5.5, 6.0 and 6.5 and comparing. Re-derive `universe::ZERO_POINT` if the
-count law or the default limit moves, or `--exposure` stops meaning what it
-means. And reshoot `docs/` — the README's two images are the first thing anybody
+count law or the default limit moves, and carry its fifth of a magnitude of
+offset forward when you do — see above, where what that offset is for is written
+down. And reshoot `docs/` — the README's two images are the first thing anybody
 sees of this program and nothing will tell you they have gone stale.
+
+Measure the shot rather than squinting at it, because an eye is a poor
+photometer over a whole frame and was wrong here: `docs/astern.png` plainly
+looked dimmer after the shift went in and its mean pixel had moved from 24.57 to
+24.52. What had actually changed was the *distribution* — 2% fewer lit subpixels
+and a middle ninth up from 45.5 to 49.0. Decode the PNG and take a mean, a lit
+count and a half-frame ratio before believing what the picture seems to say.
 
 The fourth is a *turn*, which no reference flight and no snapshot recipe
 reaches: `--demo`'s weave sweeps about a twentieth of what a hand on the stick

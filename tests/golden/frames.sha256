@@ -161,6 +161,50 @@
 #                 by property tests in `universe.rs`, which is the level it
 #                 belongs at: it is a variant, not a region.
 #
+#   Shift.        Seven of the ten moved when the Doppler shift stopped being
+#                 only a colour and became a brightness as well. The three that
+#                 did not are the 60 fps `--demo` runs, whose warp ramp is an
+#                 exact zero from the first frame to the last — `shift_light`
+#                 returns exactly one there, `intensity · 1.0` is exact, and a
+#                 sublight frame is the frame the drive's own arithmetic is not
+#                 there for.
+#
+#                 That split had to be *measured on a build of its own*, and
+#                 that is the thing to carry forward rather than the count. Two
+#                 other changes landed in the same commit and both move all ten,
+#                 so with the three of them in the tree together there is no
+#                 byte-identical control left in this file to say the shift is
+#                 warp-gated at all. Three builds said it instead: the shift on
+#                 its own, the zero point on its own, and the reach's respelling
+#                 on its own. Anything else that arrives here without a control
+#                 wants the same treatment — a hash that cannot move is worth
+#                 more than one that did, and a commit that takes the last one
+#                 away owes the reader the build that had it.
+#
+#   Zero point.   All ten moved when the sky's baseline came down a fifth of a
+#                 magnitude to make room for the shift above, and that is the
+#                 shape rather than a leak: the dim is not gated on the drive,
+#                 so a parked ship is dimmer too. It separates nothing at all,
+#                 which is the reading — a change that moves ten this way is a
+#                 change to the photometry rather than to any one view, and
+#                 `hud.rs` is the other thing that moves ten (see "Panel.").
+#                 Told apart by which files disagree: a panel edit shifts the
+#                 same characters in every frame, and this moved no character
+#                 in `ascii.txt`'s panel and most of its sky.
+#
+#   Reach.        Nine of the ten moved when `reach_sq` stopped being spelled as
+#                 `lumen / faintest` and started being taken from the limit
+#                 directly. The two are the same number on paper — the zero
+#                 point cancels — and were not in `f32`, because each side went
+#                 through its own `powf` and `10^x` turns an ulp on the exponent
+#                 into a part in a million on the answer. So every reach moved
+#                 by about 4e-7, and with it every `sqrt`, every radius and
+#                 every star's place: 51% of a default seeded sky, measured.
+#                 `ascii.txt` is the one that held, which is a fact about that
+#                 mode's coarseness rather than about the change — sixteen
+#                 glyphs of ramp do not resolve a part in a million, and the
+#                 other two spellings of the same flight both moved.
+#
 #   Panel.        All ten move for a change to the instrument panel, and that is
 #                 the one shape here that separates *nothing*. The panel is
 #                 stamped into the character grid after `compose`, so it is
@@ -249,13 +293,13 @@
 #
 # Regenerating: build a release binary and run the ten commands in `CLAUDE.md`,
 # then put this block back. Say in the commit message which moved and why.
-73e9c4fe47da9237fec53bd26060b5611b11fc644f406ee517398c7bef6407a2  truecolor.txt
-5cc1dd4a61cf82ef84830baace7784acafb873f1212cb410674c74073d7e6200  ascii.txt
-eaf92a6c41192aa12bd294f9e3aec9a3813e1dce0577e5a9eb496ebb88413802  ansi256.txt
-3eae495ec537236bc880110be2e5c01996051a17a84e95eb0d3b632da78d21a5  warp.txt
-1d8ac621a64e1fd833e6cbe27c010e8a303153c234e78d45aec1d55f82222700  side.txt
-b7edadb296f80e1ccf1257398e1e00b46c138dda2362561e2a83a817997234ed  orbit.txt
-237f1d3d515be37af293f3a952c4fad2938b3c5a27b854c1b18095d00c275979  astern.txt
-9731a4fa5bc9dbacabe87ebc562826f81563a2ddf873c8f30aaa7594ea4f73e2  steer.txt
-7b3a6e61d57ee2141b45beb9317ac34cb1a2e9419f4349cf4ae7225f2284a74a  drift.txt
-3f4880f3483e83abb8a2457996f409483cb7953172622373ae26cd54222d1dd7  ahead.txt
+2bfb67055e0351c3503846b45c2dd9ba188a801162a162283a27064c7122bc6d  truecolor.txt
+0bd8a7ee8d8cdf36b8d21ff8699197fed5a63a41155769f09f5be57ad5c09d7d  ascii.txt
+5fbbaf3ce36e0a072c88e8cd1f71d3b4b32b7fa7049bfc44112a33c277f42be6  ansi256.txt
+d9a8d1084abdde4af89f39d563c4374a04785569bd3f5e1c5341998c939c43fe  warp.txt
+228b2b59fa5a424ad862a5af8efffc43cea004dc833408c30d5474790d73e27e  side.txt
+c03d0db985044dbf2bb4cdbf2dbfdb064c278a54e1d45823e783b2b2efbe21af  orbit.txt
+4a0c3d9454f37400bfe9cf4d270390e2b6ef0dbce8ed199ec7338066069330da  astern.txt
+f5a0ded10d922fbbd51886777df069eda8e727f5bb555ae14b68913cf76beac7  steer.txt
+579a3de06f923f3825ec0761228b4fa10f7a7dedb26aaae1e08b0f7dbbea1c7b  drift.txt
+9f2ea58ac67fc4ad2846a13eb244a7e8141ab77e71cba48169cf8c4078409ee9  ahead.txt
