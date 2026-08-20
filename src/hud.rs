@@ -218,7 +218,7 @@ pub fn draw(screen: &mut Screen, r: &Readout) {
     }
 
     if r.view == ViewMode::Cockpit {
-        draw_reticle(screen, cols, rows, g);
+        draw_reticle(screen, cols, rows, g, nav_bottom_row(r.view));
     }
     draw_nav_panel(screen, r, g);
     draw_status_line(screen, r, cols, rows, g);
@@ -238,11 +238,48 @@ fn draw_compact(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, g: &
     }
 }
 
+/// How many rows the NAV panel has, and where its closing rule therefore lands.
+///
+/// Two callers need this and only one of them draws the panel, which is why it
+/// is a function rather than a `rows.len()` read off at the point of use. The
+/// reticle goes down *before* the panel — it lightens what is behind it where
+/// the panel covers, so the order is not free to change — and so it has to be
+/// told where the panel is going to be rather than able to look.
+///
+/// Keeping it derived matters more than the four lines it saves: CLAUDE.md's
+/// note on adding a NAV readout is about how tight the row budget already is,
+/// and a seventh row that moved the closing rule without moving the reticle
+/// would put the fault below straight back.
+fn nav_rows(view: ViewMode) -> usize {
+    // VELOCITY, WARP, DISTANCE, HEADING and ROLL, and SHIP only from outside.
+    5 + usize::from(view == ViewMode::Side)
+}
+
+fn nav_bottom_row(view: ViewMode) -> usize {
+    2 + nav_rows(view)
+}
+
 /// Corner brackets around the vanishing point — where you are actually going.
-fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs) {
+fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs, nav_bottom: usize) {
     let (cx, cy) = (cols / 2, rows / 2);
     let (dx, dy) = (9usize, 3usize);
     if cx < dx + 1 || cy < dy + 1 || cx + dx >= cols || cy + dy >= rows {
+        return;
+    }
+    // And it clears the instrument panel, which is the same kind of refusal as
+    // the one above and was missing for as long as there has been a reticle.
+    // The panel is drawn afterwards and `overlay` skips its own spaces, so a
+    // bracket landing on a NAV row is not covered by it — it shows through the
+    // gaps between the label and the value, in the very box characters the
+    // panel's own frame is drawn in. Below about twenty-two rows the top pair
+    // lands inside the panel at every width.
+    //
+    // Refused outright rather than drawn smaller, for the reason the edge case
+    // above is: at `MIN_ROWS` the panel is more than half the window and there
+    // is no `dy` that clears it, so a reticle that shrank to fit would have to
+    // vanish at the bottom of the range anyway — and would change size with the
+    // terminal on the way there, which is not what a sight does.
+    if cy - dy <= nav_bottom {
         return;
     }
     for (x, y, ch) in [
@@ -285,6 +322,15 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
         rows.push(("SHIP", r.model.to_uppercase(), ACCENT));
     }
 
+    // The one place the row list and `nav_rows` could drift apart, so it is
+    // also the place they are held together. The reticle stands off the panel
+    // by asking `nav_rows` rather than by counting these.
+    debug_assert_eq!(
+        rows.len(),
+        nav_rows(r.view),
+        "the NAV panel grew a row that `nav_rows` does not know about"
+    );
+
     screen.overlay(2, 1, &format!("{} NAV", g.frame_top), LABEL);
     for (i, (label, value, color)) in rows.iter().enumerate() {
         let row = 2 + i;
@@ -292,7 +338,7 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
         screen.overlay(4, row, label, LABEL);
         screen.overlay(15, row, value, *color);
     }
-    screen.overlay(2, 2 + rows.len(), &g.frame_bottom.to_string(), RULE);
+    screen.overlay(2, nav_bottom_row(r.view), &g.frame_bottom.to_string(), RULE);
 }
 
 /// The headline: what the drive is doing right now.
@@ -894,6 +940,91 @@ mod tests {
                 "hints landed on the throttle row at {cols} columns"
             );
         }
+    }
+
+    #[test]
+    fn the_reticle_never_lands_in_the_instrument_panel() {
+        // Regression, and the sibling of `the_hints_never_eat_the_throttle_
+        // readout` above: that one sweeps every *width* because the hints once
+        // overwrote the throttle bar across a band of them. Nothing swept the
+        // heights, and the same shape of fault was sitting in the gap.
+        //
+        // `draw_reticle` puts its brackets at `(cols/2 ± 9, rows/2 ± 3)` and
+        // the panel closes at row `2 + rows.len()`, so below about 22 rows the
+        // top pair lands inside the NAV panel. The panel is drawn *after* the
+        // reticle and `overlay` skips its own spaces, so the panel's gaps let
+        // the brackets straight through:
+        //
+        //   │ WARP      ┌FACTOR 9.78      ┐
+        //
+        // which reads as a broken frame, because in the Unicode face the
+        // reticle is drawn in the same box characters the frame is. Measured
+        // at heights 12 through 21 at every width from `MIN_COLS` to 200, in
+        // both faces. No reference frame can see it: all ten fly at 120x36,
+        // where the reticle rows are 15 and 21 and the panel closes at 7.
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+
+        for mode in [ColorMode::Truecolor, ColorMode::Ascii] {
+            let g = Glyphs::for_mode(mode);
+            for cols in [MIN_COLS, 60, 80, 120, 200] {
+                for rows in MIN_ROWS..=60 {
+                    let mut screen = blank_in(cols, rows, mode);
+                    draw(&mut screen, &readout(&ship));
+
+                    // Where the panel ends, asked of the picture rather than of
+                    // the row count, so a seventh NAV row moves this with it.
+                    let Some(bottom) = (1..rows)
+                        .find(|row| screen.row_text(*row).chars().nth(2) == Some(g.frame_bottom))
+                    else {
+                        panic!("the panel did not close at {cols}x{rows}");
+                    };
+
+                    for row in 1..=bottom {
+                        let text = screen.row_text(row);
+                        // From column 4: the frame itself lives at column 2 and
+                        // is drawn in `┌` and `└`, which are two of the four
+                        // glyphs being looked for. Labels start at 4.
+                        for (col, ch) in text.chars().enumerate().skip(4) {
+                            assert!(
+                                !g.reticle.contains(&ch),
+                                "the reticle put {ch:?} at column {col} of NAV \
+                                 row {row}, inside a panel closing at {bottom}, \
+                                 at {cols}x{rows} in {mode:?}:\n{text}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_reticle_is_still_drawn_where_there_is_room_for_it() {
+        // The other half, and the reason the test above cannot stand alone: a
+        // `draw_reticle` that returned immediately would satisfy it completely.
+        // At a terminal with the room the brackets have to be there, and they
+        // have to be all four.
+        let ship = Ship::new();
+        let g = uni();
+        let (cols, rows) = (120, 36);
+        let mut screen = blank(cols, rows);
+        draw(&mut screen, &readout(&ship));
+
+        let found: usize = (0..rows)
+            .map(|row| {
+                screen
+                    .row_text(row)
+                    .chars()
+                    .enumerate()
+                    .filter(|(col, ch)| *col >= 4 && g.reticle.contains(ch))
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            found, 4,
+            "the reticle should draw all four corners at {cols}x{rows}"
+        );
     }
 
     #[test]
