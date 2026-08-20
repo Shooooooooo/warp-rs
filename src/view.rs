@@ -73,12 +73,15 @@ pub const ZOOM_EASE: f32 = 9.0;
 /// the canvas height, so this falls out of the framing alone and the ship is
 /// the same fraction of the frame on a phone-sized terminal and a wall.
 ///
-/// Zooming is a dolly and not a change of lens: the star band is laid out
+/// Zooming is a dolly and not a change of lens, and the reason has outlived the
+/// mechanism that first gave it. It used to be that the star band was laid out
 /// against `Camera::focal` and cached against it, so a zoom that touched the
-/// focal length would have to re-fold the whole field every notch — and
-/// re-folding drops every trail. Moving the ship instead leaves the sky exactly
-/// where it was, which is also the honest picture, since the band is out at
-/// eighteen units and up and a few units of dolly is no parallax at all.
+/// focal length re-folded the whole field every notch and dropped every trail
+/// doing it. There is no band and no cache: [`crate::universe`] is a volume in
+/// the world, re-projected each frame, and it would survive a focal change
+/// without noticing. What survives is the honest picture — a lens change is a
+/// different shot, not a closer one — and the fact that a few units of dolly
+/// against a sky in light years is no parallax at all.
 pub fn ship_distance(zoom: f32) -> f32 {
     SIDE_FOCAL / (SHIP_SCREEN_FRAC * clamp_zoom(zoom))
 }
@@ -296,8 +299,11 @@ impl Orbit {
     /// Which way the sky runs, in the camera's space: the opposite of the nose,
     /// because the ship is what is moving.
     ///
-    /// Exactly `(-1, 0, 0)` at [`Self::LEVEL`], which is the assumption the
-    /// star band was written under and still takes its fast path on.
+    /// Exactly `(-1, 0, 0)` at [`Self::LEVEL`], which the star band was written
+    /// under and took a fast path on. Nothing reads it that way any more — the
+    /// sky is in the world and travels with the ship rather than against the
+    /// camera — but the exactness is still the thing `Orbit::LEVEL` is for, and
+    /// `the_level_orbit_is_the_quarter_turn_it_replaced` still holds it.
     pub fn sky_travel(self) -> [f32; 3] {
         let n = self.nose_in_camera();
         [-n[0], -n[1], -n[2]]

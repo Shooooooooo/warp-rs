@@ -2,9 +2,16 @@
 //!
 //! ```sh
 //! cargo run --release --example bench            # a default sweep
-//! cargo run --release --example bench 200 60 20000
-//! cargo run --release --example bench 200 60 20000 side 256
+//! cargo run --release --example bench 200 60 8
+//! cargo run --release --example bench 200 60 8 side 256
 //! ```
+//!
+//! The third argument is a limiting *magnitude* — how faint a sky, the way
+//! `--magnitude` asks for one — and these two lines said `20000` for a while
+//! after it stopped being a star count, which is not a magnitude any parser
+//! will take. They aborted. Documentation that can be run is worth keeping
+//! runnable: `8` is the faint sky the default sweep's expensive rows use, and
+//! comes out around seventy thousand stars.
 //!
 //! Reports where a frame goes: simulating the flight, drawing it, and getting
 //! it out. The interesting number is the sum against the frame budget — 16.7 ms

@@ -46,12 +46,13 @@ pub struct Bend {
 impl Bend {
     /// Draw one star's exposure, bending it if the bubble reaches it.
     ///
-    /// It takes the path rather than a [`Streak`] because an exposure is one:
-    /// when the ship turned while the shutter was open, the track the star
-    /// swept is a curve and the sky hands it over as the poses it was open at.
-    /// A path of two points is the straight case and goes to `draw_streak`
-    /// exactly as it always did, which is what keeps a sublight frame — and
-    /// every frame of a flight nobody steers — the frame it was.
+    /// It takes the path rather than a [`crate::camera::Streak`] because an
+    /// exposure is one: when the ship turned while the shutter was open, the
+    /// track the star swept is a curve and the sky hands it over as the poses
+    /// it was open at. A path the bubble does not reach goes straight to
+    /// [`Canvas::draw_path`] whatever its length, which is what keeps a
+    /// sublight frame — and every frame of a flight nobody steers — the frame
+    /// it was.
     pub fn draw_one(
         &mut self,
         canvas: &mut Canvas,

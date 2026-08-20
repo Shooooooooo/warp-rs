@@ -1320,6 +1320,83 @@ mod tests {
     }
 
     #[test]
+    fn the_help_names_every_key_that_does_something() {
+        // The hint line is chosen by width, so on the eighty-column terminal
+        // most people have it names four keys of a dozen: no camera, no picker,
+        // no pause, no reset, no zoom, and `+`/`-` on no tier at any width.
+        // Under `MIN_COLS` there is not even a printed way to quit. Widening
+        // the tiers costs columns the narrow ones do not have and repaints all
+        // ten reference frames, so the full list lives in `--help`, where it
+        // costs nothing — and this is what keeps it in step with the keyboard.
+        //
+        // Each key is *driven* as well as looked up, so the list cannot quietly
+        // become a description of controls that no longer exist: a key that
+        // moves nothing fails here just as loudly as one the help forgot.
+        use clap::CommandFactory;
+        let help = cli::Args::command().render_help().to_string();
+        // The key *column* of the controls block, not the help at large: a
+        // single letter turns up all over a page that also spells `--magnitude
+        // <MAG>`, so `contains` answers yes to keys the block never names. It
+        // did, and this test passed with a whole line deleted before the
+        // lookup was narrowed to the column the keys are printed in.
+        let block = help.split("Controls:").nth(1).unwrap_or("");
+        let names = |name: &str| {
+            block.lines().any(|line| {
+                let line = line.trim_start();
+                let column = line.split("  ").next().unwrap_or(line);
+                column
+                    .split_whitespace()
+                    .any(|token| token.trim_end_matches(',') == name)
+            })
+        };
+
+        let args = args_for(&["--view", "side", "--magnitude", "3.5", "--size", "60x20"]);
+        let keys: [(KeyCode, &str); 12] = [
+            (KeyCode::Char(' '), "SPACE"),
+            (KeyCode::Up, "UP"),
+            (KeyCode::Down, "DOWN"),
+            (KeyCode::Char('c'), "C"),
+            (KeyCode::Char('+'), "+"),
+            (KeyCode::Char('-'), "-"),
+            (KeyCode::Char('p'), "P"),
+            (KeyCode::Char('r'), "R"),
+            (KeyCode::Char('m'), "M"),
+            (KeyCode::Char('w'), "W"),
+            (KeyCode::Char('q'), "Q"),
+            (KeyCode::Char('['), "["),
+        ];
+        for (code, named) in keys {
+            assert!(
+                names(named),
+                "the help does not name {named}, which is a key that flies something"
+            );
+            let mut flight = Flight::new(&args, 60, 20);
+            let mut paused = false;
+            let before = frame_of(&mut flight);
+            handle_key(press(code), &mut flight, &args, &mut paused);
+            flight.advance(1.0 / 60.0);
+            assert!(
+                paused || frame_of(&mut flight) != before,
+                "the help names {named} and pressing it changed nothing"
+            );
+        }
+        // And the two that end a flight, which cannot be driven the same way
+        // because what they change is that there is no next frame.
+        for named in ["ESC", "Ctrl-C"] {
+            assert!(names(named), "the help does not name {named}");
+        }
+    }
+
+    /// What one frame of a flight comes out as, for tests that ask whether a
+    /// key moved anything at all.
+    fn frame_of(flight: &mut Flight) -> Vec<u8> {
+        flight.draw(60.0, false, true);
+        let mut out = Vec::new();
+        let _ = flight.present_plain(&mut out);
+        out
+    }
+
+    #[test]
     fn keys_do_what_they_say() {
         let args = args_for(&["--magnitude", "3.5", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
@@ -2403,9 +2480,13 @@ mod tests {
     #[test]
     fn the_zoom_moves_the_ship_and_leaves_the_sky_alone() {
         // Why this is a dolly and not a change of lens, stated as a property.
-        // The star band is laid out against the camera's focal length, so a
-        // zoom that touched the focal length would sweep the whole sky about
-        // and need the field re-folded every notch. Flown at sublight, where
+        // It was once a mechanism — the star band was laid out against the
+        // camera's focal length, so a zoom that touched it re-folded the whole
+        // field every notch — and it is a choice now: the sky is in the world
+        // and would survive a focal change, and a lens change is a different
+        // shot rather than a closer one. The property is the same either way,
+        // and it fails the moment anything makes `exterior_camera` read the
+        // zoom. Flown at sublight, where
         // the lens is off and an exactly identical sky is the whole claim:
         // every subpixel that differs between two zooms has to be one the ship
         // and its bubble could have reached.

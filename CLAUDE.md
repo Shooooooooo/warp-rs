@@ -2037,7 +2037,7 @@ the profile overridden on the invocation rather than in `Cargo.toml`:
 ```sh
 CARGO_TARGET_DIR=/tmp/prof CARGO_PROFILE_RELEASE_DEBUG=true \
     cargo build --release --examples
-valgrind --tool=callgrind --cache-sim=no /tmp/prof/release/examples/bench 200 60 5000 side truecolor
+valgrind --tool=callgrind --cache-sim=no /tmp/prof/release/examples/bench 200 60 8 side truecolor
 callgrind_annotate --auto=no callgrind.out.*
 ```
 

@@ -36,9 +36,13 @@ pub struct Exterior<'a> {
     pub time: f64,
     /// How far in or out the camera has been pushed, as a multiple of the
     /// default framing. It rides in here rather than on the [`Camera`] because
-    /// the camera has not moved: the zoom is a dolly on the *ship*, and the
-    /// sky — which is laid out against the camera's focal length and cached
-    /// against it — is meant to sit perfectly still while it happens.
+    /// the camera has not moved: the zoom is a dolly on the *ship*, and the sky
+    /// is meant to sit perfectly still while it happens. That used to be
+    /// enforced by a cache — the star band was laid out against
+    /// `Camera::focal` — and is now a choice the sky would survive either way,
+    /// since a lens change is a different shot rather than a closer one. See
+    /// `the_zoom_moves_the_ship_and_leaves_the_sky_alone`, which fails the
+    /// moment anything makes `exterior_camera` read this.
     pub zoom: f32,
     /// Which way round the ship the camera has been swung. It rides in here
     /// for the same reason the zoom does and with the opposite consequence:
