@@ -850,14 +850,30 @@ impl Universe {
         let per_leg = (8.0 * SAGITTA / corner.max(1.0)).sqrt();
         // How much further than the camera's own turn a star can be carried by
         // the ship simply going somewhere. A star at range `R` swings by about
-        // `reach / R` while the shutter is open, so the nearest one there is
-        // swings by `reach / NEAREST_STAR` — four radians at full warp, against
-        // the two and a half a buried stick turns the camera through. Leaving
-        // it out was measured and it showed: the poses came out six where the
-        // curve wanted twenty, half the sky was drawn a subpixel off its own
-        // track and a tenth of it nearly five, with the near stars visibly
-        // cornered. It is the parallax that makes a curved exposure hard to
-        // draw, not the rotation.
+        // `reach / R` while the shutter is open, so this scales the turn by
+        // `1 + reach / NEAREST_STAR` — five at full warp, against the two and a
+        // half a buried stick turns the camera through. Leaving it out was
+        // measured and it showed: the poses came out six where the curve wanted
+        // twenty, half the sky was drawn a subpixel off its own track and a
+        // tenth of it nearly five, with the near stars visibly cornered. It is
+        // the parallax that makes a curved exposure hard to draw, not the
+        // rotation.
+        //
+        // `NEAREST_STAR` is a *stand-in* here and not a bound, which is worth
+        // being plain about because the sentence this replaced called it the
+        // nearest star there is. It is the nearest a star may be *placed*; the
+        // ship then flies at it. Two minutes of full warp measured a closest
+        // approach of 0.017 ly — two hundred and thirty-five times inside the
+        // constant — with at least one star within four light years on 14 354
+        // of 14 400 frames. So the true worst parallax is routinely two orders
+        // of magnitude above what this asks for.
+        //
+        // It costs nothing today, and only because of what bounds the answer
+        // instead: five already saturates `MAX_STATIONS` for any turn worth
+        // subdividing, so asking for fifty would change no count. That makes
+        // this a sound number resting on the wrong reason — which matters if
+        // the ceiling is ever raised, since the floor would then become the
+        // binding assumption and it is the one that is wrong.
         let turned = self.track.turn_over(reach);
         let swing = turned * (1.0 + reach / NEAREST_STAR);
         let legs =
