@@ -28,7 +28,7 @@
 //! recorded attitude is bit-for-bit the current one, and an exposure that does
 //! not reach past it needs none of this — the caller takes its old arithmetic
 //! and the picture is unchanged to the last bit. A ship nobody steers holds
-//! [`crate::ship::LEVEL_AXES`] exactly, so that is the whole of a straight
+//! `crate::ship::LEVEL_AXES` exactly, so that is the whole of a straight
 //! flight, and the reference frames go on being the frames they were. An
 //! epsilon there would be a threshold nobody chose with the reference frames
 //! sitting on one side of it.
@@ -173,8 +173,8 @@ impl Track {
     ///
     /// Bitwise, and not within a tolerance, because what it decides is whether
     /// the exposure takes the arithmetic every reference frame is pinned
-    /// through. [`crate::ship::Ship::steer`] runs `orthonormalise` every step,
-    /// and at [`crate::ship::LEVEL_AXES`] every dot product in it is a hard
+    /// through. `crate::ship::Ship::steer` runs `orthonormalise` every step,
+    /// and at `crate::ship::LEVEL_AXES` every dot product in it is a hard
     /// zero and every norm a hard one — so a flight nobody steers holds one
     /// attitude to the last bit for as long as it flies, which is what
     /// `a straight flight has turned` over in `ship.rs` already says. The four

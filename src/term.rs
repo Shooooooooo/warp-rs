@@ -987,6 +987,230 @@ mod tests {
         vec![fill; cols * rows * 2]
     }
 
+    /// Just enough terminal to read back what [`Screen::flush`] paints.
+    ///
+    /// Spelled out here rather than taken as a dependency, which is the move
+    /// `tests/golden.rs` makes for SHA-256 and for the same reason: this
+    /// understands the four things this program emits and nothing else, so it
+    /// is thirty lines rather than a crate, and a stream that contained
+    /// anything else would fail to parse rather than be quietly tolerated.
+    ///
+    /// It exists because there are two writers and only one of them was ever
+    /// checked. Every byte-exact guard in the tree — the ten reference
+    /// flights, the `sha256sum -c` job, `tests/flight.rs` — goes through
+    /// `write_plain`, which emits every cell and resets colour at the end of
+    /// each row. `flush` emits only the cells that changed, carries colour
+    /// across row boundaries, and tracks the cursor on the assumption that
+    /// autowrap is off. Nothing anywhere interpreted a byte of it.
+    /// A glyph and the two colours it was written in, as the terminal would be
+    /// showing them. `None` for a colour is the terminal's own default.
+    type VtCell = (char, Option<(u8, u8, u8)>, Option<(u8, u8, u8)>);
+
+    struct Vt {
+        cols: usize,
+        rows: usize,
+        cells: Vec<VtCell>,
+        col: usize,
+        row: usize,
+        fg: Option<(u8, u8, u8)>,
+        bg: Option<(u8, u8, u8)>,
+    }
+
+    impl Vt {
+        fn new(cols: usize, rows: usize) -> Self {
+            Vt {
+                cols,
+                rows,
+                cells: vec![(' ', None, None); cols * rows],
+                col: 0,
+                row: 0,
+                fg: None,
+                bg: None,
+            }
+        }
+
+        /// Feed it a `flush` stream. Panics on anything it does not recognise,
+        /// which is the point: an escape this program has started emitting and
+        /// nothing understands is a change worth being told about.
+        fn feed(&mut self, bytes: &[u8]) {
+            let text = std::str::from_utf8(bytes).expect("the writer emits utf-8");
+            let mut chars = text.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch != '\u{1b}' {
+                    assert!(ch != '\n', "`flush` should never emit a newline");
+                    self.put(ch);
+                    continue;
+                }
+                assert_eq!(chars.next(), Some('['), "only CSI sequences are used");
+                let mut params = String::new();
+                let final_byte = loop {
+                    let c = chars.next().expect("an unterminated escape sequence");
+                    if c.is_ascii_alphabetic() {
+                        break c;
+                    }
+                    params.push(c);
+                };
+                let numbers: Vec<u32> = params
+                    .split(';')
+                    .filter(|p| !p.is_empty())
+                    .map(|p| p.parse().expect("a non-numeric parameter"))
+                    .collect();
+                match (final_byte, numbers.as_slice()) {
+                    // Absolute cursor move, one-based on the wire.
+                    ('H', [row, col]) => {
+                        self.row = *row as usize - 1;
+                        self.col = *col as usize - 1;
+                    }
+                    ('m', [38, 2, r, g, b]) => self.fg = Some((*r as u8, *g as u8, *b as u8)),
+                    ('m', [48, 2, r, g, b]) => self.bg = Some((*r as u8, *g as u8, *b as u8)),
+                    // The palette modes carry an index, and there is no way
+                    // back to a colour from one — so it is stored in the red
+                    // channel and the test compares indices in that mode.
+                    ('m', [38, 5, n]) => self.fg = Some((*n as u8, 0, 0)),
+                    ('m', [48, 5, n]) => self.bg = Some((*n as u8, 0, 0)),
+                    ('m', [39]) => self.fg = None,
+                    ('m', [49]) => self.bg = None,
+                    other => panic!("the writer emitted an escape nothing reads: {other:?}"),
+                }
+            }
+        }
+
+        fn put(&mut self, ch: char) {
+            assert!(
+                self.row < self.rows && self.col < self.cols,
+                "a glyph was written to ({}, {}), outside a {}x{} grid — which \
+                 with autowrap off is a cell the terminal would silently drop",
+                self.col,
+                self.row,
+                self.cols,
+                self.rows
+            );
+            self.cells[self.row * self.cols + self.col] = (ch, self.fg, self.bg);
+            self.col += 1;
+        }
+    }
+
+    /// What the screen believes it drew, in the `Vt`'s own vocabulary, so the
+    /// two can be compared cell by cell. In the palette mode the expected
+    /// colour goes through `palette_256` first, because that is what the wire
+    /// carries and there is no way back from an index to a colour.
+    fn expected(screen: &Screen, mode: ColorMode) -> Vec<VtCell> {
+        let (cols, rows) = screen.dims();
+        let spell = |c: Option<(u8, u8, u8)>| match c {
+            Some((r, g, b)) if mode == ColorMode::Ansi256 => Some((palette_256([r, g, b]), 0, 0)),
+            other => other,
+        };
+        (0..rows)
+            .flat_map(|row| {
+                let text: Vec<char> = screen.row_text(row).chars().collect();
+                (0..cols)
+                    .map(|col| {
+                        let (fg, bg) = screen.cell_colors(col, row);
+                        (text[col], spell(fg), spell(bg))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_frame_the_terminal_ends_up_showing_is_the_frame_that_was_drawn() {
+        // The interactive writer had nothing checking it. `write_plain` is
+        // pinned to the byte by ten reference flights and two CI jobs; `flush`
+        // is a different body — only the changed cells, colour carried across
+        // rows, and a cursor tracked on the assumption autowrap is off — and
+        // nothing anywhere read a byte of what it emits. A wrong column, a
+        // dropped cell after a colour run, or a `front` update in the wrong
+        // place would leave the whole suite green and repaint every real
+        // terminal wrong.
+        //
+        // Frames on purpose rather than one: the whole point of `flush` is that
+        // frame N+1 is a difference against frame N, so a single frame would
+        // test the one case where the difference is everything.
+        //
+        // What it reaches, measured by mutating the writer rather than assumed.
+        // It fails on a transposed `move_to`, on the move being dropped, on
+        // `front` not being updated, and on a colour not being sent. It does
+        // *not* fail if `cursor_at` is left one column short — that makes the
+        // writer emit a move before every cell, which is a fatter stream and
+        // the identical picture, and a picture is what this reads. The size of
+        // the stream is `only_changed_cells_are_written`'s business, and the
+        // one thing autowrap being off really buys — that writing the
+        // bottom-right cell does not scroll the alternate screen — is caught
+        // here only as the `put` assertion refusing a glyph outside the grid.
+        for mode in [ColorMode::Truecolor, ColorMode::Ansi256, ColorMode::Ascii] {
+            let (cols, rows) = (24usize, 6usize);
+            let mut screen = Screen::new(cols, rows, mode);
+            let mut vt = Vt::new(cols, rows);
+            let mut wire = Vec::new();
+
+            for frame in 0..12usize {
+                // A field that changes in a different place each frame, so the
+                // diff has runs and gaps rather than being all or nothing.
+                let px: Vec<[u8; 3]> = (0..cols * rows * 2)
+                    .map(|i| {
+                        let lit = (i * 7 + frame * 13) % 23 < 6;
+                        let v = if lit {
+                            (40 + (i * 11 + frame) % 200) as u8
+                        } else {
+                            0
+                        };
+                        [v, v.saturating_add(9), v.saturating_add(21)]
+                    })
+                    .collect();
+                screen.compose(&px);
+
+                // Something overlaid, so a cell carries a foreground the field
+                // did not give it and colour has to survive a run.
+                if frame % 3 == 0 {
+                    screen.overlay(2, frame % rows, "NAV 9.78", (96, 176, 208));
+                }
+                // And a change in the last column of a row, which is the case
+                // the autowrap-off cursor bookkeeping rests on.
+                screen.overlay(cols - 1, frame % rows, "|", (255, 186, 92));
+
+                wire.clear();
+                screen.flush(&mut wire).unwrap();
+                vt.feed(&wire);
+
+                assert_eq!(
+                    vt.cells,
+                    expected(&screen, mode),
+                    "frame {frame} in {mode:?}: what the terminal would be \
+                     showing is not what was drawn"
+                );
+            }
+
+            // A forced redraw has to repaint every cell rather than trust the
+            // front buffer, and the picture must come out the same either way.
+            screen.force_redraw();
+            wire.clear();
+            screen.flush(&mut wire).unwrap();
+            let mut fresh = Vt::new(cols, rows);
+            fresh.feed(&wire);
+            assert_eq!(
+                fresh.cells,
+                expected(&screen, mode),
+                "a forced redraw in {mode:?} did not repaint the whole frame"
+            );
+
+            // And a resize, after which the front buffer describes a grid that
+            // no longer exists.
+            let (wide, tall) = (cols + 5, rows + 2);
+            screen.resize(wide, tall);
+            screen.compose(&pixels(wide, tall, [30, 40, 50]));
+            wire.clear();
+            screen.flush(&mut wire).unwrap();
+            let mut after = Vt::new(wide, tall);
+            after.feed(&wire);
+            assert_eq!(
+                after.cells,
+                expected(&screen, mode),
+                "the frame after a resize in {mode:?} is not what was drawn"
+            );
+        }
+    }
+
     /// The only test that touches the interrupt flag, deliberately: it sets a
     /// process-wide one and installs a handler that outlives it, so a second
     /// test asserting the flag is clear would race this one.

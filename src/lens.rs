@@ -320,7 +320,7 @@ impl Lens {
     /// is deliberately *not* extended to every angle, because a bubble seen
     /// end-on genuinely covers less sky than one seen side-on and pretending
     /// otherwise would inflate it as the camera came round. What
-    /// [`RING_MINOR`] being a reciprocal buys is that the promise holds however
+    /// `RING_MINOR` being a reciprocal buys is that the promise holds however
     /// the bubble is *shaped*; how much of it the camera can see is a different
     /// question with a different answer.
     pub fn semi_axes(&self) -> (f32, f32) {
@@ -409,7 +409,7 @@ impl Lens {
     /// The reach is the ring scaled up, so it is elongated too, and its area is
     /// `π(REACH·radius)²` — the same disc's worth of sky as when the bubble was
     /// round. That is not a coincidence and it is not free: it is what
-    /// [`RING_MINOR`] being a reciprocal buys.
+    /// `RING_MINOR` being a reciprocal buys.
     /// Asked of every point rather than of the two ends, because an exposure
     /// the ship turned through is a curve and its middle can pass the bubble
     /// while neither end does. At two points it is the two comparisons it
@@ -571,7 +571,7 @@ impl Lens {
     /// The polar coordinates are the round frame's, so what gets laid down is
     /// an arc of the ellipse rather than of some circle drawn through it — the
     /// turned ellipse, since the way back out of that frame has to undo the
-    /// same turn [`Self::offsets`] applied on the way in. Two points on the
+    /// same turn `Self::offsets` applied on the way in. Two points on the
     /// ring stay on the ring the whole way round.
     pub fn arc_to(
         &self,

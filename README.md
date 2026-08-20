@@ -27,12 +27,6 @@ cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 | --- | --- |
 | `--demo [SECS]` | Fly on autopilot, then exit. Defaults to 45 seconds. |
 | `--screensaver` | Fly on autopilot forever; any key quits. For tmux's `lock-command`. |
-
-The autopilot flies the camera as well as the ship, so `--screensaver --view
-side` walks the shot round the hull rather than parking it, and no two runs up
-to warp are flown quite alike. `--orbit` still says where the shot starts; the
-camera wanders out from there.
-
 | `--magnitude M` | How faint a star the sky holds. Default 6.0; each magnitude is about four times as many. Low enough is an empty sky. |
 | `--fps N` | Frame rate cap, while nothing is being typed. Default 60. |
 | `--color truecolor\|256\|ascii` | Colour depth. 24-bit by default. |
@@ -46,6 +40,11 @@ camera wanders out from there.
 | `--seed N` | Fix the sky. Omit for a different one each run. |
 | `--size COLSxROWS` | Override the terminal size. |
 | `--headless --frames N` | Print frames to stdout instead of taking over the terminal. |
+
+The autopilot flies the camera as well as the ship, so `--screensaver --view
+side` walks the shot round the hull rather than parking it, and no two runs up
+to warp are flown quite alike. `--orbit` still says where the shot starts; the
+camera wanders out from there.
 
 ## The sky
 
