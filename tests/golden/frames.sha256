@@ -109,7 +109,8 @@
 #                 few light years, so the exposure never reaches far enough for
 #                 anything that depends on its *length* to happen at all. That
 #                 is how a bug that lost the trail of every star inside the
-#                 exposure — a fifth of the pool — moved not one of the nine.
+#                 exposure — a fifth of the pool — moved not one of the nine
+#                 hashes that existed before this case was added.
 #
 #   Camera.       Five flights watch from outside and they are at five
 #                 different angles, which is now a question about which sky is
@@ -179,9 +180,9 @@
 # None of the ten names a sky, so all of them fly the default limiting
 # magnitude — which is a fixed number of stars over the whole celestial sphere
 # on every terminal, where `--stars` was a fixed number *drawn*. The reference
-# is also still one ship deep: no case passes `--ship`, so all four flights
+# is also still one ship deep: no case passes `--ship`, so all five flights
 # with a hull in them fly the enterprise, and a fault that only some other
-# outline exposes wants a property test over `models()` rather than a tenth
+# outline exposes wants a property test over `models()` rather than an eleventh
 # flight.
 #
 # The hashes hold across build profiles and rustc versions but not across

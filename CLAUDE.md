@@ -69,8 +69,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 305 unit + 9 flight + 3 golden, ~20s
-cargo test --locked --all-features      # 306 unit — adds the snapshot-gated one
+cargo test                              # 315 unit + 9 flight + 3 golden, ~20s
+cargo test --locked --all-features      # 319 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -315,13 +315,14 @@ A hash moving outside the shape its change predicts has leaked.
 
 **A hash that fails to move where its change predicted has not been vindicated
 either** — it has found a hole, and the hole is worth more than the green tick.
-The reference is one ship deep: not one of the three flights with a hull in it
-passes `--ship`, so all three fly the enterprise. Clearing the hull band over the span it is
-read over rather than written to changed real frames for four of the ships then
-in the hangar — three of five camera angles for two of them — and moved not one
-hash here, because the enterprise's outline does not happen to expose it. When
-that happens, say so, and put the guard at the level the change actually lives
-at: that one is a property test in `canvas.rs`, not an eighth flight.
+The reference is one ship deep: not one of the five flights with a hull in it
+passes `--ship`, so all five fly the enterprise. Clearing the hull band over the
+span it is read over rather than written to changed real frames for four of the
+ships then in the hangar — three of five camera angles for two of them — and
+moved not one hash here, because the enterprise's outline does not happen to
+expose it. When that happens, say so, and put the guard at the level the change
+actually lives at: that one is a property test in `canvas.rs`, not an eleventh
+flight.
 
 The other answer is a new flight, and the test of which one you want is whether
 the hole is a *variant* or a *region*. One ship out of the hangar is a variant,
@@ -465,9 +466,17 @@ measure a renderer with the curve switched off. `examples/bench.rs` has three
 rows with the stick buried, which is the most curve it can be asked for — the
 autopilot's weave sweeps about a twentieth of it. At 200x60 on this machine,
 taking the minimum of five sweeps because the bench reports a bare mean of one
-run: the default sky draws in 1.38 ms straight and 4.13 turning, comfortably
-inside the frame budget either way; `--magnitude 8` draws in 8.18 and 53.04, and
-the outside view in 11.96 and 63.20.
+run: the default sky draws in 1.04 ms straight and 3.02 turning, comfortably
+inside the frame budget either way; `--magnitude 8` draws in 6.77 and 40.13, and
+the outside view in 9.33 and 45.62.
+
+Those are a re-measurement of the three that stood here before — 1.38 and 4.13,
+8.18 and 53.04, 11.96 and 63.20 — and the point of writing both down is that
+nothing about the renderer moved between them. This container drifts about ten
+percent between sessions and rather more between machines, so the ratios are the
+part to carry forward and the absolute numbers are the part to re-measure. The
+ratios did not move: about three to one on the default sky, five to one at
+`--magnitude 8`, and a little under five to one from outside.
 
 That last pair is a fivefold cost and it was accepted rather than capped, on two
 grounds. It is self-limiting — the steering rates decay in under a second and
@@ -1346,12 +1355,19 @@ and acting on them counts a single press twice.
 
 **`--size` is a fixed size, not a starting point.** `Flight::resize` returns
 `false` immediately when it is set. Without that the flag held only until the
-first resize event. A resize no longer retunes the star pool at all — it moves
-the frustum the stars are laid out in, which is the two `retarget` calls, and
-leaves how many of them there are alone. It used to re-derive the count from the
-new canvas whenever `--stars` was 0, so dragging a window edge respawned the sky
-a few hundred stars at a time and the panel's own count walked about while
-nothing had asked it to. A count a window can overrule is not one.
+first resize event. A resize no longer touches the sky at all — it resizes the
+canvas and stops. That is a stronger statement than the one that stood here for
+a while, which said it moved "the frustum the stars are laid out in, which is
+the two `retarget` calls": there is no frustum and there are no `retarget`
+calls, and there have been neither since the sky went world-space. The sky is
+laid out in the world rather than in front of the camera, so a wider window is
+more of the same sky rather than a differently-shaped pool, and the two calls
+that used to stand in `Flight::resize` existed to paper over exactly that —
+each of them dropping every trail in the field to hide the seam. Before *that*
+it re-derived the count from the new canvas whenever `--stars` was 0, so
+dragging a window edge respawned the sky a few hundred stars at a time and the
+panel's own count walked about while nothing had asked it to. A count a window
+can overrule is not one.
 
 **A sky is asked for by how faint a star it holds**, `--magnitude`, and the
 count follows. That is the third answer to this question and the first one that
@@ -1632,12 +1648,14 @@ routinely explain the alternative that was rejected and what went wrong with
 it. A comment that restates the code is worse than no comment.
 
 ```rust
-/// Stars live in a *rectangular* screen-space frustum this much larger than
-/// the visible area. A circular bound wastes most of the star budget on the
-/// corners of a disc that never intersects a wide terminal; the margin that
-/// remains is the run-up a star gets before it reaches the screen, so nothing
-/// a turn brings into view has to appear in view.
-const SPAWN_MARGIN: f32 = 1.3;
+/// There is nothing between here and Proxima at 4.2 light years, and the
+/// catalogue needs telling because it is built from photometry rather than
+/// from a volume: the faint end of the scatter has a visibility sphere under
+/// two light years across and is therefore *always* very close. Those were the
+/// stars that tore past at impulse in a sky whose whole point is to hold still
+/// down there. They are left out rather than moved, since a star that faint is
+/// not visible from anywhere it could actually be.
+pub const NEAREST_STAR: f32 = 4.0;
 ```
 
 ```rust
@@ -1704,6 +1722,28 @@ the fast path's guard, and
 `a_streak_is_the_track_the_star_actually_flew_when_the_ship_was_turning` is the
 one that looks at the new arithmetic. When a change leaves a suite green, ask
 what the suite was flying.
+
+**And when a new test passes first time, mutate the thing it guards before
+believing it.** That is the same question asked of a test rather than of a
+suite, and it is worth the two minutes every time. Three of the guards written
+for `bend.rs` passed immediately and one of them was worthless: a sheaf of
+exposures running from six ring-radii straight through the bubble leaves the
+shadow perfectly clear, and goes on doing so with *both* `shadowed` guards
+deleted, because every head in it sits out where the counter-image's gain is
+under `FAINTEST_COUNTER_IMAGE` and the second image is never drawn at all. It
+was a test of the primary image wearing the counter-image's name. What fixed it
+was measuring where the interesting band actually is — one to three and a half
+ring-radii out, where a counter-image is both inside the shadow and bright
+enough to draw — and putting the heads there.
+
+Two habits fall out of that and both are cheap. Write down what a test was
+measured to catch, in the test, because the next reader cannot re-derive it from
+the assertions: `a_bent_exposure_leaves_the_disc_the_ship_sits_in_empty` says
+that it fails on a broken `map` and on both guards going, and *not* on either
+going alone, because at a head in that band each masks the other. And put a
+non-vacuity assertion beside every comparison of two things that could both be
+empty — two blank canvases agree beautifully, and so do two identical
+subtractions of a sky that holds no stars.
 
 The sky's own guards are the sharpest examples of that style in the tree and
 are worth reading before adding to them. Three of them are what the rebuild is
@@ -1858,12 +1898,25 @@ longer word there would shed the tier and lose the *throttle* to gain the
 camera. Those tiers are now the only place the keys are written down anywhere,
 so a control that fits none of them is one nothing ever tells the user about.
 
-**Adding a NAV readout.** The panel has one spare row and no test guarding it.
-The bottom three rows are counted *up* from the bottom — status at `rows - 3`,
-throttle at `rows - 2`, hints at `rows - 1` — while the NAV panel is counted
-*down* from the top and closes at `2 + rows.len()`. At `MIN_ROWS` (12), in the
-side view where the `SHIP` row already makes six, the closing rule lands on row
-8 and the banner on row 9. A seventh row collides.
+**Adding a NAV readout.** The panel has one spare row. The bottom three rows are
+counted *up* from the bottom — status at `rows - 3`, throttle at `rows - 2`,
+hints at `rows - 1` — while the NAV panel is counted *down* from the top and
+closes at `nav_bottom_row`, which is `2 + nav_rows(view)`. At `MIN_ROWS` (12),
+in the side view where the `SHIP` row already makes six, the closing rule lands
+on row 8 and the banner on row 9. A seventh row collides.
+
+**And a seventh row moves the reticle, which is the coupling to know about.**
+`draw_reticle` refuses to draw when its top brackets would land inside the
+panel, and it asks `nav_rows` rather than counting, because it goes down
+*before* the panel and so cannot look — that order is not free to change, since
+the reticle lightens what is behind it where the panel covers. A
+`debug_assert_eq!` in `draw_nav_panel` holds the row list and `nav_rows`
+together. This paragraph used to end "and no test guarding it", and what was
+sitting in that gap was the brackets showing through the panel's own spaces at
+every height from `MIN_ROWS` to 21, in both faces, at every width. It is
+`the_reticle_never_lands_in_the_instrument_panel` now — a sweep over heights,
+which is what nothing had, beside the sweep over widths that
+`the_hints_never_eat_the_throttle_readout` already was.
 
 **Changing what a stick key does.** It is written twice, once per view, in
 `handle_key`'s guard-gated arms — the cockpit block first, the camera block
@@ -1890,6 +1943,22 @@ as a flag it does not know. Degrees rather than radians, because this is the one
 place a person types the number. `--magnitude` needed the second of those too,
 for the same reason and quite independently: its range runs down past zero, so
 `--magnitude -2` is an empty sky and without the attribute it is an error.
+
+**A note to the next editor goes in a `//` block, not a `///` one.** Clap's
+derive publishes a `///` block as help text — a field's as that flag's entry,
+this struct's as the whole program's long about — so a doc comment in `cli.rs`
+is addressed to whoever is *running* the program, where the house style
+everywhere else is an essay to whoever edits the tree next. The two had
+collided on three flags: `--magnitude` and `--orbit` each explained
+`allow_hyphen_values` to the world, and `--color` published a paragraph about
+an `auto` mode that no longer exists, closing on a comparison to `--stars`,
+which does not exist either — so the longest entry in `--help` advertised two
+things the program refuses to do. `long_about = None` on the struct is the same
+rule applied to the struct's own comment, which otherwise prints above the
+usage line, and it is what lets it keep one for `cargo doc`.
+`the_help_text_is_addressed_to_whoever_is_running_the_program` asks the rendered
+help rather than the source, because what went wrong was not where the words
+were written but where they came out.
 
 **Taking a flag away.** Do it by name rather than by silence. Clap's answer to a
 flag it does not know is "unexpected argument", which is no use to a shell
@@ -1954,14 +2023,27 @@ callgrind_annotate --auto=no callgrind.out.*
   front of them; `cargo test` compiles the bin targets too, so one bought
   nothing but a second full compile on each of three operating systems.
 - **lint** — `cargo fmt --all --check` first (it needs no build), then clippy
-  with `-D warnings`, then `cargo package --list` and `cargo package`. That last
-  pair is there because `exclude` in `Cargo.toml` is hand-maintained and its
-  failure mode is quiet: a crate that builds from the repository and not from
-  the tarball people install. The `--list` runs first so a diff that drops a
-  file says which one in the log rather than in a build error. Touching
-  `exclude` means watching those steps.
+  with `-D warnings`, then `cargo package --list` and `cargo package`, then
+  `cargo doc`. The package pair is there because `exclude` in `Cargo.toml` is
+  hand-maintained and its failure mode is quiet: a crate that builds from the
+  repository and not from the tarball people install. The `--list` runs first so
+  a diff that drops a file says which one in the log rather than in a build
+  error. Touching `exclude` means watching those steps.
+- The `cargo doc` step takes `RUSTDOCFLAGS="-D warnings"` and is the only
+  mechanical check anywhere on the prose, which is otherwise the one thing in
+  this tree nothing guards. Sixteen warnings had accumulated under it before it
+  existed — fifteen of them public documentation linking to private items, which
+  renders as plain text rather than as a link, and one a reference to
+  `models::attitude` that resolved to nothing at all. `Cargo.toml` asks docs.rs
+  for `all-features` so the published pages are complete, and nothing in the
+  tree renders those pages, so nothing noticed.
 - **msrv** — reads `rust-version` from `Cargo.toml` (currently **1.85**) and
   `cargo check`s against it. Bumping the floor means editing that field.
 - **headless** — same seed twice gives the same bytes, different seeds give
   different ones, the bytes match `tests/golden/frames.sha256`, `--color ascii`
-  is really ASCII, and a snapshot can still be written.
+  is really ASCII, a closed pipe is not an error, and a snapshot can still be
+  written. The pipe check is here rather than in a unit test because what is
+  under test is the process's own exit status against a pipe a shell built, and
+  there is no honest way to ask that from inside the library: Rust ignores
+  `SIGPIPE`, so a write to a reader that has gone away comes back as an error
+  and travels out to `main` rather than ending the process where it stood.
