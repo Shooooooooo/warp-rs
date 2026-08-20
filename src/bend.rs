@@ -166,10 +166,21 @@ fn subdivide(points: &[Trace], lens: &Lens, out: &mut Vec<Trace>) {
         let first = usize::from(leg > 0);
         for i in first..=pieces {
             let t = i as f32 * inv;
-            // Every piece keeps the pace of the leg it came from, so the
-            // falloff cannot notice the chopping — which is the property this
-            // primitive has always had to have.
-            out.push((a.0 + dx * t, a.1 + dy * t, a.2));
+            // No pace, and the zero is what says so rather than an oversight.
+            // It used to carry `a.2`, described as every piece keeping the pace
+            // of the leg it came from — which the loop did not do: a leg's last
+            // push lands on the vertex the *next* leg starts at, and
+            // `draw_path` reads a pace off the point that starts a leg, so
+            // every shared vertex handed the following leg the previous one's
+            // number. Nothing was ever drawn from it — `Bend::draw_one` zeroes
+            // the pace of every point it maps, for the reason written there —
+            // so the value was wrong and dead at once, which is the worse of
+            // the two states to leave a comment asserting a property over.
+            //
+            // Zero is also the right answer if this is ever drawn directly: a
+            // bent path is measured by `draw_path`, because the bubble has
+            // restretched it and the magnification already answers for that.
+            out.push((a.0 + dx * t, a.1 + dy * t, 0.0));
         }
     }
 }
@@ -367,10 +378,14 @@ mod tests {
         // A piece that drifted off its leg would bend from the wrong place and
         // the error would look like curvature rather than like a bug.
         //
-        // The pace travelling with the piece is the other half: `draw_path`
-        // reads the third component as how fast the image was moving on the leg
-        // leaving it, so a piece that took its neighbour's pace would be ramped
-        // by the wrong number.
+        // The pace is the other half, and this used to assert the wrong thing
+        // about it while passing. It asked that every piece carry the pace of
+        // *a* leg it lies on, which a shared vertex satisfies either way: a
+        // vertex is on both legs, so the off-by-one that handed each leg its
+        // predecessor's number was invisible here. It was dead as well as
+        // wrong, since `Bend::draw_one` zeroes the pace of every point it maps.
+        // So the pieces carry no pace now, the zero says so, and this asks for
+        // exactly that — a claim that can be false.
         let lens = lit(160, 80);
         let points: [Trace; 4] = [
             (20.0, 20.0, 90.0),
@@ -392,12 +407,15 @@ mod tests {
                     return false;
                 }
                 let (ox, oy) = (a.0 + dx * t - piece.0, a.1 + dy * t - piece.1);
-                ox * ox + oy * oy < 1e-4 && piece.2 == a.2
+                ox * ox + oy * oy < 1e-4
             });
             assert!(
                 on_a_leg,
-                "the piece {piece:?} is not on any leg of {points:?} at its \
-                 leg's own pace"
+                "the piece {piece:?} is not on any leg of {points:?}"
+            );
+            assert_eq!(
+                piece.2, 0.0,
+                "the piece {piece:?} carried a pace off a leg it was cut from"
             );
         }
     }

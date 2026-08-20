@@ -15,7 +15,22 @@ use crate::camera::Streak;
 /// Per-sample brightness falls off with streak length, so a long smear spreads
 /// its light instead of burning a line through the frame.
 const LENGTH_FALLOFF: f32 = 0.12;
-/// Backstop on samples per streak; clipping already bounds this in practice.
+/// Backstop on samples per streak, over and above the canvas's own diagonal.
+///
+/// It is a backstop and not the bound, which is a correction: the comment here
+/// used to say clipping already bounded this in practice, and clipping does —
+/// to the canvas, which is not a fixed size. `--size` admits `MAX_CELLS` in any
+/// arrangement, so `200x10000` is a canvas whose diagonal is twenty thousand
+/// subpixels against a cap of four thousand. Past the cap a streak is sampled
+/// every fifth subpixel instead of every one, which is a dashed line — and,
+/// because a leg deposits `per_sample` once per *step* rather than per unit
+/// length, five times too little light with it. The same flight would then look
+/// different on two terminals, which is the one thing this tree is written to
+/// stop.
+///
+/// So the real bound is `Canvas::max_samples`, which follows the canvas the way
+/// `Camera::focal` does, and this is the floor under it: below it on any
+/// ordinary terminal, so nothing about an ordinary frame changed.
 const MAX_SAMPLES: usize = 4096;
 
 /// How finely a hull's outline is measured, per subpixel and per axis, when
@@ -446,6 +461,19 @@ impl Canvas {
         (self.height - 1) as f32
     }
 
+    /// The most samples one leg may take: the canvas's own diagonal, or
+    /// [`MAX_SAMPLES`], whichever is larger.
+    ///
+    /// A clipped span cannot be longer than the diagonal, so on any canvas at
+    /// all this is the number that makes the cap unreachable — which is what
+    /// the cap was always described as being and, past about a three thousand
+    /// subpixel diagonal, was not. Taken as the sum of the sides rather than as
+    /// a root, because it only has to be an upper bound and this one costs an
+    /// add: a diagonal is never longer than the two sides that make it.
+    fn max_samples(&self) -> usize {
+        (self.width + self.height).max(MAX_SAMPLES)
+    }
+
     /// How far a streak's light would be spread along this segment: the factor
     /// [`Self::draw_streak`] is about to divide its per-sample brightness by.
     ///
@@ -606,7 +634,7 @@ impl Canvas {
             (at(from), at(to), length_of(to.0 - from.0, to.1 - from.1))
         };
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-        let steps = (length.ceil() as usize).clamp(1, MAX_SAMPLES);
+        let steps = (length.ceil() as usize).clamp(1, self.max_samples());
         // One reciprocal per leg rather than a division per sample. At warp
         // a frame walks a couple of million of them, and a float divide is
         // several times dearer than the multiply that replaces it: about six
@@ -1827,6 +1855,48 @@ mod tests {
                 "{a:?} to {b:?} drew nothing, so the comparison said nothing"
             );
         }
+    }
+
+    #[test]
+    fn a_streak_is_sampled_per_subpixel_on_a_canvas_of_any_shape() {
+        // `MAX_SAMPLES` was described as a backstop on the grounds that
+        // clipping already bounded the count in practice. Clipping bounds it to
+        // the *canvas*, and a canvas is not a fixed size: `--size` admits
+        // `MAX_CELLS` in any arrangement, so `200x10000` is a diagonal of
+        // twenty thousand subpixels against a cap of four thousand. Past the
+        // cap a leg takes one sample every fifth subpixel — a dashed line — and
+        // deposits a fifth of the light with it, since a sample is laid down
+        // per step rather than per unit length. Two terminals, two pictures.
+        //
+        // Asked as how much of the streak was lit at all, which is the
+        // statement that survives the ramp: a streak fades to nothing at its
+        // tail, so the dark subpixels down there are the picture working. What
+        // cannot happen is most of the *bright* end being skipped.
+        //
+        // The canvas has to be tall enough for the old cap to leave a real gap
+        // rather than a fractional one — a splat spreads over four subpixels,
+        // so a stride under two lands on every row anyway. Twelve thousand
+        // against four thousand is a stride of three, and that shows.
+        let tall = 12_000;
+        let mut canvas = Canvas::new(4, tall);
+        canvas.draw_streak(&Streak {
+            from: (2.0, 0.0),
+            to: (2.0, (tall - 1) as f32),
+            color: [1.0; 3],
+            intensity: 4000.0,
+        });
+        // The head half, where the ramp is above a half and every subpixel
+        // ought to have caught something.
+        let head = tall / 2..tall;
+        let dark = head
+            .clone()
+            .filter(|y| canvas.buf[y * 4 + 2][0] <= 0.0)
+            .count();
+        assert!(
+            dark * 20 < head.len(),
+            "{dark} of the {} subpixels under the bright half of a streak were never sampled",
+            head.len()
+        );
     }
 
     #[test]

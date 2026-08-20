@@ -319,7 +319,14 @@ impl Ship {
         self.pitch = nose[1].clamp(-1.0, 1.0).asin();
         self.coast(dt);
 
-        self.distance_ly += (self.velocity_c() * dt * TIME_COMPRESSION / SECONDS_PER_YEAR) as f64;
+        // `velocity_ly_per_s` rather than the two constants spelled out again,
+        // which is the whole of what [`LY_PER_C_SECOND`] was introduced for:
+        // the distance the panel reports and the distance the sky is moved by
+        // have to be one scale, and two spellings of one scale is how two
+        // numbers come apart. `coast` above already goes through it. This line
+        // did not, and re-derived the same product in a different order — the
+        // same answer, rounded differently, once per step forever.
+        self.distance_ly += (self.velocity_ly_per_s() * dt) as f64;
     }
 
     /// Turn the hull by this step's rates.

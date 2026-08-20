@@ -594,7 +594,18 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
     // hull leans a few degrees — and a control that swallows the input and
     // gives nothing back is worse than one that is plainly not there. So the
     // stick flies the ship in the one view that is looking down its nose.
-    let steers = flight.view() == ViewMode::Cockpit;
+    //
+    // One exhaustive `match` rather than three `==` comparisons, and the
+    // difference is a compile error rather than a style. A third camera added
+    // to `ViewMode::ALL` used to answer all three of these with false, and a
+    // key matching none of them falls through to nothing at all — so the new
+    // view would arrive with the stick, the camera and the zoom silently
+    // disconnected and the compiler perfectly happy. Now it does not build
+    // until somebody has said what the stick does in it.
+    let (steers, flies_the_camera, zooms) = match flight.view() {
+        ViewMode::Cockpit => (true, false, false),
+        ViewMode::Side => (false, true, true),
+    };
     // And out there the same six keys fly the *camera*, which is the thing that
     // can usefully move in a view whose whole subject is the ship. It is not
     // that pitch and yaw were switched off and something was found for them: a
@@ -606,13 +617,9 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
     // thing this view could do that the cockpit cannot — a barrel roll flown
     // and watched from the beam. The trade is a stick that means one thing in
     // each view instead of two things in one of them, and the cockpit still
-    // rolls the ship.
-    let flies_the_camera = flight.view() == ViewMode::Side;
-    // The zoom runs the same way and always has. There is no ship to be bigger
-    // or smaller from inside one, so it is connected exactly where it has
-    // something to show.
-    let zooms = flight.view() == ViewMode::Side;
-
+    // rolls the ship. The zoom runs the same way and always has: there is no
+    // ship to be bigger or smaller from inside one, so it is connected exactly
+    // where it has something to show.
     match key.code {
         // `q` is on the stick, so it cannot also be the way out: nothing a
         // pilot reaches for mid-turn should end the flight.

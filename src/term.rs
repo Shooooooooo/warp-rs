@@ -15,6 +15,13 @@ use crossterm::{
     terminal, QueueableCommand,
 };
 use std::io::{self, Write};
+// Only the signal flag reads these, and there are no signals to catch off Unix
+// — so unqualified they are an unused import on Windows, which is a warning
+// nothing in CI can see: `clippy -D warnings` runs on `ubuntu-latest` alone,
+// and the Windows leg of the matrix runs `cargo test`, which does not fail on
+// one. Found by `cargo check --target x86_64-pc-windows-msvc`, which is worth
+// running before touching anything under a `cfg`.
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Upper half block: foreground paints the top pixel, background the bottom.
@@ -834,10 +841,46 @@ fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
 /// spends its slack blocking on the queue rather than sleeping through it,
 /// which is the last place worth handing a torrent of nothing to read. Asking
 /// for less is the whole of the difference.
+#[cfg(not(windows))]
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 /// And giving it back. A superset of what [`MOUSE_ON`] asks for, deliberately:
 /// see [`restore`].
+#[cfg(not(windows))]
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
+/// Take the pointer, or give it back.
+///
+/// Two spellings, and the split is the same one
+/// `the_escapes_written_by_hand_are_the_ones_crossterm_writes` exists for. A
+/// Windows console without virtual terminal processing cannot read an escape
+/// sequence at all — crossterm's own commands fall back to the console API
+/// there — so the hand-written pair above, which is every other command in this
+/// module's business to avoid, would arrive as visible rubbish and leave the
+/// mouse switched off. Off Windows they are exactly right and are kept: they
+/// ask for less than crossterm's command does, which is the whole reason they
+/// were written out.
+///
+/// What Windows gives up for that is the narrowness. `EnableMouseCapture` turns
+/// on button-event and any-motion reporting as well, so a pointer crossing the
+/// window is a stream of events into the drain loop. That is the cheaper of the
+/// two mistakes: the events are read and dropped by `handle_mouse` in a loop
+/// that already coalesces a burst into one frame, where the alternative is a
+/// console that cannot use the wheel and has rubbish printed at it.
+fn set_mouse(out: &mut impl Write, on: bool) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        if on {
+            out.queue(crossterm::event::EnableMouseCapture)?;
+        } else {
+            out.queue(crossterm::event::DisableMouseCapture)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        out.write_all(if on { MOUSE_ON } else { MOUSE_OFF }.as_bytes())
+    }
+}
 
 /// Set when a signal has asked this process to stop, so the flight can leave
 /// by the ordinary door and let [`RawGuard`] put the terminal back on the way.
@@ -928,7 +971,7 @@ impl RawGuard {
         out.queue(terminal::DisableLineWrap)?;
         out.queue(cursor::Hide)?;
         if mouse {
-            out.write_all(MOUSE_ON.as_bytes())?;
+            set_mouse(&mut out, true)?;
         }
         out.flush()?;
 
@@ -969,7 +1012,7 @@ impl Drop for RawGuard {
 /// reasoning.
 pub fn restore() {
     let mut out = io::stdout();
-    let _ = out.write_all(MOUSE_OFF.as_bytes());
+    let _ = set_mouse(&mut out, false);
     let _ = out.queue(SetForegroundColor(Color::Reset));
     let _ = out.queue(SetBackgroundColor(Color::Reset));
     let _ = out.queue(cursor::Show);
