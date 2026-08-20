@@ -429,7 +429,6 @@ impl Flight {
         let readout = Readout {
             ship: &self.ship,
             fps,
-            stars: self.stars(),
             magnitude: self.magnitude(),
             paused,
             hints,
@@ -2054,9 +2053,12 @@ mod tests {
     fn a_resize_moves_the_canvas_and_leaves_the_pool_alone() {
         // The inversion of what this used to hold. A resize re-derived the count
         // from the new canvas whenever `--stars` was 0, so dragging a window
-        // edge respawned the sky a few hundred stars at a time and the panel's
-        // own count walked about while nothing had asked it to. A count a window
-        // can overrule is not one.
+        // edge respawned the sky a few hundred stars at a time and the count
+        // the panel showed at the time walked about while nothing had asked it
+        // to. A count a window can overrule is not one. The panel reads out the
+        // magnitude now and lets the count follow, so there is nothing left up
+        // there to walk — but the fault was in the pool rather than in the
+        // readout, which is why this still asks the pool.
         //
         // It is now true for a stronger reason than the flag being literal: the
         // sky is laid out in the world rather than in front of the camera, so a

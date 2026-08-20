@@ -94,7 +94,8 @@ struct Glyphs {
     /// Wraps the status banner.
     open: char,
     close: char,
-    /// Inside the warp banner, and — three of it — the placeholder for no warp.
+    /// Inside the warp banner, and — three of it — the placeholder a cold
+    /// drive leaves in the one-line panel a narrow window gets.
     dash: char,
     /// Wraps the paused banner.
     stop: char,
@@ -185,14 +186,11 @@ fn hint_row(rows: usize) -> usize {
 pub struct Readout<'a> {
     pub ship: &'a Ship,
     pub fps: f32,
-    /// How many stars the sky holds, over the whole celestial sphere. Not how
-    /// many are on screen — that is the field of view's business and is about a
-    /// tenth of this.
-    pub stars: usize,
-    /// And how faint the faintest of them is, which is what was asked for and
-    /// what `+` and `-` move. The count is the consequence; both are shown
-    /// because a key that changes a number nobody can see is a key nobody
-    /// believes.
+    /// How faint the faintest star the sky holds is, which is what was asked
+    /// for and what `+` and `-` move. It is shown because a key that changes a
+    /// number nobody can see is a key nobody believes. The count it comes to
+    /// used to be shown beside it and is not any more: of the two, this is the
+    /// one that was asked for rather than arrived at.
     pub magnitude: f32,
     pub paused: bool,
     /// Whether to show the control hints. A screensaver quits on any key, so
@@ -248,11 +246,18 @@ fn draw_compact(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, g: &
 ///
 /// Keeping it derived matters more than the four lines it saves: CLAUDE.md's
 /// note on adding a NAV readout is about how tight the row budget already is,
-/// and a seventh row that moved the closing rule without moving the reticle
-/// would put the fault below straight back.
+/// and a row that moved the closing rule without moving the reticle would put
+/// the fault below straight back. Taking the warp row out is that coupling run
+/// the other way, and is what says it works: the panel closed a row higher and
+/// the reticle's refusal came down two terminal rows with it, neither having
+/// been told about the other.
 fn nav_rows(view: ViewMode) -> usize {
-    // VELOCITY, WARP, DISTANCE, HEADING and ROLL, and SHIP only from outside.
-    5 + usize::from(view == ViewMode::Side)
+    // VELOCITY, DISTANCE, HEADING and ROLL, and SHIP only from outside. The
+    // warp factor was the second of these until the row was found to be the
+    // same number the status banner already quotes across the bottom of the
+    // frame — one reading said twice, several rows apart, in the quieter of
+    // the two places.
+    4 + usize::from(view == ViewMode::Side)
 }
 
 fn nav_bottom_row(view: ViewMode) -> usize {
@@ -271,8 +276,10 @@ fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs, nav_b
     // The panel is drawn afterwards and `overlay` skips its own spaces, so a
     // bracket landing on a NAV row is not covered by it — it shows through the
     // gaps between the label and the value, in the very box characters the
-    // panel's own frame is drawn in. Below about twenty-two rows the top pair
-    // lands inside the panel at every width.
+    // panel's own frame is drawn in. Below about twenty rows the top pair
+    // lands inside the panel at every width — twenty-two while the panel
+    // carried a warp row, since `cy` is half the height and so each NAV row
+    // shed lets the brackets down two terminal rows sooner.
     //
     // Refused outright rather than drawn smaller, for the reason the edge case
     // above is: at `MIN_ROWS` the panel is more than half the window and there
@@ -300,11 +307,6 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
     let ship = r.ship;
     let mut rows = vec![
         ("VELOCITY", velocity_text(ship), VALUE),
-        (
-            "WARP",
-            warp_text(ship, g),
-            if ship.warp_engaged { ACCENT } else { DIM },
-        ),
         (
             "DISTANCE",
             format!("{} ly", distance_text(ship.distance_ly)),
@@ -371,12 +373,12 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, 
     let col = cols.saturating_sub(text.chars().count()) / 2;
     screen.overlay(col, status_row(rows), &text, color);
 
-    // Right-hand corner: what was asked of the sky, what that came to, and how
-    // hard the machine is working for it.
-    let stats = format!(
-        "MAG {:>4.1}  {:>6}  {:>3.0} FPS",
-        r.magnitude, r.stars, r.fps
-    );
+    // Right-hand corner: what was asked of the sky, and how hard the machine
+    // is working for it. The count that magnitude comes to sat between the two
+    // and has gone, being the one number here nobody could ask for — a sky is
+    // described by how faint a star you can pick out of it, the count follows,
+    // and `--help` already says each magnitude is about four times the last.
+    let stats = format!("MAG {:>4.1}  {:>3.0} FPS", r.magnitude, r.fps);
     let col = cols.saturating_sub(stats.chars().count() + 2);
     screen.overlay(col, 1, &stats, DIM);
 }
@@ -462,7 +464,6 @@ mod tests {
         Readout {
             ship,
             fps: 60.0,
-            stars: 4000,
             magnitude: 6.0,
             paused: false,
             hints: true,
@@ -712,7 +713,6 @@ mod tests {
                 &Readout {
                     ship: &ship,
                     fps: 60.0,
-                    stars: 900,
                     magnitude: 6.0,
                     paused: false,
                     hints: true,
@@ -773,7 +773,6 @@ mod tests {
                         &Readout {
                             ship: &ship,
                             fps: 60.0,
-                            stars: 900,
                             magnitude: 6.0,
                             paused,
                             hints: true,
@@ -829,7 +828,6 @@ mod tests {
         let quiet = Readout {
             ship: &ship,
             fps: 60.0,
-            stars: 4000,
             magnitude: 6.0,
             paused: false,
             hints: false,
@@ -890,6 +888,18 @@ mod tests {
             (cx - 9, cy + 3),
             (cx + 9, cy + 3),
         ] {
+            // Said before the colours are looked at, because `Backdrop::Lighten`
+            // leaves `bg` alone and takes the brighter of the two foregrounds —
+            // so a cell the reticle never reached carries the backdrop in both
+            // and satisfies everything below. The whole of this test passed on a
+            // `draw_reticle` that returned immediately, which mattered the
+            // moment its refusal was the thing being edited.
+            assert!(
+                uni()
+                    .reticle
+                    .contains(&screen.row_text(y).chars().nth(x).expect("a cell")),
+                "no reticle at ({x},{y}), so there is nothing here to have dimmed"
+            );
             let (fg, bg) = screen.cell_colors(x, y);
             let (fg, bg) = (fg.expect("truecolor cell"), bg.expect("truecolor cell"));
             assert_eq!(
@@ -950,18 +960,21 @@ mod tests {
         // heights, and the same shape of fault was sitting in the gap.
         //
         // `draw_reticle` puts its brackets at `(cols/2 ± 9, rows/2 ± 3)` and
-        // the panel closes at row `2 + rows.len()`, so below about 22 rows the
+        // the panel closes at row `2 + rows.len()`, so below about 20 rows the
         // top pair lands inside the NAV panel. The panel is drawn *after* the
         // reticle and `overlay` skips its own spaces, so the panel's gaps let
         // the brackets straight through:
         //
-        //   │ WARP      ┌FACTOR 9.78      ┐
+        //   │ HEADING   ┌  0.0° /  +0.0°  ┐
         //
         // which reads as a broken frame, because in the Unicode face the
         // reticle is drawn in the same box characters the frame is. Measured
-        // at heights 12 through 21 at every width from `MIN_COLS` to 200, in
-        // both faces. No reference frame can see it: all ten fly at 120x36,
-        // where the reticle rows are 15 and 21 and the panel closes at 7.
+        // at heights 12 through 19 at every width from `MIN_COLS` to 200, in
+        // both faces. It was 21 while the panel carried a warp row: `cy` is
+        // half the height, so each NAV row shed lets the brackets down two
+        // terminal rows sooner. No reference frame can see any of it: all ten
+        // fly at 120x36, where the reticle rows are 15 and 21 and the panel
+        // closes at 6.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
 
@@ -972,9 +985,18 @@ mod tests {
                     let mut screen = blank_in(cols, rows, mode);
                     draw(&mut screen, &readout(&ship));
 
-                    // Where the panel ends, asked of the picture rather than of
-                    // the row count, so a seventh NAV row moves this with it.
-                    let Some(bottom) = (1..rows)
+                    // Where the panel ends, asked of the picture rather than
+                    // of the row count, so another NAV row moves this with it.
+                    //
+                    // Searched from row 2 rather than from row 1, and that is
+                    // not tidiness: the ASCII face spells `frame_top` and
+                    // `frame_bottom` both `'+'`, so the header stamped at
+                    // column 2 of row 1 answered this and the sweep below ran
+                    // over exactly one row. Half of what the comment above
+                    // promises — the half in the face where the panel has no
+                    // colour to tell it from the sky — was checking nothing at
+                    // all.
+                    let Some(bottom) = (2..rows)
                         .find(|row| screen.row_text(*row).chars().nth(2) == Some(g.frame_bottom))
                     else {
                         panic!("the panel did not close at {cols}x{rows}");
@@ -1028,6 +1050,44 @@ mod tests {
     }
 
     #[test]
+    fn the_reticle_comes_back_as_soon_as_the_panel_leaves_it_room() {
+        // The threshold, pinned at the two heights either side of it rather
+        // than left to fall out of the panel's own arithmetic. `draw_reticle`
+        // refuses while `cy - 3 <= nav_bottom` and `cy` is `rows / 2`, so the
+        // brackets appear at 20 rows and are refused at 19 — two rows lower
+        // than they used to be, because the NAV panel is a row shorter and each
+        // row shed is worth two of terminal height.
+        //
+        // Written down because nothing else would have noticed it move: the
+        // sweep above only asks that no bracket lands *inside* the panel, which
+        // a reticle that refused everywhere satisfies perfectly, and the sweep
+        // below it looks at one hard-coded 120x36. Both went on passing while
+        // the reticle quietly switched itself on across a band of terminals.
+        let ship = Ship::new();
+        let g = uni();
+        let brackets = |rows: usize| -> usize {
+            let mut screen = blank(80, rows);
+            draw(&mut screen, &readout(&ship));
+            (0..rows)
+                .map(|row| {
+                    screen
+                        .row_text(row)
+                        .chars()
+                        .enumerate()
+                        .filter(|(col, ch)| *col >= 4 && g.reticle.contains(ch))
+                        .count()
+                })
+                .sum()
+        };
+        assert_eq!(
+            brackets(20),
+            4,
+            "the reticle should fit a twenty-row window"
+        );
+        assert_eq!(brackets(19), 0, "nineteen rows has no room for a reticle");
+    }
+
+    #[test]
     fn the_hints_shed_detail_rather_than_vanishing() {
         // Each tier needs its own width plus the two columns that keep it off
         // the right-hand edge, so the widest fits only a wide terminal and
@@ -1066,7 +1126,6 @@ mod tests {
                 &Readout {
                     ship: &ship,
                     fps: 60.0,
-                    stars: 900,
                     magnitude: 6.0,
                     paused: false,
                     hints,
@@ -1089,6 +1148,93 @@ mod tests {
     }
 
     #[test]
+    fn the_corner_reports_the_sky_it_was_asked_for_and_the_rate_it_is_drawn_at() {
+        // Row 1's right-hand end had nothing looking at it at all: the only
+        // assertions that reached that row were the width sweep and the ASCII
+        // sweep, neither of which reads a word of it, so the ten reference
+        // frames were the whole of its coverage — and a hash says a frame
+        // changed without saying what about it was meant to.
+        //
+        // The count the magnitude comes to used to sit between the two numbers
+        // below. It is asserted absent rather than merely unmentioned, because
+        // a readout is removed by nobody drawing it and put back by anybody.
+        let ship = Ship::new();
+        let mut screen = blank(120, 34);
+        draw(
+            &mut screen,
+            &Readout {
+                ship: &ship,
+                fps: 42.0,
+                magnitude: 5.5,
+                paused: false,
+                hints: true,
+                view: ViewMode::Cockpit,
+                model: "normandy",
+            },
+        );
+        // Read with the backdrop taken out rather than word by word, because
+        // what is being pinned is that the row holds these two fields and
+        // nothing else — a `contains` apiece would go on passing with a third
+        // number put back between them. `overlay` skips its own spaces, so
+        // every gap in the panel keeps the half block `compose` drew and the
+        // ink is all that is left once those are dropped.
+        let ink: String = screen
+            .row_text(1)
+            .chars()
+            .filter(|c| *c != '\u{2580}')
+            .collect();
+        assert_eq!(
+            ink, "\u{250C}NAVMAG5.542FPS",
+            "row 1 is not the NAV header and the two corner fields"
+        );
+    }
+
+    #[test]
+    fn the_panel_quotes_the_warp_factor_once() {
+        // The NAV panel used to carry a `WARP` row reading `FACTOR 9.78` while
+        // the status banner said `WARP DRIVE ENGAGED — FACTOR 9.78` across the
+        // bottom of the same frame: one number, twice, several rows apart, and
+        // the quieter of the two was the one taking a row out of a budget
+        // CLAUDE.md describes as tight.
+        //
+        // Counted over the whole grid rather than asserted of a row, so it
+        // fails whichever of the two comes back and does not care where the
+        // banner is centred. Both views, because only one of them was ever
+        // going to be looked at again.
+        let mut ship = Ship::new();
+        ship.throttle = 1.0;
+        ship.toggle_warp();
+        for _ in 0..900 {
+            ship.update(1.0 / 60.0);
+        }
+        assert!(ship.warp_factor() > 0.0, "the drive never lit");
+
+        for view in ViewMode::ALL {
+            let (cols, rows) = (120, 34);
+            let mut screen = blank(cols, rows);
+            draw(
+                &mut screen,
+                &Readout {
+                    ship: &ship,
+                    fps: 60.0,
+                    magnitude: 6.0,
+                    paused: false,
+                    hints: true,
+                    view,
+                    model: "normandy",
+                },
+            );
+            let frame: String = (0..rows).map(|row| screen.row_text(row)).collect();
+            assert_eq!(
+                frame.matches("FACTOR").count(),
+                1,
+                "the {} view quotes the warp factor more than once",
+                view.label()
+            );
+        }
+    }
+
+    #[test]
     fn the_status_banner_reports_the_drive_state() {
         // Over a black frame nothing behind the panel changes colour, so each
         // word lands in the output as one contiguous run.
@@ -1099,7 +1245,6 @@ mod tests {
                 &Readout {
                     ship,
                     fps: 60.0,
-                    stars: 900,
                     magnitude: 6.0,
                     paused,
                     hints: true,

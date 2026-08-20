@@ -1366,8 +1366,11 @@ that used to stand in `Flight::resize` existed to paper over exactly that —
 each of them dropping every trail in the field to hide the seam. Before *that*
 it re-derived the count from the new canvas whenever `--stars` was 0, so
 dragging a window edge respawned the sky a few hundred stars at a time and the
-panel's own count walked about while nothing had asked it to. A count a window
-can overrule is not one.
+count the panel showed at the time walked about while nothing had asked it to.
+A count a window can overrule is not one. The panel does not show one any more —
+it reads out the magnitude that was asked for and lets the count follow — but
+the fault was about the pool rather than about the readout, and it is still
+there to be reintroduced.
 
 **A sky is asked for by how faint a star it holds**, `--magnitude`, and the
 count follows. That is the third answer to this question and the first one that
@@ -1898,14 +1901,22 @@ longer word there would shed the tier and lose the *throttle* to gain the
 camera. Those tiers are now the only place the keys are written down anywhere,
 so a control that fits none of them is one nothing ever tells the user about.
 
-**Adding a NAV readout.** The panel has one spare row. The bottom three rows are
-counted *up* from the bottom — status at `rows - 3`, throttle at `rows - 2`,
-hints at `rows - 1` — while the NAV panel is counted *down* from the top and
-closes at `nav_bottom_row`, which is `2 + nav_rows(view)`. At `MIN_ROWS` (12),
-in the side view where the `SHIP` row already makes six, the closing rule lands
-on row 8 and the banner on row 9. A seventh row collides.
+**Adding a NAV readout.** The panel has room for one, and the room is borrowed
+rather than earned. The bottom three rows are counted *up* from the bottom —
+status at `rows - 3`, throttle at `rows - 2`, hints at `rows - 1` — while the
+NAV panel is counted *down* from the top and closes at `nav_bottom_row`, which
+is `2 + nav_rows(view)`. At `MIN_ROWS` (12), in the side view where the `SHIP`
+row already makes five, the closing rule lands on row 7 and the banner on row 9.
+A sixth row lands on 8 and still clears; a seventh collides.
 
-**And a seventh row moves the reticle, which is the coupling to know about.**
+That last sentence is the one that has not moved, and it is worth knowing why:
+the budget was spent to the last row until the `WARP` row came out. It closed on
+8 from outside with nothing between it and the banner, and it read `FACTOR 9.78`
+while the banner said `WARP DRIVE ENGAGED — FACTOR 9.78` across the bottom of
+the same frame. So the spare row is the redundancy refunded, and there is only
+one of it.
+
+**And a sixth row moves the reticle, which is the coupling to know about.**
 `draw_reticle` refuses to draw when its top brackets would land inside the
 panel, and it asks `nav_rows` rather than counting, because it goes down
 *before* the panel and so cannot look — that order is not free to change, since
@@ -1913,10 +1924,27 @@ the reticle lightens what is behind it where the panel covers. A
 `debug_assert_eq!` in `draw_nav_panel` holds the row list and `nav_rows`
 together. This paragraph used to end "and no test guarding it", and what was
 sitting in that gap was the brackets showing through the panel's own spaces at
-every height from `MIN_ROWS` to 21, in both faces, at every width. It is
+every height from `MIN_ROWS` to 19 — 21 while the panel was a row taller — in
+both faces, at every width. It is
 `the_reticle_never_lands_in_the_instrument_panel` now — a sweep over heights,
 which is what nothing had, beside the sweep over widths that
 `the_hints_never_eat_the_throttle_readout` already was.
+
+**That sweep also has to look below the header, and did not.** `Glyphs::ASCII`
+spells the panel's opening and closing corners with the same `+`, so a search
+for the closing rule that started at row 1 answered with the header — and the
+ASCII half of a test whose comment says "in both faces" swept exactly one row.
+Taking the reticle's standoff out and running that face alone passes searching
+from row 1 and fails searching from row 2, which is how it was measured.
+
+**And a shorter panel lets the reticle down sooner, which nothing was watching.**
+The refusal is `cy - dy <= nav_bottom` against `cy = rows / 2`, so every NAV row
+shed is worth two rows of terminal: dropping `WARP` took the cockpit's floor
+from 22 rows to 20. Neither guard above notices — the sweep only asks that no
+bracket land *inside* the panel, which a reticle that refused everywhere
+satisfies perfectly, and its sibling looks at one hard-coded 120x36. So the
+threshold is pinned at both heights either side of it now, by
+`the_reticle_comes_back_as_soon_as_the_panel_leaves_it_room`.
 
 **Changing what a stick key does.** It is written twice, once per view, in
 `handle_key`'s guard-gated arms — the cockpit block first, the camera block
