@@ -64,6 +64,13 @@ sheds detail to fit, and on eighty columns it names only the first few.
 | `--size COLSxROWS` | Override the terminal size. |
 | `--headless --frames N` | Print frames to stdout instead of taking over the terminal. In this mode `--fps` is the simulation timestep rather than a cap, so it changes the flight. |
 
+`--snapshot FILE` writes one frame as a PNG instead of flying, and is behind an
+optional feature — `cargo install --path . --features snapshot`, or `cargo run
+--release --features snapshot -- --snapshot warp.png --engage --throttle 1.0`.
+`--warmup N` says how many frames to fly first and `--scale N` magnifies the
+image. The instrument panel is not in it: the panel is written into the
+character grid and the PNG is the starfield.
+
 The autopilot flies the camera as well as the ship, so `--screensaver --view
 side` walks the shot round the hull rather than parking it, and no two runs up
 to warp are flown quite alike. `--orbit` still says where the shot starts; the
