@@ -179,10 +179,12 @@ pub struct Orbit {
     /// it, positive lifts the camera, and a quarter turn is the plan view.
     /// Wraps, so half a turn is the view from the far beam, inverted.
     ///
-    /// The flight model's `PITCH_LIMIT` does stop short of straight up, and the
-    /// contrast is the point rather than an inconsistency: a *ship* pitched
-    /// past the vertical has no way back over the top, and a camera swung past
-    /// it has nothing to recover from.
+    /// The flight model used to stop short of straight up here, and the
+    /// contrast was written down as the point rather than an inconsistency. It
+    /// was neither: what stopped was the panel's *reading*, never the ship, and
+    /// the clamp that stopped it was throwing away input the attitude went on
+    /// taking. Both go all the way round now, and for the same reason — an
+    /// angle with nothing to run into does not need a stop.
     pub elevation: f32,
     /// The camera's own roll, about the axis it is looking down. Turns the
     /// picture — hull and sky together — rather than anything in it. Wraps.
