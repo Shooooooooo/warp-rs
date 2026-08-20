@@ -679,11 +679,24 @@ impl Canvas {
             .windows(2)
             .map(|p| length_of(p[1].0 - p[0].0, p[1].1 - p[0].1))
             .sum();
-        // A path that went nowhere, or one with a NaN in it, is a point.
+        // A path that went nowhere, or one with a NaN in it, is a point — and
+        // it is handed over as the segment it is rather than as the head it
+        // collapses to, which is the difference between agreeing with
+        // [`Self::draw_streak`] and very nearly agreeing with it.
+        //
+        // Collapsing first threw the tail away before anything had clipped,
+        // and the clip is what decides whether the star is on screen at all.
+        // A sub-subpixel exposure straddling the frame edge has a head just
+        // off it and a tail just on: `draw_streak` clips the real segment,
+        // finds the end that survived and splats there, where this found a
+        // degenerate segment wholly outside the canvas and dropped the star.
+        // Both primitives are entered by the same sky, and a star crossing the
+        // edge crosses between them, so the disagreement was a star winking
+        // out at the boundary rather than sliding off it.
         if !total.is_finite() || total < 0.75 {
-            let head = points[points.len() - 1];
+            let (tail, head) = (points[0], points[points.len() - 1]);
             self.draw_streak(&Streak {
-                from: (head.0, head.1),
+                from: (tail.0, tail.1),
                 to: (head.0, head.1),
                 color,
                 intensity,
@@ -1832,10 +1845,22 @@ mod tests {
         // that swaps between them mid-flight, which is what it does the moment
         // a hand touches the stick, would have stepped in brightness as it
         // happened.
+        // The last three are sub-subpixel, which is the branch that collapses a
+        // path to a point — and the third of them is the one that used to
+        // disagree. `draw_path` took the head *before* anything had clipped,
+        // so a short exposure straddling the edge became a degenerate segment
+        // wholly off the canvas and was dropped, where `draw_streak` clipped
+        // the real thing, found the end that survived and drew there. The star
+        // winked out at the boundary instead of sliding off it, and which
+        // primitive it winked out in depended on how many poses the exposure
+        // happened to have.
         for (a, b) in [
             ((12.0, 20.0), (96.0, 51.0)),
             ((-260.0, -90.0), (70.0, 44.0)),
             ((40.0, 30.0), (600.0, 400.0)),
+            ((40.0, 30.0), (40.3, 30.2)),
+            ((126.8, 40.0), (127.5, 40.2)),
+            ((127.5, 40.0), (126.8, 40.3)),
         ] {
             let mut straight = Canvas::new(128, 64);
             straight.draw_streak(&Streak {

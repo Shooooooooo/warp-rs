@@ -195,6 +195,26 @@
 #                 was -60,0,0 at a turn every 43 seconds and -20,0,0 at every
 #                 137.
 #
+#   Edge.         Four of the ten moved when `draw_path` stopped collapsing a
+#                 sub-subpixel exposure to its head *before* anything had
+#                 clipped — `side.txt`, `orbit.txt`, `astern.txt` and
+#                 `drift.txt`, which is every exterior flight with a lit drive
+#                 except `ahead.txt`. The clip is what decides whether a star is
+#                 on screen at all, so a short exposure straddling the frame
+#                 edge, head just off and tail just on, was a degenerate segment
+#                 wholly outside the canvas and was dropped. `draw_streak`
+#                 clipped the real thing and drew the end that survived. The
+#                 star winked out at the boundary instead of sliding off it, and
+#                 which of the two it winked out in depended on how many poses
+#                 the exposure happened to have.
+#
+#                 The split is a statement about paths rather than about
+#                 cameras: only a path of three points or more reaches
+#                 `draw_path`'s own degenerate branch, and only the bent sky
+#                 makes those. `ahead.txt` is the exterior flight that does not
+#                 move, because its exposures are cut at the near plane and
+#                 project far off-canvas rather than landing on the edge of it.
+#
 #   Compass.      Two of the ten moved when `heading` and `pitch` stopped being
 #                 integrals of the steering rates and started being read off the
 #                 attitude the ship is actually holding — `steer.txt` and
@@ -233,9 +253,9 @@
 5cc1dd4a61cf82ef84830baace7784acafb873f1212cb410674c74073d7e6200  ascii.txt
 eaf92a6c41192aa12bd294f9e3aec9a3813e1dce0577e5a9eb496ebb88413802  ansi256.txt
 3eae495ec537236bc880110be2e5c01996051a17a84e95eb0d3b632da78d21a5  warp.txt
-72e97a6213f371b47dbb92c071ac27eae6e62efdbb502304d7f94b7fd2ead436  side.txt
-92050a4240270b02aecf13fbec4b162a9cfae9e2c14d9c759f25c54db86b97c1  orbit.txt
-afa19913b9cf0def24fe776feabe56d15a452f53c2b1b39e968df2815c0ccaf1  astern.txt
+1d8ac621a64e1fd833e6cbe27c010e8a303153c234e78d45aec1d55f82222700  side.txt
+b7edadb296f80e1ccf1257398e1e00b46c138dda2362561e2a83a817997234ed  orbit.txt
+237f1d3d515be37af293f3a952c4fad2938b3c5a27b854c1b18095d00c275979  astern.txt
 9731a4fa5bc9dbacabe87ebc562826f81563a2ddf873c8f30aaa7594ea4f73e2  steer.txt
-2e184c38904e5d89678dff4cf2fcd0c0a87862f6f0f4d099354e386434f5c87f  drift.txt
+7b3a6e61d57ee2141b45beb9317ac34cb1a2e9419f4349cf4ae7225f2284a74a  drift.txt
 3f4880f3483e83abb8a2457996f409483cb7953172622373ae26cd54222d1dd7  ahead.txt

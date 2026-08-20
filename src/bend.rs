@@ -15,7 +15,6 @@
 //! swing to tear, and the two cameras are two places to stand rather than two
 //! skies.
 
-use crate::camera::Streak;
 use crate::canvas::{Canvas, Trace};
 use crate::lens::{Image, Lens};
 
@@ -61,20 +60,16 @@ impl Bend {
         color: [f32; 3],
         intensity: f32,
     ) {
-        let (Some(tail), Some(head)) = (points.first(), points.last()) else {
+        let Some(head) = points.last() else {
             return;
         };
         if !lens.bends(points) {
-            if points.len() == 2 {
-                canvas.draw_streak(&Streak {
-                    from: (tail.0, tail.1),
-                    to: (head.0, head.1),
-                    color,
-                    intensity,
-                });
-            } else {
-                canvas.draw_path(points, color, intensity);
-            }
+            // `draw_path` whatever the length, including two. It lays down the
+            // bytes `draw_streak` would and it reads the pace off the point
+            // that starts a leg, which a `Streak` has nowhere to carry — see
+            // the same call in `render.rs`, where dropping it charged a cut
+            // stump the whole exposure's pace.
+            canvas.draw_path(points, color, intensity);
             return;
         }
         {
@@ -188,6 +183,7 @@ fn subdivide(points: &[Trace], lens: &Lens, out: &mut Vec<Trace>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::Streak;
     use crate::canvas::Canvas;
     use crate::view::Orbit;
 
@@ -264,8 +260,16 @@ mod tests {
         ];
 
         for lens in far_away {
-            // Two points: the straight case.
-            let pair: [Trace; 2] = [(4.0, 6.0, 40.0), (44.0, 22.0, 40.0)];
+            // Two points: the straight case, and the pace is the segment's
+            // own length because that is what makes it the straight case. A
+            // pace is how fast the star's image was moving, expressed as the
+            // length the whole exposure would have covered at that rate — so
+            // for an exposure flown straight through it *is* the length, and
+            // `draw_streak`, which has nowhere to carry a pace, assumes as
+            // much. The fixture used to say 40 against a span of 43.08, which
+            // asserted the equivalence over a stump the ship never flew.
+            let span = crate::canvas::length_of(44.0 - 4.0, 22.0 - 6.0);
+            let pair: [Trace; 2] = [(4.0, 6.0, span), (44.0, 22.0, span)];
             assert!(!lens.bends(&pair), "the test's exposure is inside the ring");
 
             let (mut bent, mut plain) = (canvas(), canvas());
