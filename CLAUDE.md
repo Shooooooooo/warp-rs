@@ -471,6 +471,7 @@ place:
 | `get_unchecked_mut` in `splat_inside`, 28% of a cockpit frame's instructions | 2.5%. Not a price worth the first `unsafe` in the tree, but worth knowing the size of before anyone argues for it. |
 | row-walking `apply_vignette` with `chunks_exact_mut` | nothing; the indexed form already compiles to the same thing. |
 | dropping the `palette_256` → `palette_rgb` round trip in `quantize_256` | nothing; the constant divisors are already folded. |
+| skipping the Doppler shift for the stars that never reach the canvas | **not worth pursuing** — deleting it and its square root *altogether* is 2% of an exterior warp frame, 10.29 ms to 10.09, and that is the ceiling on any win a bounds test could reach before the test's own cost. Roughly 38% of the pool projects off-canvas, so the reachable share of 2% is a fraction of a percent. |
 
 Cachegrind is the other thing to know before reaching for a layout change: the
 D1 miss rate is 1.4% and last-level misses are in the tens of thousands for a
