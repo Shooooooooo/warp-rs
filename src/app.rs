@@ -1594,9 +1594,30 @@ mod tests {
         // Asked of the frames rather than of the sky, because what is under
         // test is a picture: fly the same seed twice, once with a hand on the
         // stick and once without, and the two must differ in both views.
+        //
+        // Of the *starlight*, and that is the whole of what this test is worth.
+        // It compared whole frames for a while and could not tell what it was
+        // claiming to: in the side view the hull's own lean and the drive's
+        // plume carry the difference on their own, so re-run at
+        // `cli::MIN_MAGNITUDE` — where `Universe::new` holds exactly zero stars
+        // — the frames still differed over three quarters of the canvas and
+        // cleared the threshold with nothing in the sky to turn. A regression
+        // that stopped the exposure swinging altogether would have left it
+        // green, and this is the only test in the tree that reaches the curved
+        // exposure through the warp bubble, so it was the ceiling on that
+        // module's coverage as well as its own.
+        //
+        // Subtracting an empty-sky frame from a lit one is how `render::bands`
+        // isolates starlight, and flying at an empty magnitude so a difference
+        // cannot hide among the stars is what
+        // `pitching_about_inside_does_not_leave_the_ship_crooked_outside` does.
+        // This is the two together: the ship's flight does not depend on the
+        // sky, so the hull, the plume and the glare are identical between the
+        // two magnitudes and fall out of the subtraction.
+        let empty = crate::cli::MIN_MAGNITUDE.to_string();
         for view in [0, 1] {
-            let frames = |steer: bool| {
-                let args = args_for(&["--seed", "3", "--magnitude", "5.5", "--size", "80x24"]);
+            let frame = |steer: bool, magnitude: &str| {
+                let args = args_for(&["--seed", "3", "--magnitude", magnitude, "--size", "80x24"]);
                 let mut flight = Flight::new(&args, 80, 24);
                 if view == 1 {
                     flight.cycle_view();
@@ -1612,14 +1633,69 @@ mod tests {
                 flight.draw(60.0, false, true);
                 flight.renderer.pixels().to_vec()
             };
-            let (turned, straight) = (frames(true), frames(false));
+            let starlight = |steer: bool| {
+                let (lit, bare) = (frame(steer, "5.5"), frame(steer, &empty));
+                lit.iter()
+                    .zip(&bare)
+                    .map(|(a, b)| {
+                        [
+                            a[0] as i16 - b[0] as i16,
+                            a[1] as i16 - b[1] as i16,
+                            a[2] as i16 - b[2] as i16,
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            };
+
+            let (turned, straight) = (starlight(true), starlight(false));
             let differing = turned.iter().zip(&straight).filter(|(a, b)| a != b).count();
             assert!(
                 differing > straight.len() / 20,
-                "only {differing} of {} subpixels moved in view {view}",
+                "only {differing} of {} subpixels of starlight moved in view {view}",
                 straight.len()
             );
+
+            // And the empty sky is really empty, so the subtraction above is
+            // removing everything that is not a star rather than most of it.
+            assert_eq!(
+                Universe::new(crate::cli::MIN_MAGNITUDE, 3).len(),
+                0,
+                "the empty-sky frame is not empty, so the starlight above is \
+                 not isolated"
+            );
         }
+    }
+
+    #[test]
+    fn a_turn_leans_the_hull_even_with_nothing_in_the_sky() {
+        // The other half of the claim above, stated on its own feet. That test
+        // used to make both at once and one of them quietly stood in for the
+        // other; now that it looks only at starlight, nothing was left saying
+        // the hull answers the stick at all from outside.
+        let empty = crate::cli::MIN_MAGNITUDE.to_string();
+        let frame = |steer: bool| {
+            let args = args_for(&["--seed", "3", "--magnitude", &empty, "--size", "80x24"]);
+            let mut flight = Flight::new(&args, 80, 24);
+            flight.cycle_view();
+            flight.ship.throttle = 1.0;
+            flight.ship.toggle_warp();
+            for _ in 0..300 {
+                if steer {
+                    flight.nudge_stick(1.0, -0.35, 0.0);
+                }
+                flight.advance(1.0 / 60.0);
+            }
+            flight.draw(60.0, false, true);
+            flight.renderer.pixels().to_vec()
+        };
+        let (turned, straight) = (frame(true), frame(false));
+        let differing = turned.iter().zip(&straight).filter(|(a, b)| a != b).count();
+        assert!(
+            differing > straight.len() / 100,
+            "the hull did not answer the stick with an empty sky: {differing} \
+             of {} subpixels",
+            straight.len()
+        );
     }
 
     #[test]
