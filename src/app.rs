@@ -113,6 +113,15 @@ pub struct Flight {
     /// It cannot reach a reference frame: headless and snapshot flights take no
     /// input at all, so nothing there ever sets it.
     hands_on: bool,
+    /// The number this flight's sky was built from.
+    ///
+    /// Kept because it is the only thing about a run that cannot be recovered
+    /// by looking at it: `--seed` is optional and defaults to the clock, so a
+    /// flight worth keeping a picture of is one nobody can shoot again. Held
+    /// here rather than asked of [`Universe`] because it is a property of the
+    /// flight rather than of the sky — the same seed would build the same sky
+    /// at a different magnitude.
+    seed: u64,
     /// Wall time since launch, in seconds. `f64` because it only ever grows and
     /// a screensaver is expected to be left running: as an `f32` accumulator it
     /// stopped advancing altogether after about six days, freezing the twinkle
@@ -148,6 +157,7 @@ impl Flight {
             orbit: args.orbit,
             orbit_target: args.orbit,
             hands_on: false,
+            seed,
             time: 0.0,
             accumulator: 0.0,
         };
@@ -475,6 +485,12 @@ impl Flight {
         self.sky.limit()
     }
 
+    /// The number this flight's sky was built from, whether it came from
+    /// `--seed` or from the clock.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// Ask the sky for a fainter or a brighter limit.
     ///
     /// Held to the two ends `--magnitude` is held to, so a sky these keys walk
@@ -758,6 +774,9 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     out.queue(terminal::Clear(terminal::ClearType::All))?;
 
     let mut paused = false;
+    // The last size the *terminal* reported, which is not the same question as
+    // the last size the canvas took — see the resize arm below.
+    let mut last_seen = (cols, rows);
     let mut fps = args.fps as f32;
     let frame_budget = Duration::from_secs_f32(1.0 / args.fps as f32);
     let start = Instant::now();
@@ -796,18 +815,36 @@ fn run_interactive(args: &Args) -> io::Result<()> {
         fps += (1.0 / dt.max(1e-4) - fps) * 0.08;
 
         if args.demo.is_some() || args.screensaver {
-            // Zero while paused, and that is not the same as skipping the call.
-            // The throttle and the camera are closed forms of the clock, so
-            // they are unaffected either way and a paused `--demo` goes on
-            // flying itself exactly as it always has. The stick is the one
-            // thing here that is not: it is an impulse against a damper, and
-            // the damper lives in `advance`, which a pause stops. So a pause
-            // that did not stop the impulse would ratchet the rate with
-            // nothing bleeding it off — eleven seconds of `P` pinned the yaw
-            // at `MAX_YAW_RATE`, held the hull at its full lean, drove
+            // The flight's own clock rather than the wall's, and a zero step
+            // while paused. The two go together and neither is enough alone.
+            //
+            // The step was zeroed first, because the stick is an impulse
+            // against a damper and the damper lives in `advance`, which a
+            // pause stops: a pause that did not stop the impulse ratcheted the
+            // rate with nothing bleeding it off. Eleven seconds of `P` pinned
+            // the yaw at `MAX_YAW_RATE`, held the hull at its full lean, drove
             // `models::drive_behind_hull` to a hard one, and snapped the ship
             // into a turn on the way out.
-            flight.fly_itself(args, elapsed, if paused { 0.0 } else { dt });
+            //
+            // The clock was left on wall time on the argument that the
+            // throttle and the camera are closed forms of it and so are
+            // unaffected either way. True of the throttle, and not true of the
+            // camera: what the closed form gives is the orbit *target*, and
+            // the camera a frame is built from is `Flight::orbit`, which eases
+            // toward it in `advance` — which the pause also stops. So the
+            // target walked and the camera did not. `autopilot::CAMERA_TURN`
+            // is a turn every 43 seconds, so ten seconds of `P` opened an
+            // eighty-four degree gap, and the ease closes 7.2% of one per sim
+            // step: the camera whipped most of the way round the hull inside a
+            // second of resuming. It saturates at half a turn after about
+            // twenty-one seconds, which is the worst it can be.
+            //
+            // `Flight::time` is the clock that already stops — `advance` is
+            // the only thing that advances it — so handing it over costs
+            // nothing and needs no second accumulator. The `--demo` deadline
+            // above goes on reading the wall, which is the documented
+            // behaviour: a paused demo still exits when it said it would.
+            flight.fly_itself(args, flight.time, if paused { 0.0 } else { dt });
         }
 
         if !paused {
@@ -870,8 +907,27 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                 // resize events that settle on the size already in use, and
                 // clearing on those makes the field blink for no reason.
                 Event::Resize(cols, rows) => {
-                    let changed = flight.resize(args, cols as usize, rows as usize);
-                    if changed {
+                    // Two questions, and one boolean used to answer both. What
+                    // `Flight::resize` reports is whether the *canvas* moved,
+                    // and under `--size` it always answers no — which is right
+                    // about the canvas and wrong about the repaint, because
+                    // the terminal moved whatever the canvas did. The
+                    // alternate screen discards the rows past a new smaller
+                    // height, `Screen::front` goes on holding the cells it drew
+                    // there, and `diff` re-emits nothing: a band of the frame
+                    // stays blank until each cell in it happens to take a
+                    // different value, which on a starfield is mostly never.
+                    //
+                    // So the repaint follows the size the *terminal* last
+                    // reported, and the canvas follows `resize`. The reason the
+                    // gate is here at all survives intact: terminals emit
+                    // resize events that settle on the size already in use, and
+                    // one of those still reports the same pair and still
+                    // repaints nothing.
+                    let moved = (cols, rows) != last_seen;
+                    last_seen = (cols, rows);
+                    flight.resize(args, cols as usize, rows as usize);
+                    if moved {
                         out.queue(terminal::Clear(terminal::ClearType::All))?;
                         flight.renderer.screen().force_redraw();
                         acted = true;
@@ -953,12 +1009,19 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
 
     let (w, h) = flight.renderer.canvas_dims();
     snapshot::write_png(path, flight.renderer.pixels(), w, h, args.scale)?;
+    // The seed is in here because it is the one thing about the shot that
+    // cannot be read back off the picture. `--seed` is optional and falls back
+    // to the clock, so without this a frame worth keeping is a frame nobody
+    // can take again — including the two on the README's front page, whose
+    // recipes are written down in `CLAUDE.md` precisely because they were once
+    // recoverable only from the commit that shot them.
     eprintln!(
-        "wrote {} ({}x{} px) at velocity {:.1} c",
+        "wrote {} ({}x{} px) at velocity {:.1} c, --seed {}",
         path.display(),
         w * args.scale,
         h * args.scale,
-        flight.ship.velocity_c()
+        flight.ship.velocity_c(),
+        flight.seed()
     );
     Ok(())
 }
@@ -2552,6 +2615,27 @@ mod tests {
     }
 
     #[test]
+    fn a_flight_can_say_which_sky_it_is_flying() {
+        // `run_snapshot` reports the frame it wrote and the velocity it wrote
+        // it at, and used to leave out the only thing about the shot that
+        // cannot be read back off the picture. `--seed` is optional and falls
+        // back to the clock, so a frame worth keeping was a frame nobody could
+        // take again — and the seed was held nowhere a caller could reach.
+        let args = args_for(&["--seed", "4321", "--size", "40x12"]);
+        assert_eq!(Flight::new(&args, 40, 12).seed(), 4321);
+
+        // And without the flag it is whatever the clock gave, which is the
+        // case worth reporting: two flights a moment apart are two skies, and
+        // the number is the only way back to either.
+        let args = args_for(&["--size", "40x12"]);
+        let (first, second) = (
+            Flight::new(&args, 40, 12).seed(),
+            Flight::new(&args, 40, 12).seed(),
+        );
+        assert_ne!(first, second, "two unseeded flights took the same seed");
+    }
+
+    #[test]
     fn a_paused_demo_does_not_wind_the_stick_up() {
         // `P` gates `advance` and not the autopilot, which is deliberate and
         // documented — a paused demo goes on flying itself and repainting. But
@@ -2561,25 +2645,96 @@ mod tests {
         // the way to `MAX_YAW_RATE`, and letting go snapped the ship into a
         // turn it took a second and a half to come out of.
         //
-        // The throttle and the camera are closed forms of the clock, so they
-        // are unaffected and the paragraph about `P` stays true of them.
-        let args = args_for(&["--demo", "--magnitude", "2.5", "--size", "60x20"]);
+        // Zeroing the step was half the answer, and the other half took a
+        // second report. The clock stayed on the wall on the argument that the
+        // throttle and the camera are closed forms of it and so are unaffected
+        // — true of the throttle, and false of the camera, because the closed
+        // form gives the orbit *target* and a frame is built from
+        // `Flight::orbit`, which eases toward it in `advance`. The pause stops
+        // the ease and not the target, so the gap opened at
+        // `autopilot::CAMERA_TURN` — a turn every 43 seconds — and closed at
+        // 7.2% per sim step on resume, whipping the camera round the hull.
+        //
+        // So the clock a paused flight hands its autopilot is `Flight::time`,
+        // which `advance` is the only thing that moves. What that costs is the
+        // sentence "a paused demo goes on flying itself": it does not any more,
+        // and the two things it does go on doing — repainting, and exiting at
+        // its deadline — are the two that were ever worth having. A pause that
+        // stops the world and not the schedule it is flying to is a pause that
+        // owes the flight a jump on the way out.
+        let args = args_for(&[
+            "--demo",
+            "--view",
+            "side",
+            "--magnitude",
+            "2.5",
+            "--size",
+            "60x20",
+        ]);
         let mut flight = Flight::new(&args, 60, 20);
-        for frame in 0..(30 * 60) {
-            // Exactly what the loop does while `paused` is set: wall clock goes
-            // on, the step handed to the stick does not, and nothing advances.
-            flight.fly_itself(&args, frame as f64 / 60.0, 0.0);
+        // Ten seconds of flying, so there is a schedule underway to freeze.
+        for frame in 0..(10 * 60) {
+            flight.fly_itself(&args, flight.time, 1.0 / 60.0);
+            flight.advance(1.0 / 60.0);
+            let _ = frame;
         }
-        assert!(
-            flight.ship.yaw_rate.abs() < 0.01 && flight.ship.pitch_rate.abs() < 0.01,
-            "thirty seconds of pause wound the stick to {} yaw and {} pitch",
-            flight.ship.yaw_rate,
-            flight.ship.pitch_rate
-        );
-        // And it was still flying itself the whole time.
-        assert!(
+        // Exactly what the loop does while `paused` is set: no step, and no
+        // clock either, because `advance` is not called. Snapshotted after the
+        // first such frame rather than before it: the clock the loop hands over
+        // is the one `advance` left behind, so the first paused frame catches
+        // up by the step the last flying one took and every frame after it is
+        // handed the same number.
+        flight.fly_itself(&args, flight.time, 0.0);
+        let underway = (
+            flight.ship.throttle,
+            flight.orbit_target,
             flight.ship.warp_engaged,
-            "a paused demo stopped running its autopilot"
+        );
+        let held = (flight.ship.yaw_rate, flight.ship.pitch_rate);
+
+        for _ in 0..(30 * 60) {
+            flight.fly_itself(&args, flight.time, 0.0);
+        }
+        // Held rather than zero: the damper is in `advance` and a pause stops
+        // it, so whatever rate the ship was carrying it goes on carrying. What
+        // must not happen is the rate *growing*, which is what an impulse
+        // pushing against a stopped damper does — eleven seconds of `P` walked
+        // the yaw all the way to `MAX_YAW_RATE`, and letting go snapped the
+        // ship into a turn it took a second and a half to come out of.
+        assert_eq!(
+            (flight.ship.yaw_rate, flight.ship.pitch_rate),
+            held,
+            "thirty seconds of pause moved the stick"
+        );
+        assert_eq!(
+            (
+                flight.ship.throttle,
+                flight.orbit_target,
+                flight.ship.warp_engaged
+            ),
+            underway,
+            "thirty seconds of pause moved the flight the autopilot was flying"
+        );
+        // And the camera the *frame* is built from has not been left behind by
+        // the one the autopilot is asking for, which is the whole of the snap.
+        let gap = [
+            wrap_signed(flight.orbit_target.azimuth - flight.orbit.azimuth),
+            wrap_signed(flight.orbit_target.elevation - flight.orbit.elevation),
+            wrap_signed(flight.orbit_target.roll - flight.orbit.roll),
+        ];
+        assert!(
+            gap.iter().all(|angle| angle.abs() < 0.05),
+            "the pause opened a {gap:?} gap between the camera and where it is being asked to go"
+        );
+
+        // And it picks the schedule back up rather than jumping into it.
+        flight.fly_itself(&args, flight.time, 1.0 / 60.0);
+        flight.advance(1.0 / 60.0);
+        assert!(
+            (flight.ship.throttle - underway.0).abs() < 0.05,
+            "the throttle jumped from {} to {} on the way out of a pause",
+            underway.0,
+            flight.ship.throttle
         );
     }
 
