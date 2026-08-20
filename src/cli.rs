@@ -83,11 +83,30 @@ const MAX_COUNT: u32 = 1_000_000;
 #[cfg(feature = "snapshot")]
 const MAX_SCALE: usize = 16;
 
+/// Every flag the command line takes, and the bounds each one is held to.
+///
+/// One thing about the comments in here is not a matter of taste. Clap's derive
+/// publishes a `///` block as help text — a field's as that flag's entry, and
+/// this struct's as the whole program's `--long_about` — so a doc comment in
+/// this file is addressed to whoever is *running* the program, where the house
+/// style everywhere else in the tree is an essay addressed to whoever is
+/// editing it next. The two collided on three flags and the user won the
+/// argument: `--color` was explaining to the world at large why an `auto` mode
+/// it can no longer ask for went away, and closing with a comparison to
+/// `--stars`, which is a flag it cannot ask for either. Notes to the next
+/// editor go in `//` blocks between the doc comment and the `#[arg(…)]`, where
+/// clap does not read them and the next editor still cannot miss them.
+///
+/// `long_about = None` below is that rule applied to this very comment, which
+/// otherwise prints in full above the usage line. It is what lets the struct
+/// keep a doc comment for `cargo doc` without addressing it to the wrong
+/// reader; clap falls back to `about` for both lengths of help.
 #[derive(Parser, Debug)]
 #[command(
     name = "warp",
     version,
-    about = "Fly a starship through the universe at warp, in your terminal"
+    about = "Fly a starship through the universe at warp, in your terminal",
+    long_about = None
 )]
 pub struct Args {
     /// How faint a star the sky holds, as a limiting visual magnitude.
@@ -96,10 +115,10 @@ pub struct Args {
     /// way a darker site shows more of them. How many land on screen is then
     /// the field of view's business and nothing caps it.
     ///
-    /// `allow_hyphen_values` because the bottom of the range is negative and
-    /// without it clap reads `--magnitude -2` as a flag it does not know rather
-    /// than as an empty sky. `--orbit` needs it for the same reason and says
-    /// so; this is the second place that has come up.
+    // `allow_hyphen_values` because the bottom of the range is negative and
+    // without it clap reads `--magnitude -2` as a flag it does not know rather
+    // than as an empty sky. `--orbit` needs it for the same reason and says
+    // so; this is the second place that has come up.
     #[arg(
         long,
         value_name = "MAG",
@@ -159,15 +178,18 @@ pub struct Args {
 
     /// Colour depth. 24-bit unless one of the narrower modes is named.
     ///
-    /// The environment is not consulted. There was an `auto` here that read
-    /// `COLORTERM` and then `TERM`, and it guessed against the renderer: a
-    /// terminal exporting no `COLORTERM` got the 256-colour palette whatever it
-    /// could really do, which is most terminals, so the mode the canvas is
-    /// designed for was the one it least often opened in. With the default at
-    /// 24-bit an `auto` would be a second answer to a question already
-    /// answered, and it is the answer that guesses — so it went rather than
-    /// being demoted. A terminal that cannot read the sequences is the user's
-    /// own call now, the way `--stars` is a count no window may overrule.
+    /// The environment is not consulted: the narrower modes are asked for
+    /// rather than fallen into, so a terminal that cannot read a 24-bit
+    /// sequence needs telling here.
+    // There was an `auto` here that read `COLORTERM` and then `TERM`, and it
+    // guessed against the renderer: a terminal exporting no `COLORTERM` got the
+    // 256-colour palette whatever it could really do, which is most terminals,
+    // so the mode the canvas is designed for was the one it least often opened
+    // in. With the default at 24-bit an `auto` would be a second answer to a
+    // question already answered, and it is the answer that guesses — so it went
+    // rather than being demoted. A terminal that cannot read the sequences is
+    // the user's own call now, the way `--stars` is a count no window may
+    // overrule.
     #[arg(long, value_enum, default_value_t = ColorArg::Truecolor)]
     pub color: ColorArg,
 
@@ -198,10 +220,10 @@ pub struct Args {
     /// Where to park the outside camera, in degrees: round the ship, then over
     /// it, then its own roll. `WASD` and `QE` fly it from there.
     ///
-    /// `allow_hyphen_values` because half the range starts with a minus sign,
-    /// and without it clap reads `--orbit -75,10` as a flag it does not know
-    /// rather than as a camera behind the ship. The equals form works either
-    /// way; nobody should have to find that out.
+    // `allow_hyphen_values` because half the range starts with a minus sign,
+    // and without it clap reads `--orbit -75,10` as a flag it does not know
+    // rather than as a camera behind the ship. The equals form works either
+    // way; nobody should have to find that out.
     #[arg(
         long,
         value_name = "AZ,EL[,ROLL]",
@@ -633,6 +655,51 @@ mod tests {
         assert!(
             err.contains("--magnitude"),
             "the error does not name what replaced it: {err}"
+        );
+    }
+
+    #[test]
+    fn the_help_text_is_addressed_to_whoever_is_running_the_program() {
+        // Clap's derive publishes `///` blocks as help, and the house style
+        // writes `///` as an essay to the next editor, so the two collide every
+        // time a flag grows a note. They had, on three: `--magnitude` and
+        // `--orbit` each explained `allow_hyphen_values` to the world, and
+        // `--color` published a paragraph about an `auto` mode that no longer
+        // exists, ending on a comparison to `--stars`, which does not exist
+        // either — so the help advertised two things it would refuse to do.
+        //
+        // Asked of the rendered help rather than of the source, because what
+        // went wrong was not where the words were written but where they came
+        // out. The struct's own doc comment is in this net too: it renders
+        // above the usage line unless `long_about` turns it off, and it said
+        // all of the above at once for one commit.
+        use clap::CommandFactory;
+        let long = Args::command().render_long_help().to_string();
+        let short = Args::command().render_help().to_string();
+        for help in [long.as_str(), short.as_str()] {
+            for leak in [
+                // Flags and values the program will not accept.
+                "--stars",
+                "COLORTERM",
+                // Names that mean something to rustc and nothing to a pilot.
+                "allow_hyphen_values",
+                "value_parser",
+                "long_about",
+                "#[arg",
+            ] {
+                assert!(
+                    !help.contains(leak),
+                    "`{leak}` reached the help text, which is addressed to \
+                     whoever is running the program:\n{help}"
+                );
+            }
+        }
+        // And the flags a person does need are still described. A help text
+        // that leaked nothing because it said nothing would pass the loop
+        // above.
+        assert!(
+            long.contains("limiting visual magnitude") && long.contains("Tonemap exposure"),
+            "the help stopped describing the flags:\n{long}"
         );
     }
 
