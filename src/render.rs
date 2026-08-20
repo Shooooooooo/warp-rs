@@ -5,7 +5,7 @@
 //! drive spools rather than each effect arriving on its own schedule.
 
 use crate::bend::Bend;
-use crate::camera::{Camera, Streak};
+use crate::camera::Camera;
 use crate::canvas::{Canvas, Tonemap};
 use crate::hud::{self, Readout};
 use crate::lens::Lens;
@@ -36,9 +36,13 @@ pub struct Exterior<'a> {
     pub time: f64,
     /// How far in or out the camera has been pushed, as a multiple of the
     /// default framing. It rides in here rather than on the [`Camera`] because
-    /// the camera has not moved: the zoom is a dolly on the *ship*, and the
-    /// sky — which is laid out against the camera's focal length and cached
-    /// against it — is meant to sit perfectly still while it happens.
+    /// the camera has not moved: the zoom is a dolly on the *ship*, and the sky
+    /// is meant to sit perfectly still while it happens. That used to be
+    /// enforced by a cache — the star band was laid out against
+    /// `Camera::focal` — and is now a choice the sky would survive either way,
+    /// since a lens change is a different shot rather than a closer one. See
+    /// `the_zoom_moves_the_ship_and_leaves_the_sky_alone`, which fails the
+    /// moment anything makes `exterior_camera` read this.
     pub zoom: f32,
     /// Which way round the ship the camera has been swung. It rides in here
     /// for the same reason the zoom does and with the opposite consequence:
@@ -158,22 +162,25 @@ impl Renderer {
         let eye = Observer::cockpit(ship.axes, ship.position, warp);
 
         self.canvas.clear();
-        // A two-point exposure goes to `draw_streak` and anything longer to
-        // `draw_path`. The two lay down the same light — they share the leg
-        // that does the laying — so which one runs is a matter of what is
-        // cheapest to call, not of what the frame comes out looking like.
+        // Every exposure goes to `draw_path`, two points or twenty-four. The
+        // two primitives share the leg that does the laying and `draw_path`
+        // over two points lays down the bytes `draw_streak` would, so this used
+        // to pick whichever was cheapest to call — and in dropping the path it
+        // dropped the *pace*, which is the third component of a point and the
+        // one thing `Streak` has nowhere to carry.
+        //
+        // That was exact for as long as a two-point exposure's pace was its own
+        // length, which is the straight case and every reference flight. It is
+        // not the cut case: when the walk finds only one station in front of
+        // the eye it hands back two points whose pace is `span / share`, the
+        // share being how much of the exposure that stump stands for. Redrawn
+        // as a bare streak the stump was charged `span`, so a leg standing for
+        // a tenth of the exposure came out about seven times too bright — a
+        // fast path taken for being cheap, quietly answering a different
+        // question.
         let canvas = &mut self.canvas;
         sky.sweep(cam, &eye, time, |points, color, intensity| {
-            if let [from, to] = *points {
-                canvas.draw_streak(&Streak {
-                    from: (from.0, from.1),
-                    to: (to.0, to.1),
-                    color,
-                    intensity,
-                });
-            } else {
-                canvas.draw_path(points, color, intensity);
-            }
+            canvas.draw_path(points, color, intensity);
         });
 
         // The tunnel: glare down the throat, and a vignette closing in around

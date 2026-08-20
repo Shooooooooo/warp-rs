@@ -20,7 +20,7 @@ const FALLBACK_SIZE: (u16, u16) = (160, 48);
 /// the four buffers a frame needs — two subpixels of HDR float, two of resolved
 /// RGB, and a front and back cell — so this is roughly 110 MB. Far past any
 /// real terminal, and small enough that it allocates instead of aborting.
-const MAX_CELLS: usize = 2_000_000;
+pub(crate) const MAX_CELLS: usize = 2_000_000;
 /// And no single dimension past this, so the error names the obvious mistake
 /// rather than quoting a product.
 const MAX_DIM: u16 = 10_000;
@@ -83,6 +83,42 @@ const MAX_COUNT: u32 = 1_000_000;
 #[cfg(feature = "snapshot")]
 const MAX_SCALE: usize = 16;
 
+// The keys, printed under the flags rather than squeezed into the frame.
+//
+// The hint line along the bottom of the panel is the only place a running
+// program says what the keys are, and it is chosen by width: the widest tier is
+// 89 characters, so it wants 91 columns, and on the eighty-column terminal most
+// people have it falls to the next one — which names four keys of a dozen and
+// mentions neither camera nor picker nor sky. Under `MIN_COLS` the panel goes
+// compact and there is no printed way to quit at all.
+//
+// Widening the tiers is the obvious answer and the wrong one twice over. It
+// costs terminal columns the narrow tiers do not have — appending eight
+// characters to the widest cockpit tier takes it from 89 to 97, so terminals
+// between about 91 and 98 columns would shed it and lose the *throttle* to gain
+// the sky — and the ten reference flights are rendered at 120 columns with
+// hints on, so every one of their hashes would move to say it. Help text costs
+// no columns at all and moves nothing, and `--help` is where somebody who
+// cannot see a control reflexively looks.
+const CONTROLS: &str = "\
+Controls:
+  SPACE          engage or drop out of warp
+  UP, DOWN       throttle
+  C              change camera: the cockpit, or a chase view from outside
+  + -            a fainter or a brighter sky, half a magnitude at a time
+  P              pause
+  R              back to the view and the throttle the flags asked for
+  M              the ship picker (from outside)
+  ESC, Ctrl-C    quit
+
+  From the cockpit:
+  W A S D        pitch and yaw; I and K pitch too
+  Q E            roll
+
+  From outside:
+  W A S D Q E    walk the camera round the ship
+  [ ] or wheel   push it in or out";
+
 /// Every flag the command line takes, and the bounds each one is held to.
 ///
 /// One thing about the comments in here is not a matter of taste. Clap's derive
@@ -106,7 +142,8 @@ const MAX_SCALE: usize = 16;
     name = "warp",
     version,
     about = "Fly a starship through the universe at warp, in your terminal",
-    long_about = None
+    long_about = None,
+    after_help = CONTROLS
 )]
 pub struct Args {
     /// How faint a star the sky holds, as a limiting visual magnitude.
@@ -138,7 +175,18 @@ pub struct Args {
     #[arg(long, value_name = "N", hide = true, value_parser = no_star_count)]
     pub stars: Option<String>,
 
-    /// Frame rate cap.
+    /// Frame rate cap — and, in `--headless` and `--snapshot`, the simulation
+    /// timestep, so it changes the flight rather than only how often it is
+    /// drawn.
+    ///
+    /// Interactively it is a cap and nothing else, and only while nothing is
+    /// being typed: a keypress is answered the moment it arrives rather than
+    /// when the budget runs out.
+    // Two meanings, and the help says both because leaving the second one out
+    // is how somebody sets `--fps 10` on a headless run to save time and gets a
+    // twelve-second flight instead of a two-second one, with every hash moved.
+    // The maintainer's half of this is in CLAUDE.md; what is here is the half a
+    // person running the program needs.
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
     pub fps: u32,
 

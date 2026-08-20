@@ -23,7 +23,8 @@
 //! Hulls are drawn opaque, which means the plates cover what is behind them
 //! instead of adding to it — the one place in the renderer where light is not
 //! accumulated. There is still no depth buffer. Four things stand in for one:
-//! the star band starts well beyond the ship, so nothing can be in front of it;
+//! the nearest star there can be is four light years off against a hull that
+//! reaches seventeen units, so nothing can be in front of it;
 //! plates facing away are culled; the rest are painted far to near, which is
 //! what sorts a nacelle against the engineering hull behind it; and the drive,
 //! which is the only light in the frame that can be on either side of a plate,
@@ -1155,9 +1156,10 @@ fn plates(model: &ShipModel, cam: &Camera, pose: (f32, f32, f32), eye: &Eye) -> 
 ///
 /// The plates are opaque: they cover the sky rather than adding to it, which is
 /// what makes the ship a ship and not a hologram of one. There is still no
-/// depth buffer and there still does not need to be one — the star band starts
-/// well beyond the hull at every zoom, so nothing can come between it and the
-/// camera, and the hull sorts against itself.
+/// depth buffer and there still does not need to be one — the nearest star the
+/// catalogue admits is [`crate::universe::NEAREST_STAR`] at four light years,
+/// against a hull that reaches seventeen units at every zoom, so nothing can
+/// come between it and the camera and the hull sorts against itself.
 ///
 /// The whole hull goes to the canvas in one call, still in the order it was
 /// sorted into. Handing the plates over one at a time is what a painter's
@@ -1855,8 +1857,10 @@ mod tests {
 
     #[test]
     fn every_model_fits_in_the_unit_box() {
-        // The camera's standoff assumes it, and so does the star band's near
-        // wall: a hull that reached further could poke through the sky.
+        // The camera's standoff assumes it, and so does every claim in this
+        // module that nothing can come between the hull and the eye: a hull
+        // that reached further would need a depth buffer to sort against the
+        // things this one is allowed to be in front of by construction.
         for model in models() {
             for v in &model.verts {
                 assert!(

@@ -18,8 +18,8 @@ rust-version = "1.85"
 # for the published crate. The README links its images by absolute URL because
 # of this line: docs.rs renders that file out of the package, where a relative
 # `docs/` path points at nothing. `CLAUDE.md` is here on the same principle:
-# forty-odd kilobytes of notes addressed to whoever is editing the tree, which
-# is nobody who has the crate as a dependency.
+# a hundred-odd kilobytes of notes addressed to whoever is editing the tree,
+# which is nobody who has the crate as a dependency.
 exclude = ["docs/", ".github/", "CLAUDE.md"]
 
 # docs.rs builds with default features, and `snapshot` is not one of them — so

@@ -17,9 +17,32 @@ of the page included. The repository is public, so these load for everyone.
 ## Running it
 
 ```sh
-cargo run --release            # fly it
+cargo install --path .         # then just `warp`
+cargo run --release            # or fly it from the clone
 cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 ```
+
+It needs a terminal to fly in and says so if it has not got one; `--headless`
+is the way to send frames somewhere else.
+
+## Controls
+
+| | |
+| --- | --- |
+| `SPACE` | Engage or drop out of warp. |
+| `↑` `↓` | Throttle. |
+| `C` | Change camera: the cockpit, or a chase view from outside. |
+| `+` `-` | A fainter or a brighter sky, half a magnitude at a time. |
+| `WASD` | Pitch and yaw from the cockpit; walk the camera round the ship from outside. `I` and `K` pitch too. |
+| `QE` | Roll the ship, or roll the camera. |
+| `[` `]` | Push the outside camera in or out. So does the wheel. |
+| `M` | The ship picker, from outside. |
+| `P` `R` | Pause, and put the view and the throttle back where the flags asked for. |
+| `ESC` | Quit. So does `Ctrl-C`. |
+
+`warp --help` prints the same table, which is worth knowing on a terminal
+narrower than about ninety columns: the hint line along the bottom of the panel
+sheds detail to fit, and on eighty columns it names only the first few.
 
 ## Options
 
@@ -39,7 +62,7 @@ cargo run --release -- --demo  # autopilot, 45 seconds, no keyboard needed
 | `--aa N` | Samples per subpixel, per axis, for the hull's outline. Default 3; `1` is a hard edge. |
 | `--seed N` | Fix the sky. Omit for a different one each run. |
 | `--size COLSxROWS` | Override the terminal size. |
-| `--headless --frames N` | Print frames to stdout instead of taking over the terminal. |
+| `--headless --frames N` | Print frames to stdout instead of taking over the terminal. In this mode `--fps` is the simulation timestep rather than a cap, so it changes the flight. |
 
 The autopilot flies the camera as well as the ship, so `--screensaver --view
 side` walks the shot round the hull rather than parking it, and no two runs up

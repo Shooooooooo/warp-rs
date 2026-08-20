@@ -11,7 +11,7 @@
 //! counts a single press twice. Which is the same design either way — a model
 //! that needs a key-up would be wrong on every other terminal.
 
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{PI, TAU};
 
 /// Top sublight speed, in world units per second.
 pub const CRUISE_MAX: f32 = 42.0;
@@ -67,8 +67,6 @@ const BANK_LAG: f32 = 5.0;
 
 const SHAKE_DECAY: f32 = 3.4;
 const FLASH_DECAY: f32 = 5.5;
-/// How far the pitch axis can be pushed before it stops, in radians.
-const PITCH_LIMIT: f32 = FRAC_PI_2 * 0.85;
 
 /// The attitude a ship launches at: starboard along `+x`, down along `+y`, the
 /// nose along `+z`. Every entry is an exact zero or an exact one, so a flight
@@ -90,7 +88,17 @@ pub struct Ship {
     pub yaw_rate: f32,
     pub pitch_rate: f32,
     pub roll_rate: f32,
-    /// Accumulated attitude, for the instrument panel.
+    /// The compass, for the instrument panel: a bearing about the ship's own
+    /// vertical and the nose's angle to the horizontal, both in radians and
+    /// both read straight off [`Self::axes`] each step.
+    ///
+    /// Read off rather than accumulated beside it, which is a correction. They
+    /// were integrals of the yaw and pitch rates, and `pitch` was clamped on
+    /// top of that — so it discarded input the attitude went on taking, and a
+    /// few seconds of stick left the panel permanently disagreeing with the
+    /// ship. Nothing projects or poses from either, so there is nothing here
+    /// for the exactness of `LEVEL_AXES` to lose: at level both are an exact
+    /// zero.
     pub heading: f32,
     pub pitch: f32,
     /// Roll the pilot has flown the ship to, in radians, folded into
@@ -119,9 +127,19 @@ pub struct Ship {
     /// it always was.
     ///
     /// Note what this is *not*: [`Self::heading`], [`Self::pitch`] and
-    /// [`Self::roll`] stay where they are and go on being what they were, which
-    /// is instrument readings. A compass is not an attitude, and deriving one
-    /// from the other is the bug the sky already shipped twice.
+    /// [`Self::roll`] are instrument readings, and an attitude is not a
+    /// compass. The direction of that is the whole of it, and it is worth
+    /// spelling out because the two directions are not the same risk. Posing or
+    /// projecting *from* a compass is the bug this tree has shipped twice —
+    /// once putting a yaw-coupled angle into the projection, once posing the
+    /// hull from `pitch` — because a reading is one number where an attitude is
+    /// three axes, and the missing two get invented. Reading a compass *off*
+    /// the attitude is the safe direction and is what happens now: nothing in
+    /// the frame depends on the answer, so the worst it can be is wrong on the
+    /// panel, which is exactly where it was wrong when it was integrated.
+    /// [`Self::roll`] is the one that still cannot be read off, since a roll
+    /// turns the ship about the axis it is flying along and leaves no trace in
+    /// the nose.
     pub axes: [[f32; 3]; 3],
     /// Where the ship is, in light years, in that same inertial frame.
     ///
@@ -246,11 +264,12 @@ impl Ship {
         self.pitch_rate *= damp;
         self.roll_rate *= damp;
 
-        self.heading = (self.heading + self.yaw_rate * dt).rem_euclid(TAU);
-        self.pitch = (self.pitch + self.pitch_rate * dt).clamp(-PITCH_LIMIT, PITCH_LIMIT);
-        // Pitch stops short of straight up because there is no way back over
-        // the top; roll has no such limit, because going all the way round is
-        // the point of it.
+        // Roll is flown rather than read off: it turns the ship about the very
+        // axis it is travelling along, so it moves the profile without moving
+        // the nose and there is nothing in the attitude to recover it from.
+        // `wrap_signed` rather than a clamp, because going all the way round is
+        // the point of it — and it is what `models::attitude` poses the hull
+        // by, so unlike the two below it is not only an instrument.
         self.roll = wrap_signed(self.roll + self.roll_rate * dt);
 
         // Bank chases the yaw rate rather than tracking it exactly, so rolling
@@ -262,9 +281,52 @@ impl Ship {
         self.flash *= (-FLASH_DECAY * dt).exp();
 
         self.steer(dt);
+        // Read off the attitude that was just flown rather than integrated
+        // beside it, which is the whole of the fix for a compass that lost
+        // calibration and never got it back.
+        //
+        // `pitch` used to be `(pitch + pitch_rate * dt).clamp(±PITCH_LIMIT)`
+        // under a comment saying the pitch axis stops short of straight up
+        // because there is no way back over the top. The axis does not stop:
+        // `steer` rotates the basis by the same rate with no limit anywhere,
+        // and `the_attitude_stays_orthonormal_and_right_handed` flies two
+        // hundred thousand steps of exactly that. Only the number stopped —
+        // and because a clamp discards the *input* rather than the rate, what
+        // it threw away never came back. Five seconds of `W` and five of `S`
+        // left the ship level, at a flown nose of -0.7 degrees, with the panel
+        // reading +76.5 and staying there for the rest of the flight.
+        //
+        // `heading` was the same shape without the clamp to make it obvious: an
+        // integral of the yaw rate, which is the ship's own rate about its own
+        // vertical, and rotations do not commute — so a yaw flown while rolled
+        // moved the compass by the amount it would have moved level.
+        //
+        // Both are exact now, and self-correcting rather than merely correct:
+        // there is nothing left to accumulate, so no manoeuvre can put them out
+        // of step with the ship. This is the same reasoning `models.rs` records
+        // having applied to the hull's own pose, which used to be posed from
+        // `ship.pitch` and was taken off it for the same reason. The panel was
+        // the reader nobody went back for.
+        //
+        // The sign conventions are the ones the integrals had: `+y` is down, so
+        // a nose lifted above the horizontal has a negative `y` and reads
+        // negative, and a bearing of `atan2(x, z)` is zero along `+z` and grows
+        // to starboard exactly as `yaw_rate` does. At `LEVEL_AXES` both are an
+        // exact zero, which is why no flight that holds its rates at zero moves
+        // by a bit.
+        let nose = self.axes[2];
+        self.heading = nose[0].atan2(nose[2]).rem_euclid(TAU);
+        self.pitch = nose[1].clamp(-1.0, 1.0).asin();
         self.coast(dt);
 
-        self.distance_ly += (self.velocity_c() * dt * TIME_COMPRESSION / SECONDS_PER_YEAR) as f64;
+        // `velocity_ly_per_s` rather than the two constants spelled out again,
+        // which is the whole of what [`LY_PER_C_SECOND`] was introduced for:
+        // the distance the panel reports and the distance the sky is moved by
+        // have to be one scale, and two spellings of one scale is how two
+        // numbers come apart. `coast` above already goes through it. This line
+        // did not, and re-derived the same product in a different order — the
+        // same answer, rounded differently, once per step forever.
+        self.distance_ly += (self.velocity_ly_per_s() * dt) as f64;
     }
 
     /// Turn the hull by this step's rates.
@@ -551,7 +613,67 @@ mod tests {
         }
         assert!(ship.yaw_rate.abs() < 0.01 && ship.pitch_rate.abs() < 0.01);
         assert!(ship.roll_rate.abs() < 0.01);
-        assert!(ship.pitch >= -PITCH_LIMIT);
+        // The compass is an angle to the horizontal, so it lives inside a
+        // quarter turn by construction rather than by a clamp.
+        assert!(
+            ship.pitch.abs() <= std::f32::consts::FRAC_PI_2 + 1e-6,
+            "pitch {}",
+            ship.pitch
+        );
+    }
+
+    #[test]
+    fn the_compass_agrees_with_the_ship_it_is_bolted_to() {
+        // Regression, and the report it came from is worth keeping: `pitch` was
+        // an integral of the pitch rate with a clamp on top, so it discarded
+        // input the attitude went on taking and never got it back. Five seconds
+        // of `W` and five of `S` left the ship level and the panel reading
+        // +76.5 degrees, permanently.
+        //
+        // The exact manoeuvre from the report, first. What made it a bug was
+        // not where the ship ended up — five seconds each way leaves it a dozen
+        // degrees off level, because the stick is an impulse against a damper
+        // and that is the flight model working — but that the panel said
+        // something else entirely, and went on saying it.
+        let mut ship = Ship::new();
+        let dt = 1.0 / 120.0;
+        let hold = |ship: &mut Ship, dir: f32, seconds: f32| {
+            for _ in 0..(seconds / dt) as usize {
+                ship.nudge_pitch(dir);
+                ship.update(dt);
+            }
+        };
+
+        hold(&mut ship, -1.0, 5.0);
+        hold(&mut ship, 1.0, 5.0);
+        for _ in 0..600 {
+            ship.update(dt);
+        }
+        let flown = ship.axes[2][1].asin();
+        assert!(
+            (ship.pitch - flown).abs() < 1e-5,
+            "the ship is at {:.1} degrees and the compass says {:.1}",
+            flown.to_degrees(),
+            ship.pitch.to_degrees()
+        );
+
+        // And it is the attitude's own answer at every step of a shape that
+        // mixes all three axes, which is where an integral of the rates comes
+        // apart even without a clamp: rotations do not commute, so a yaw flown
+        // while rolled is not a yaw.
+        let mut ship = Ship::new();
+        for step in 0..1200 {
+            ship.nudge_roll(1.0);
+            ship.nudge_yaw(1.0);
+            ship.nudge_pitch(if step % 200 < 100 { -1.0 } else { 1.0 });
+            ship.update(dt);
+            let nose = ship.axes[2];
+            assert!(
+                (ship.pitch - nose[1].asin()).abs() < 1e-5
+                    && (ship.heading - nose[0].atan2(nose[2]).rem_euclid(TAU)).abs() < 1e-5,
+                "the compass drifted off the ship at step {step}"
+            );
+        }
     }
 
     #[test]
