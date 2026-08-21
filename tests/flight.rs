@@ -78,7 +78,7 @@ fn a_flight_can_be_left_to_fly_itself() {
 
     let mut out = Vec::new();
     for frame in 0..600 {
-        flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+        flight.fly_itself(&args, frame as f64 / 60.0);
         flight.advance(1.0 / 60.0);
         flight.draw(60.0, false, true);
         flight
@@ -117,6 +117,26 @@ fn a_flight_can_be_left_to_fly_itself() {
     assert!(
         glyphs.contains("WARP DRIVE ENGAGED"),
         "the panel never showed the drive"
+    );
+
+    // And the panel is a decision the caller makes, which is the other half of
+    // what this file is for. `--demo` and `--screensaver` draw none — the three
+    // loops all ask `Args::unattended` and hand the answer down — but that is
+    // the loops' answer and not something baked into the flight, so a program
+    // driving one itself can have the instruments over an autopilot if it wants
+    // them, which is exactly what the assertion above just read.
+    let mut bare = Vec::new();
+    flight.draw(60.0, false, false);
+    flight
+        .present_plain(&mut bare)
+        .expect("writing to a Vec cannot fail");
+    let bare = String::from_utf8_lossy(&bare)
+        .split('\u{1b}')
+        .map(|chunk| chunk.split_once('m').map_or(chunk, |(_, rest)| rest))
+        .collect::<String>();
+    assert!(
+        !bare.contains("VELOCITY") && !bare.contains("THR"),
+        "a frame asked for without a panel drew one anyway"
     );
 }
 

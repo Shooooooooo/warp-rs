@@ -61,9 +61,10 @@ struct Case<'a> {
     /// Whether the stick is held over. It is the *worst* case rather than a
     /// typical one, and deliberately: an exposure is only drawn as a curve when
     /// the ship turned while the shutter was open, so what wants measuring is
-    /// the most curve the renderer can be asked for. The autopilot's weave
-    /// cannot stand in for it — it sweeps about a twentieth of what a hand on
-    /// the stick does, and asks for two poses where this asks for twenty-two.
+    /// the most curve the renderer can be asked for. Nothing else in the tree
+    /// asks for one: the autopilot flies straight, so a flight left alone draws
+    /// two poses where this draws twenty-two, and every other row here measures
+    /// the renderer with the curve switched off.
     turn: bool,
     view: &'a str,
     color: &'a str,

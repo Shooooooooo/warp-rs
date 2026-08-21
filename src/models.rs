@@ -255,18 +255,24 @@ const TRAIL_DROPOUT: f32 = 0.35;
 /// neither answer is the right one — so a hard swap there is a step, and it was
 /// measured before this ramp went in: crossing the beam moved a subpixel by 137
 /// of 255 and shifted thirty of them at once, on a ship the pilot had not
-/// touched. Sixty times a second, a weave of under a degree either side of
-/// square is enough to sit on that edge and blink.
+/// touched — the autopilot wove in those days, and under a degree either side
+/// of square is enough to sit on that edge and blink.
+///
+/// Who crosses it has since changed and the ramp has not. A ship nobody is
+/// flying holds its lean at an exact zero now, so the crossings left are the
+/// two a person asks for: a hand on the stick, which leans the hull over
+/// square, and the camera, which walks all the way round the hull and takes the
+/// beam with it — `drift.txt` traverses exactly that at frame 72 of its
+/// twelve-second flight.
 ///
 /// Both ends are held. Narrower and the step comes back; wider and the drive
 /// goes on shining through a hull that is plainly in front of it. Six degrees is
-/// one press of a camera key ([`crate::view::ORBIT_STEP`]) and about nine times
-/// the lean the autopilot's weave holds, which is the pair of scales that matter
-/// — a control that swings the shot cannot outrun the swap, and a ship nobody is
-/// flying cannot cross it. Both are pinned rather than left as prose:
-/// `the_swap_takes_a_whole_press_of_the_key_that_crosses_it` and
-/// `a_ship_nobody_is_flying_never_crosses_the_swap`, which flies the real
-/// autopilot and finds it a ninth of the way over.
+/// one press of a camera key ([`crate::view::ORBIT_STEP`]), which is the scale
+/// that matters: a control that swings the shot cannot outrun the swap. That is
+/// pinned rather than left as prose, by
+/// `the_swap_takes_a_whole_press_of_the_key_that_crosses_it`, and
+/// `a_ship_nobody_is_flying_holds_the_drive_on_one_side_of_the_swap` is the
+/// other half — the autopilot flown for real, and found not to move it at all.
 const OCCLUSION_BAND: f32 = 0.1045;
 
 /// Lean the hull takes from a turn, in radians at full deflection. The
@@ -2502,43 +2508,49 @@ mod tests {
     }
 
     #[test]
-    fn a_ship_nobody_is_flying_never_crosses_the_swap() {
-        // The second scale, and the load-bearing one. The autopilot weaves, so
-        // the hull's own lean carries the track across square every few seconds
-        // whether or not anything has touched the camera — and a swap that fired
-        // on that would blink the drive on and off. Before the ramp went in it
-        // did: 137 of 255 on a subpixel, thirty of them at once.
+    fn a_ship_nobody_is_flying_holds_the_drive_on_one_side_of_the_swap() {
+        // The second scale, and the load-bearing one. It used to be a bound:
+        // the autopilot wove, so the hull's own lean carried the track across
+        // square every few seconds whether or not anything had touched the
+        // camera — and a swap that fired on that would blink the drive on and
+        // off. Before the ramp went in it did: 137 of 255 on a subpixel, thirty
+        // of them at once. Full weave width sat about a ninth of the way over
+        // against the quarter this asked for.
+        //
+        // The weave is gone, so the honest replacement is the exactness the
+        // bound went vacuous into. A ship nobody is flying does not lean at
+        // all, so `drive_behind_hull` abeam is not merely small but the same
+        // number every frame — and asking for equality rather than for a bound
+        // is what keeps this a test: a threshold of a quarter would go on
+        // passing a lean an order of magnitude past anything the weave ever
+        // held.
         //
         // Asked through the real function at the shot the flight opens on,
-        // rather than of the yaw rate, because what has to stay small is what
-        // the renderer reads. Abeam and nowhere else, and that is still the
-        // question even though the autopilot now walks the camera round: off
-        // the beam the swap fires because the camera has moved, which is what
-        // it is for. Here it can only fire because the ship leaned.
+        // rather than of the yaw rate, because what has to stay put is what the
+        // renderer reads. Abeam and nowhere else: off the beam the swap fires
+        // because the camera has moved, which is what it is for. Here it can
+        // only fire because the ship leaned.
         //
-        // Asked at three frame rates, which is new and is the point. This used
-        // to be a fact about 1/60: the weave was an impulse a frame against a
-        // decay a second, so its amplitude went with the frame rate and the
-        // lean at 500 fps — a stuck key, or a pasted burst, both of which the
-        // interactive loop runs the frame cap off for — was eight times this
-        // one and would have failed outright.
+        // Three frame rates, kept from the bound this replaces. It used to be a
+        // fact about 1/60 — the weave was an impulse a frame against a decay a
+        // second, so its amplitude went with the frame rate and the lean at 500
+        // fps was eight times the one at sixty.
         use crate::autopilot::Autopilot;
         for fps in [10.0f32, 60.0, 500.0] {
             let dt = 1.0 / fps;
             let mut ship = Ship::new();
             let mut autopilot = Autopilot::default();
-            let mut worst = 0.0f32;
+            let square = drive_behind_hull(attitude(&ship), &abeam());
             for frame in 0..(2.0 * Autopilot::CYCLE * fps as f64) as usize {
-                autopilot.update(&mut ship, frame as f64 * dt as f64, dt);
+                autopilot.update(&mut ship, frame as f64 * dt as f64);
                 ship.update(dt);
-                worst = worst.max(drive_behind_hull(attitude(&ship), &abeam()));
+                assert_eq!(
+                    drive_behind_hull(attitude(&ship), &abeam()),
+                    square,
+                    "at {fps} frames a second the autopilot moved the drive off \
+                     the side it was drawn on, at frame {frame}"
+                );
             }
-            assert!(
-                worst < 0.25,
-                "at {fps} frames a second the autopilot's weave carries the \
-                 drive {worst} of the way across the swap, which is close \
-                 enough to the far side to read as a blink"
-            );
         }
     }
 

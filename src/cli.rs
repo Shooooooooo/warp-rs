@@ -96,8 +96,9 @@ const MAX_SCALE: usize = 16;
 // costs terminal columns the narrow tiers do not have — appending eight
 // characters to the widest cockpit tier takes it from 89 to 97, so terminals
 // between about 91 and 98 columns would shed it and lose the *throttle* to gain
-// the sky — and the ten reference flights are rendered at 120 columns with
-// hints on, so every one of their hashes would move to say it. Help text costs
+// the sky — and five of the ten reference flights are rendered at 120 columns
+// with a panel on them, so their hashes would move to say it. It was all ten
+// until the flights that fly themselves stopped drawing one. Help text costs
 // no columns at all and moves nothing, and `--help` is where somebody who
 // cannot see a control reflexively looks.
 const CONTROLS: &str = "\
@@ -330,6 +331,29 @@ pub struct Args {
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=MAX_SCALE as u64)
     )]
     pub scale: usize,
+}
+
+// A `///` here rather than the `//` this file otherwise insists on, and the
+// exception is real rather than an oversight: clap's derive publishes doc
+// comments on the struct and on its *fields*, which is why a note to the next
+// editor cannot be one there. It does not read an inherent `impl`, so this is
+// documentation in the ordinary sense and `cargo doc` is the only thing that
+// prints it.
+impl Args {
+    /// Whether there is nobody at the controls: `--demo` and `--screensaver`.
+    ///
+    /// One predicate rather than the four spellings that grew up around this
+    /// question, because the ones that have to agree about a flight had already
+    /// come apart. `--snapshot` conflicts only with `--headless`, so
+    /// `--snapshot shot.png --screensaver` parses — and `run_snapshot` asked
+    /// `demo.is_some()`, so it warmed up a flight nobody was flying without the
+    /// autopilot flying it.
+    ///
+    /// It gates two things: whether the autopilot works the throttle and the
+    /// camera, and whether the frame gets an instrument panel over it.
+    pub fn unattended(&self) -> bool {
+        self.demo.is_some() || self.screensaver
+    }
 }
 
 /// How much colour to spell a cell in, as the command line names it.
@@ -569,6 +593,32 @@ mod tests {
             );
         }
         assert_eq!(args_for(&["--demo", "0.5"]).demo, Some(0.5));
+    }
+
+    #[test]
+    fn the_modes_that_fly_themselves_are_the_ones_that_say_so() {
+        // One predicate answers this in four places now — two autopilot gates
+        // and two panel gates — so it is worth pinning that it means what its
+        // name says. The spelling it replaced was `demo.is_some()`, which is
+        // right in the headless loop, where `--screensaver` cannot be set, and
+        // wrong in the snapshot one, where it can.
+        for flying_itself in [
+            vec!["--demo"],
+            vec!["--demo", "12"],
+            vec!["--screensaver"],
+            vec!["--headless", "--demo"],
+        ] {
+            assert!(
+                args_for(&flying_itself).unattended(),
+                "{flying_itself:?} flies itself and does not say so"
+            );
+        }
+        for flown in [vec![], vec!["--engage"], vec!["--throttle", "1.0"]] {
+            assert!(
+                !args_for(&flown).unattended(),
+                "{flown:?} has a pilot and claims not to"
+            );
+        }
     }
 
     #[test]

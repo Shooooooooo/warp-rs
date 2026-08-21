@@ -87,7 +87,7 @@
 #                 palette-index path. `ascii.txt` is the third, and the only one
 #                 that says nothing outside printable ASCII was emitted.
 #
-#   Speed.        The four `--demo` runs and the four `--engage` ones split the
+#   Speed.        The five `--demo` runs and the five `--engage` ones split the
 #                 sky's whole dynamic range, and that split is sharper than it
 #                 used to be: at impulse the stars now hold *still* — a full
 #                 impulse frame differs from a parked one only by the twinkle —
@@ -96,8 +96,8 @@
 #                 light a drive and leaves the rest alone — seven of the ten
 #                 now, and the count is measured rather than asserted: this
 #                 block said five until something finally tested it. Pacing the
-#                 exposure to the distance actually flown moved all four
-#                 `--engage` runs and both `--fps 10` ones, whose drive lights
+#                 exposure to the distance actually flown moved every
+#                 `--engage` run and both `--fps 10` ones, whose drive lights
 #                 at frame 60 of a twelve-second flight, while `truecolor.txt`,
 #                 `ascii.txt` and `ansi256.txt` came out byte for byte
 #                 identical: two seconds of `--demo` at 60 fps never leaves
@@ -132,34 +132,40 @@
 #                 for the cut to reach any star, which is the whole of why
 #                 `ahead.txt` runs at `--fps 10`.
 #
-#   Stick.        The four `--demo` flights steer and the four `--engage` ones
-#                 hold every rate at an exact zero from the first frame to the
-#                 last. That distinction reaches further than it did twice over.
-#                 The ship carries an attitude, and the sky is projected through
-#                 it, so a turn moves the sky from *both* cameras rather than
-#                 only from the seat — `drift.txt` is the flight that sees that
-#                 from outside. And a turn now reaches the exposure's own
-#                 geometry: a streak is the track a star swept while the shutter
-#                 was open, so one the ship flew straight through is a segment
-#                 and one it turned through is a curve.
+#   Stick.        There is no hand on the stick anywhere in this file, and
+#                 there is now no way to put one here: nothing on the command
+#                 line steers and a headless flight has no keyboard, so the
+#                 autopilot was the only thing that ever did, and it flies
+#                 straight. All ten hold every steering rate at an exact zero
+#                 and `LEVEL_AXES` to the bit from the first frame to the last.
 #
-#                 That second half is what makes the `--engage` four a control
-#                 rather than merely a contrast. They hold `LEVEL_AXES` to the
-#                 bit from the first frame to the last, so their exposure never
-#                 reaches back past a turn and the sky takes the arithmetic it
-#                 always took — which is why drawing the exposure along the
-#                 flown track moved `steer.txt` and `drift.txt` and left the
-#                 other eight byte for byte. Anything else moving with a change
-#                 to the track has leaked; either of those two failing to move
-#                 means the weave is not steering at warp and the reference is
-#                 watching nothing.
+#                 So this is a *control* rather than a split — a change to how
+#                 the sky is steered moves nothing here, and anything that does
+#                 move for one has leaked. That is worth more than it sounds:
+#                 the shape it replaces was four flights against four, and what
+#                 it bought was the ability to say which side a change landed
+#                 on. What the whole set buys now is the stronger half of that,
+#                 which is that a deletion from the steering path being the
+#                 identity it looks like is visible in ten byte-identical
+#                 hashes rather than in six. `tests/golden.rs` says the same
+#                 thing directly, by running each case's own autopilot and
+#                 asking for the three rates, so an autopilot that picked the
+#                 stick back up fails with a sentence rather than with five
+#                 moved hashes and no account of them.
 #
-#                 What the pair do *not* cover is the shape of a curve. The
-#                 weave turns about a twentieth of what a hand on the stick
-#                 does, which asks for a single leg — the right two endpoints
-#                 with a straight line between them. The curve itself is pinned
-#                 by property tests in `universe.rs`, which is the level it
-#                 belongs at: it is a variant, not a region.
+#                 What that costs has to be stated rather than discovered. A
+#                 streak is the track a star swept while the shutter was open,
+#                 so one the ship flew straight through is a segment and one it
+#                 turned through is a curve — and no flight here draws the
+#                 second kind. `Universe::stations`, the multi-leg walk through
+#                 `Canvas::draw_path`, `Track::turn_over` and the near-plane cut
+#                 on a tail a turn has swung are pinned by property tests in
+#                 `universe.rs`, `track.rs` and `canvas.rs`, and by
+#                 `a_turn_at_warp_can_be_flown_from_the_library_alone` in
+#                 `tests/flight.rs` — and by nothing at all in this file. A
+#                 change that repainted every turn ever flown would move not one
+#                 hash here. Closing that honestly means a flight that steers,
+#                 which means a way to steer one from a command line.
 #
 #   Shift.        Seven of the ten moved when the Doppler shift stopped being
 #                 only a colour and became a brightness as well. The three that
@@ -205,23 +211,30 @@
 #                 glyphs of ramp do not resolve a part in a million, and the
 #                 other two spellings of the same flight both moved.
 #
-#   Panel.        All ten move for a change to the instrument panel, and that is
-#                 the one shape here that separates *nothing*. The panel is
-#                 stamped into the character grid after `compose`, so it is
-#                 inside these bytes; but no case passes `--magnitude` and every
-#                 case draws the same panel, so an edit up there deletes or
-#                 shifts the same characters in all ten files and tells the ten
-#                 apart not at all. Read a sweep like that as a change to the
-#                 glass rather than to the sky, and go looking in `hud.rs`.
+#   Panel.        Five of the ten move for a change to the instrument panel,
+#                 and which five is a fact about who is flying rather than
+#                 about what is drawn: the `--engage` flights put glass in front
+#                 of the frame and the `--demo` ones draw none, because a flight
+#                 nobody is flying has no readings anybody asked for and no keys
+#                 worth naming. It used to be all ten, and the point of the
+#                 paragraph then was that it therefore separated *nothing* — an
+#                 edit up there deleted or shifted the same characters in every
+#                 file and told the ten apart not at all. It tells the two kinds
+#                 of flight apart now, which is a shape rather than a wash.
 #
-#                 Two pairs still say something while it happens.
-#                 `truecolor.txt` and `ansi256.txt` are one flight in two
-#                 spellings, so a panel edit has to move both or it landed in
-#                 the writer. And `ascii.txt` is the only frame that can say the
-#                 panel's ASCII face still emits nothing outside printable
-#                 ASCII afterwards, which the `headless` job greps — from the
-#                 file the previous step wrote, so it never runs at all if
-#                 `sha256sum -c` has already failed.
+#                 Two guards went with the other five and are worth knowing
+#                 about before they are needed. `truecolor.txt` and
+#                 `ansi256.txt` are still one flight in two spellings, but both
+#                 are `--demo`, so the pair no longer says anything at all about
+#                 a panel edit and a panel colour spelled wrong in the palette
+#                 mode would pass here unremarked —
+#                 `the_escapes_written_by_hand_are_the_ones_crossterm_writes` in
+#                 `term.rs` is what is left of it. And `ascii.txt` carries no
+#                 panel, so the `headless` job's grep sees the starfield's
+#                 brightness ramp and nothing else; the panel's ASCII face is
+#                 greped from a second `--engage --color ascii` frame piped
+#                 straight into that step, and pinned properly by
+#                 `the_ascii_panel_is_actually_ascii` in `hud.rs`.
 #
 #   Autopilot.    `drift.txt` shares every flag with `steer.txt` but the view,
 #                 which makes the pair one flight watched from inside and from
@@ -238,6 +251,26 @@
 #                 crossing has to land after the drive lights at frame 60. It
 #                 was -60,0,0 at a turn every 43 seconds and -20,0,0 at every
 #                 137.
+#
+#   Hands off.    Five of the ten moved when the autopilot stopped touching the
+#                 stick and a flight nobody is flying stopped being given an
+#                 instrument panel — the five `--demo` runs, with the five
+#                 `--engage` ones byte for byte.
+#
+#                 Both halves of that change move the *same* five, so neither is
+#                 a control for the other and this file could not have told them
+#                 apart on its own. That is the trap the "Shift." note above
+#                 describes, so they were shot on builds of their own, and the
+#                 reading that separates them is which *rows* moved rather than
+#                 which files. Taking the weave out moved all 36 rows of every
+#                 frame it touched, which is the whole sky: the ship carries the
+#                 attitude the sky is projected through, so a weave nobody asked
+#                 for was swinging the entire field. Gating the panel moved
+#                 nothing but the panel's own rows — 1 to 6, 15 and 21 in the
+#                 cockpit flights, where the last two are the reticle, 1 to 7 in
+#                 `drift.txt`, which has a `SHIP` row and no reticle, and 33, 34
+#                 and 35 in all five. Not one sky row, which is what says the
+#                 gate stayed in `hud.rs` and did not leak into the renderer.
 #
 #   Edge.         Four of the ten moved when `draw_path` stopped collapsing a
 #                 sub-subpixel exposure to its head *before* anything had
@@ -262,15 +295,17 @@
 #   Compass.      Two of the ten moved when `heading` and `pitch` stopped being
 #                 integrals of the steering rates and started being read off the
 #                 attitude the ship is actually holding — `steer.txt` and
-#                 `drift.txt`, and nothing else. That pair is the sharpest split
-#                 this file has, because it separates on what a flight *did*
-#                 rather than on where it was watched from: they are the two
-#                 twelve-second `--demo` runs, the only two of the ten with a
-#                 hand on the stick at any point. The five `--engage` flights
-#                 hold every rate at an exact zero, so the attitude is
-#                 `LEVEL_AXES` and both readings are an exact zero either way;
-#                 the three 60 fps `--demo` runs are two seconds long and stop
-#                 four seconds short of the weave, so the same is true of them.
+#                 `drift.txt`, and nothing else. That pair was the sharpest
+#                 split this file had, because it separated on what a flight
+#                 *did* rather than on where it was watched from: they were the
+#                 two twelve-second `--demo` runs, and the ones with the most
+#                 stick in them. It separates nothing now — no flight steers, so
+#                 the attitude is `LEVEL_AXES` in all ten and both readings are
+#                 an exact zero everywhere. Kept because the *method* is the
+#                 thing worth carrying forward, and because the sentence that
+#                 stood here about the 60 fps runs stopping "four seconds short
+#                 of the weave" was already wrong: the weave had been widened to
+#                 the whole cycle, and taking it out moved all three of them.
 #
 #                 The panel is stamped into the character grid after `compose`,
 #                 so it is inside the pinned bytes — and every differing line in
@@ -293,13 +328,13 @@
 #
 # Regenerating: build a release binary and run the ten commands in `CLAUDE.md`,
 # then put this block back. Say in the commit message which moved and why.
-2bfb67055e0351c3503846b45c2dd9ba188a801162a162283a27064c7122bc6d  truecolor.txt
-0bd8a7ee8d8cdf36b8d21ff8699197fed5a63a41155769f09f5be57ad5c09d7d  ascii.txt
-5fbbaf3ce36e0a072c88e8cd1f71d3b4b32b7fa7049bfc44112a33c277f42be6  ansi256.txt
+66b97893772c0be8e3560fad00c57a8e2768f0e1488f9140b837302439efbfeb  truecolor.txt
+771117b9c5c28e8ef8201d18e9b366a5e01bac840767f9476d53a79f171ec5b3  ascii.txt
+22931f7f727b1b7f0bbd8a3f33a8580da460a641b5189012d8f54204da73b1c2  ansi256.txt
 d9a8d1084abdde4af89f39d563c4374a04785569bd3f5e1c5341998c939c43fe  warp.txt
 228b2b59fa5a424ad862a5af8efffc43cea004dc833408c30d5474790d73e27e  side.txt
 c03d0db985044dbf2bb4cdbf2dbfdb064c278a54e1d45823e783b2b2efbe21af  orbit.txt
 4a0c3d9454f37400bfe9cf4d270390e2b6ef0dbce8ed199ec7338066069330da  astern.txt
-f5a0ded10d922fbbd51886777df069eda8e727f5bb555ae14b68913cf76beac7  steer.txt
-579a3de06f923f3825ec0761228b4fa10f7a7dedb26aaae1e08b0f7dbbea1c7b  drift.txt
+30341c12b36d6834ca2004cf644ec6dea917520fc4b13ca41ee53437787553fe  steer.txt
+b94194c006ebfb80c9c285ffa2a7cce522eea32971691d1031dec466540e374b  drift.txt
 9f2ea58ac67fc4ad2846a13eb244a7e8141ab77e71cba48169cf8c4078409ee9  ahead.txt

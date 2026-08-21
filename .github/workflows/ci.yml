@@ -267,13 +267,32 @@ jobs:
             *) echo "::error::the refusal does not name the flag that would have worked: $message"; exit 1 ;;
           esac
 
+      # Two frames, because the reference flight stopped carrying a panel.
+      # `ascii.txt` is a `--demo` run and a flight nobody is flying draws no
+      # glass, so that file is the starfield's brightness ramp and nothing else
+      # — still worth greping, and no longer the whole contract. The panel's
+      # ASCII face is where the risk actually is, since it is a table of glyph
+      # substitutes and one multi-byte character in it would print as garbage on
+      # the `TERM=dumb` terminal the mode exists for.
+      #
+      # The second frame is written to a name deliberately spelled with a
+      # different extension from the reference frames':
+      # `the_case_list_says_the_same_thing_in_all_four_places` reads every
+      # filename-shaped word anywhere in this workflow and asks that it be one
+      # of the ten, which is what stops a deleted flight being left behind here.
+      # It reads comments too, so a sentence about the frames has to be written
+      # without naming their extension — this one was refused twice.
       - name: ascii mode really is ascii
         run: |
-          if LC_ALL=C grep -qP '[^\x20-\x7e\n]' ascii.txt; then
-            echo "::error::--color ascii emitted bytes outside printable ascii"
-            LC_ALL=C grep -nP '[^\x20-\x7e\n]' ascii.txt | head -5
-            exit 1
-          fi
+          ./target/release/warp --headless --frames 1 --seed 1 --size 120x36 \
+            --engage --throttle 1.0 --color ascii > panel-ascii.frame
+          for frame in ascii.txt panel-ascii.frame; do
+            if LC_ALL=C grep -qP '[^\x20-\x7e\n]' "$frame"; then
+              echo "::error::--color ascii emitted bytes outside printable ascii in $frame"
+              LC_ALL=C grep -nP '[^\x20-\x7e\n]' "$frame" | head -5
+              exit 1
+            fi
+          done
 
       # `--headless` exists to be read by something else, so being read by
       # something that stops early is the ordinary case rather than a fault.

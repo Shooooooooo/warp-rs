@@ -152,29 +152,27 @@ const COMMON: [&str; 7] = [
 /// that point on the canvas clear of the ship — the same two conditions
 /// `models::forward_quarter()` picks its angles for, and for the same reason.
 ///
-/// `steer.txt` is the newest, and it closes the widest hole any of them has
-/// left: not one of the seven before it ever put a hand on the stick. The four
-/// `--engage` flights carry no autopilot at all, and the three `--demo` ones
-/// stop four seconds short of the weave, since the opening six seconds of that
-/// cycle are the throttle easing up and 120 frames at 60 fps is two of them. So
-/// the whole cockpit steering path — the yaw, the pitch, the lean they come
-/// with, and the branch that swings a star out of the frame and back in the
-/// other side — was outside the reference, and a change to any of it could
-/// repaint every turn ever flown with all seven hashes standing still. It is
-/// `--demo` again at `--fps 10`, which in headless *is* the timestep, so the
-/// same 120 frames are twelve seconds of flight rather than two and the last
-/// six of them have the stick moving.
+/// `steer.txt` went in to close the widest hole any of them had left — not one
+/// of the seven before it ever put a hand on the stick — and that hole is open
+/// again, because the autopilot flies straight now and nothing else here can
+/// steer. The name has outlived what it named; what the flight still buys is
+/// *length*. It is `--demo` at `--fps 10`, which in headless *is* the timestep,
+/// so the same 120 frames are twelve seconds of flight rather than two — long
+/// enough for the drive to light at frame 60 and spend six seconds spooling up,
+/// where the three 60 fps `--demo` runs never leave sublight at all. It is the
+/// `--demo` flight that reaches warp, which is the only reason a run-up from a
+/// cold drive is drawn anywhere in this file.
 ///
-/// `drift.txt` is `steer.txt`'s hole seen from outside.
-/// The autopilot flies the camera as well as the ship now — a screensaver on
-/// the outside view used to be very nearly a still life — and not one of the
-/// eight flights before it could have said so: the four `--engage` ones carry
-/// no autopilot, and the four `--demo` ones watch from the cockpit, which reads
-/// neither the orbit nor the zoom. So the camera could have been swung anywhere
+/// `drift.txt` is the same twelve seconds watched from outside, and it is the
+/// flight that says the autopilot flies the *camera* — which is now the only
+/// thing the autopilot flies that an eye can see move, so it carries more than
+/// it did. Not one of the eight flights before it could have said so: the
+/// `--engage` ones carry no autopilot, and the cockpit `--demo` ones read
+/// neither the orbit nor the zoom, so the camera could have been swung anywhere
 /// at all with every hash standing. It shares every flag with `steer.txt` but
-/// the view, which makes the pair the same twelve seconds of flight watched
-/// from inside and from outside: a change that moves both has landed in the
-/// autopilot, and one that moves only one has landed in a view.
+/// the view, which makes the pair one flight seen from inside and from outside:
+/// a change that moves both has landed in the autopilot, and one that moves
+/// only one has landed in a view.
 ///
 /// It is parked at `--orbit -60,0,0` rather than left on the beam, for two
 /// reasons that are both about what a moving camera can ask and a parked one
@@ -187,7 +185,9 @@ const COMMON: [&str; 7] = [
 /// traversed as a ramp rather than sat on one side of. `orbit.txt` sits at a
 /// fixed 55 degrees and `astern.txt` at a fixed -75; neither ever crosses.
 /// Elevation and roll are parked at exactly zero, so anything off level in
-/// these frames is the autopilot's own doing.
+/// these frames is the autopilot's own doing — and sharper than it used to be,
+/// since the ship holds its attitude to the bit, so anything off level is the
+/// *camera's* doing and nothing else's.
 ///
 /// That angle is *derived from* `autopilot::CAMERA_TURN` rather than picked,
 /// and has to be re-derived whenever that moves: it is how far the camera walks
@@ -349,6 +349,13 @@ fn the_case_list_says_the_same_thing_in_all_four_places() {
     // substring search finds a flight in the paragraph about it long after the
     // line that acts on it has gone. Deleting `/drift.txt` from `.gitignore`
     // passed that way.
+    //
+    // Note which way the reverse direction cuts, because it is wider than it
+    // looks and catches prose: any filename-shaped word in either file has to
+    // be one of the ten, so a *comment* in the workflow that names the
+    // reference frames' extension in passing fails this. That is the right
+    // trade — the alternative is a scan that a deletion can hide from — but it
+    // means a note about these files has to be written without spelling one.
     let root = env!("CARGO_MANIFEST_DIR");
     for (place, path, acts_on) in [
         (
@@ -512,37 +519,49 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         .any(|(_, case)| reference_args(case).orbit.nose_in_camera()[2] > 0.0);
     assert!(astern, "no reference flight ever gets behind the ship");
 
-    // And some flight has a hand on the stick, which is the third of the same
-    // kind and the one that went unnoticed longest. The four `--engage` flights
-    // fly with nobody at the controls, and `--demo` spends its opening six
-    // seconds on the throttle alone — so for seven flights the cockpit's whole
-    // steering path went unpinned. Asked by running each case's own autopilot
-    // over its own frame count and timestep, rather than by reading the flags,
-    // because what makes a flight steer is whether it lasts long enough to
-    // reach the weave. The ship is stepped once a frame where the renderer
-    // steps it at `SIM_STEP`, which is not the same flight and does not need to
-    // be: the question is zero against not zero.
+    // And *no* flight has a hand on the stick, which is this clause inverted —
+    // it asked for the opposite until the autopilot stopped steering, and the
+    // inversion is worth more than the assertion it replaces.
     //
-    // Asked of the yaw rate alone. It was `yaw_rate != 0.0 && bank != 0.0` for
-    // one commit, which read as tighter and was not: the lean is a fact about
-    // the hull now and reaches nothing the cockpit draws, so pinning the
-    // reference's steering coverage to it would have been pinning it to
-    // something no cockpit frame can see.
-    let steered = CASES.iter().any(|(_, case)| {
+    // What it used to buy: the `--engage` flights fly with nobody at the
+    // controls, so without a `--demo` run long enough to reach the weave the
+    // cockpit's whole steering path went unpinned. What it buys now is the
+    // other side of that. Every flight here holds every steering rate at an
+    // exact zero from the first frame to the last, which makes the whole set a
+    // *control* for the steering path rather than four flights against four: a
+    // hash that moves for a change to steering has leaked. And an autopilot
+    // that quietly picked the stick back up would otherwise cost five moved
+    // hashes and no explanation of them, where this costs one sentence.
+    //
+    // Asked by running each case's own autopilot over its own frame count and
+    // timestep rather than by reading the flags, for the reason it always was:
+    // what a flight *does* is the question, and `--demo` on the command line is
+    // not that fact. Of the rates and of the attitude both, against a ship
+    // fresh out of `Ship::new` — `ship::LEVEL_AXES` is `pub(crate)` and this is
+    // an external crate, and a fresh ship is that value by construction.
+    for (name, case) in CASES {
         let args = reference_args(case);
-        if args.demo.is_none() {
-            return false;
-        }
         let mut ship = warp_rs::ship::Ship::new();
+        let level = warp_rs::ship::Ship::new().axes;
         let mut autopilot = warp_rs::autopilot::Autopilot::default();
         let dt = 1.0 / args.fps as f64;
-        (0..args.frames).any(|frame| {
-            autopilot.update(&mut ship, frame as f64 * dt, dt as f32);
+        for frame in 0..args.frames {
+            if args.demo.is_some() {
+                autopilot.update(&mut ship, frame as f64 * dt);
+            }
             ship.update(dt as f32);
-            ship.yaw_rate != 0.0
-        })
-    });
-    assert!(steered, "no reference flight ever touches the stick");
+            assert_eq!(
+                (ship.yaw_rate, ship.pitch_rate, ship.roll_rate),
+                (0.0, 0.0, 0.0),
+                "{name} steers at frame {frame}, so the ten hashes are no \
+                 longer a control for the steering path"
+            );
+        }
+        assert_eq!(
+            ship.axes, level,
+            "{name} does not finish pointed where it started"
+        );
+    }
 
     // And some flight has the autopilot on the *camera*, which is the fifth of
     // the same kind and arrived with the ability. The four `--engage` flights
@@ -635,24 +654,30 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         );
     }
 
-    // Some flight has to *bend* an exposure, which is a different question from
-    // whether some flight steers. An exposure is drawn along the track the ship
-    // actually flew, so it is a curve only where it reaches back past a turn —
-    // and a flight that steers hard at impulse, or lights the drive after it
-    // has stopped steering, does not draw one. The two `--demo --fps 10` cases
-    // qualify because their drive lights at frame 60 of a twelve-second flight
-    // and the weave never stops.
+    // And *no* flight bends an exposure, which is the other half of the clause
+    // above and is the real cost of this reference having no stick in it.
     //
-    // Asked by flying each case's own ship and autopilot rather than by reading
-    // the flags, for the same reason the clause above is: it is a fact about
-    // what a flight *did*, and `--demo` on the command line is not that fact.
+    // An exposure is drawn along the track the ship actually flew, so it is a
+    // curve only where it reaches back past a turn. This used to ask that some
+    // flight draw one, and the two `--demo --fps 10` cases qualified because
+    // their drive lights at frame 60 of a twelve-second flight with the weave
+    // still going. Nothing here turns now, and nothing here *can*: no flag on
+    // the command line steers, and a headless flight has no keyboard, so the
+    // autopilot was the only thing that ever put a stick over.
     //
-    // What it deliberately does not claim: no reference flight sweeps far
-    // enough for the drawn curve to be more than a chord between the right two
-    // points. The autopilot's weave turns about a twentieth of what a hand on
-    // the stick does, which asks for one leg. The *shape* of a curve is pinned
-    // by property tests in `universe.rs` and by nothing here, which is the
-    // right level for it — it is a variant, not a region.
+    // So the reference measures the renderer with the curve switched off, and
+    // that is a hole with a floor under it rather than an oversight. What it
+    // stops watching: `Universe::stations`, the multi-leg walk through
+    // `Canvas::draw_path`, `Track::turn_over` and the near-plane cut on a tail
+    // a turn has swung. Those are pinned by property tests in `universe.rs`,
+    // `track.rs` and `canvas.rs`, and by
+    // `a_turn_at_warp_can_be_flown_from_the_library_alone` in `tests/flight.rs`
+    // — and by nothing in this file. A change that repainted every turn ever
+    // flown would move not one hash here.
+    //
+    // Stated as an assertion rather than as prose so that whoever gives this
+    // reference a flight that steers has to come here and turn it back over,
+    // which is where they will read what they are getting back.
     let bent = CASES.iter().any(|(_, case)| {
         let args = reference_args(case);
         let Some(demo) = args.demo else {
@@ -669,7 +694,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         let _ = demo;
         let mut ever = false;
         for frame in 0..args.frames {
-            autopilot.update(&mut ship, frame as f64 * dt as f64, dt);
+            autopilot.update(&mut ship, frame as f64 * dt as f64);
             ship.update(dt);
             sky.advance(
                 ship.position,
@@ -683,9 +708,9 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
         ever
     });
     assert!(
-        bent,
-        "no reference flight ever draws an exposure that reaches back past a \
-         turn, so nothing pins the track the sky is drawn along"
+        !bent,
+        "a reference flight draws a curved exposure again, so the note above \
+         about the track being pinned nowhere here is out of date"
     );
 
     // And the warp cases really are at warp rather than nominally engaged: a

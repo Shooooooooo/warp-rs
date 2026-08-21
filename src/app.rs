@@ -233,10 +233,11 @@ impl Flight {
     /// Public for the same reason [`Self::nudge_orbit`] and [`Self::nudge_zoom`]
     /// are, and it completes the set: `handle_key` reaches the ship only because
     /// it lives in this module, so until this existed nothing outside could fly
-    /// a turn. Two things need to. `examples/bench.rs` measures what a hard turn
-    /// costs to draw, and the autopilot's weave is nowhere near hard enough to
-    /// stand in for one — it sweeps about a twentieth of what a hand on the
-    /// stick does. And `tests/flight.rs` drives everything through the surface
+    /// a turn. Two things need to, and they need it more than they did: the
+    /// autopilot used to weave, so a turn could be had by leaving a flight
+    /// alone, and it flies straight now — this is the only thing in the tree
+    /// that puts a stick over. `examples/bench.rs` measures what a hard turn
+    /// costs to draw. And `tests/flight.rs` drives everything through the surface
     /// another program would have to use, so a turn it could not fly is a turn
     /// that surface cannot be said to support.
     ///
@@ -300,8 +301,8 @@ impl Flight {
     /// cockpit reads neither the orbit nor the zoom, so it costs nothing there
     /// and means cycling out to the camera mid-flight lands on a live shot
     /// rather than one that has been parked since launch.
-    pub fn fly_itself(&mut self, args: &Args, elapsed: f64, dt: f32) {
-        self.autopilot.update(&mut self.ship, elapsed, dt);
+    pub fn fly_itself(&mut self, args: &Args, elapsed: f64) {
+        self.autopilot.update(&mut self.ship, elapsed);
         if self.hands_on {
             return;
         }
@@ -434,14 +435,27 @@ impl Flight {
         }
     }
 
-    pub fn draw(&mut self, fps: f32, paused: bool, hints: bool) {
+    /// Build a frame, and put an instrument panel over it if `panel` says so.
+    ///
+    /// `panel` is off exactly when the flight is flying itself, which the three
+    /// loops each ask `Args::unattended` and hand down. It is a parameter
+    /// rather than something read off `args` in here so a caller driving a
+    /// flight from outside the binary can have either — `tests/flight.rs` flies
+    /// the autopilot and reads the warp banner off the result.
+    ///
+    /// The ship picker is deliberately *not* covered by it. A panel is chrome
+    /// that arrives unbidden; the picker is a dialogue somebody pressed `M`
+    /// for, and hiding one of those would leave the key swallowing a press and
+    /// giving nothing back, which is the thing `handle_key`'s whole split over
+    /// which view a control belongs to exists to avoid.
+    pub fn draw(&mut self, fps: f32, paused: bool, panel: bool) {
         let model = self.drawn_model();
         let readout = Readout {
             ship: &self.ship,
             fps,
             magnitude: self.magnitude(),
             paused,
-            hints,
+            panel,
             view: self.view,
             model: model.name,
         };
@@ -810,54 +824,56 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                 break 'flying;
             }
         }
-        // Measured before the autopilot rather than after it: the stick is
-        // impulse-driven, so what the autopilot asks of it has to be scaled by
-        // the frame it is asking over or the weave comes out proportional to
-        // the frame rate — and the rate this loop actually runs at is not
-        // `--fps`, which is only a cap and is abandoned outright while
-        // something is being typed.
+        // What the simulation is stepped by, and what the readout is smoothed
+        // from. Nothing else reads it: the autopilot used to, because the
+        // stick it worked was impulse-driven and had to be scaled by the frame
+        // it was pressed over, and it works no stick now. Note that the rate
+        // this loop actually runs at is not `--fps`, which is only a cap and is
+        // abandoned outright while something is being typed.
         let dt = (frame_start - last).as_secs_f32().clamp(0.0, MAX_FRAME_DT);
         last = frame_start;
         // Smoothed so the readout is legible rather than flickering.
         fps += (1.0 / dt.max(1e-4) - fps) * 0.08;
 
-        if args.demo.is_some() || args.screensaver {
-            // The flight's own clock rather than the wall's, and a zero step
-            // while paused. The two go together and neither is enough alone.
+        if args.unattended() {
+            // The flight's own clock rather than the wall's, and that is now
+            // the whole of what a pause needs from here.
             //
-            // The step was zeroed first, because the stick is an impulse
-            // against a damper and the damper lives in `advance`, which a
-            // pause stops: a pause that did not stop the impulse ratcheted the
-            // rate with nothing bleeding it off. Eleven seconds of `P` pinned
-            // the yaw at `MAX_YAW_RATE`, held the hull at its full lean, drove
-            // `models::drive_behind_hull` to a hard one, and snapped the ship
-            // into a turn on the way out.
+            // It took two corrections to arrive at, and the first one has
+            // since gone away rather than been kept: a zero step used to be
+            // passed alongside, because the stick was an impulse against a
+            // damper and the damper lives in `advance`, which a pause stops —
+            // so a pause that did not stop the impulse ratcheted the rate with
+            // nothing bleeding it off. Eleven seconds of `P` pinned the yaw at
+            // `MAX_YAW_RATE` and snapped the ship into a turn on resuming. The
+            // autopilot touches no impulse now, so there is no step to zero.
             //
-            // The clock was left on wall time on the argument that the
-            // throttle and the camera are closed forms of it and so are
-            // unaffected either way. True of the throttle, and not true of the
-            // camera: what the closed form gives is the orbit *target*, and
-            // the camera a frame is built from is `Flight::orbit`, which eases
-            // toward it in `advance` — which the pause also stops. So the
-            // target walked and the camera did not. `autopilot::CAMERA_TURN`
-            // is a turn every 43 seconds, so ten seconds of `P` opened an
-            // eighty-four degree gap, and the ease closes 7.2% of one per sim
-            // step: the camera whipped most of the way round the hull inside a
-            // second of resuming. It saturates at half a turn after about
-            // twenty-one seconds, which is the worst it can be.
+            // The clock is the correction that still holds it up. It was left
+            // on wall time on the argument that the throttle and the camera
+            // are closed forms of it and so are unaffected either way. True of
+            // the throttle, and not true of the camera: what the closed form
+            // gives is the orbit *target*, and the camera a frame is built
+            // from is `Flight::orbit`, which eases toward it in `advance` —
+            // which the pause also stops. So the target walked and the camera
+            // did not. `autopilot::CAMERA_TURN` is a turn every 43 seconds, so
+            // ten seconds of `P` opened an eighty-four degree gap, and the
+            // ease closes 7.2% of one per sim step: the camera whipped most of
+            // the way round the hull inside a second of resuming. It saturates
+            // at half a turn after about twenty-one seconds, which is the
+            // worst it can be.
             //
             // `Flight::time` is the clock that already stops — `advance` is
             // the only thing that advances it — so handing it over costs
             // nothing and needs no second accumulator. The `--demo` deadline
             // above goes on reading the wall, which is the documented
             // behaviour: a paused demo still exits when it said it would.
-            flight.fly_itself(args, flight.time, if paused { 0.0 } else { dt });
+            flight.fly_itself(args, flight.time);
         }
 
         if !paused {
             flight.advance(dt);
         }
-        flight.draw(fps, paused, !args.screensaver);
+        flight.draw(fps, paused, !args.unattended());
         flight.renderer.present(&mut out)?;
 
         // Spend what is left of the frame waiting on the event queue rather
@@ -969,11 +985,11 @@ pub fn render_headless(args: &Args, out: &mut impl Write) -> io::Result<()> {
     let dt = 1.0 / args.fps as f32;
 
     for frame in 0..args.frames {
-        if args.demo.is_some() {
-            flight.fly_itself(args, frame as f64 * dt as f64, dt);
+        if args.unattended() {
+            flight.fly_itself(args, frame as f64 * dt as f64);
         }
         flight.advance(dt);
-        flight.draw(args.fps as f32, false, true);
+        flight.draw(args.fps as f32, false, !args.unattended());
         flight.present_plain(out)?;
     }
     Ok(())
@@ -1007,12 +1023,12 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
     let dt = 1.0 / args.fps as f32;
 
     for frame in 0..args.warmup {
-        if args.demo.is_some() {
-            flight.fly_itself(args, frame as f64 * dt as f64, dt);
+        if args.unattended() {
+            flight.fly_itself(args, frame as f64 * dt as f64);
         }
         flight.advance(dt);
     }
-    flight.draw(args.fps as f32, false, true);
+    flight.draw(args.fps as f32, false, !args.unattended());
 
     let (w, h) = flight.renderer.canvas_dims();
     snapshot::write_png(path, flight.renderer.pixels(), w, h, args.scale)?;
@@ -2095,7 +2111,7 @@ mod tests {
             let mut peak: f32 = 0.0;
             let start = cycle as f64 * Autopilot::CYCLE;
             for frame in 0..(Autopilot::CYCLE / dt as f64) as usize {
-                autopilot.update(&mut ship, start + frame as f64 * dt as f64, dt);
+                autopilot.update(&mut ship, start + frame as f64 * dt as f64);
                 ship.update(dt);
                 peak = peak.max(ship.velocity_c());
             }
@@ -2670,6 +2686,66 @@ mod tests {
     }
 
     #[test]
+    fn a_flight_that_flies_itself_shows_no_instruments() {
+        // The panel is chrome a pilot reads, and `--demo` and `--screensaver`
+        // have no pilot: what somebody watching either of those wants is the
+        // sky, not a throttle bar and a list of keys. Asked through the gate
+        // the loops actually use rather than of `hud::draw` directly, because
+        // what went wrong before was narrower than the panel — `hints` was
+        // switched off for a screensaver and the other four rows went on being
+        // drawn over it.
+        //
+        // Both views, because the panel carries a `SHIP` row from outside that
+        // the cockpit does not, and both cameras go through the same gate.
+        // Drawn and presented by hand rather than through `frame_of`, which
+        // asks for a panel of its own — the gate is the subject here, so it has
+        // to be this call that sets it. And the colour codes come out first,
+        // because the sky shows through the panel: a star behind a word puts an
+        // escape sequence in the middle of it, which would break the word for a
+        // `contains` in *either* direction. That, and a seed, are why this used
+        // to fail about half the time it was run.
+        let glyphs = |flight: &mut Flight, panel: bool| {
+            flight.draw(60.0, false, panel);
+            let mut out = Vec::new();
+            let _ = flight.present_plain(&mut out);
+            String::from_utf8_lossy(&out)
+                .split('\u{1b}')
+                .map(|chunk| chunk.split_once('m').map_or(chunk, |(_, rest)| rest))
+                .collect::<String>()
+        };
+
+        for view in ["cockpit", "side"] {
+            for mode in [vec!["--demo"], vec!["--screensaver"], vec!["--demo", "12"]] {
+                let mut argv = mode.clone();
+                argv.extend_from_slice(&["--view", view, "--size", "120x36", "--seed", "1"]);
+                let args = args_for(&argv);
+                assert!(args.unattended(), "{argv:?} is not an unattended flight");
+                let mut flight = Flight::new(&args, 120, 36);
+                flight.advance(1.0 / 60.0);
+                let frame = glyphs(&mut flight, !args.unattended());
+                for word in ["VELOCITY", "DISTANCE", "THR", "pause", "warp"] {
+                    assert!(!frame.contains(word), "{argv:?} put {word} on the frame");
+                }
+            }
+            // And the control, which is the half that says the gate is a gate
+            // rather than a panel that stopped working.
+            let args = args_for(&[
+                "--engage", "--view", view, "--size", "120x36", "--seed", "1",
+            ]);
+            assert!(!args.unattended(), "a flown flight reads as unattended");
+            let mut flight = Flight::new(&args, 120, 36);
+            flight.advance(1.0 / 60.0);
+            let frame = glyphs(&mut flight, !args.unattended());
+            for word in ["VELOCITY", "THR"] {
+                assert!(
+                    frame.contains(word),
+                    "a flown {view} frame is missing {word}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn an_unattended_flight_swings_the_camera_and_a_flown_one_does_not() {
         // The gap the autopilot's camera closes, and the line it must not
         // cross. A flight nobody is at flies its own camera; a flight somebody
@@ -2689,7 +2765,7 @@ mod tests {
 
         let mut unattended = Flight::new(&args, 60, 20);
         for frame in 0..600 {
-            unattended.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+            unattended.fly_itself(&args, frame as f64 / 60.0);
             unattended.advance(1.0 / 60.0);
         }
         assert!(
@@ -2724,17 +2800,22 @@ mod tests {
     }
 
     #[test]
-    fn a_paused_demo_does_not_wind_the_stick_up() {
+    fn a_paused_demo_freezes_the_schedule_it_is_flying_to() {
         // `P` gates `advance` and not the autopilot, which is deliberate and
-        // documented — a paused demo goes on flying itself and repainting. But
-        // `advance` is where the steering damper lives, so an autopilot that
-        // went on working the stick through a pause was pushing against
-        // nothing: at any frame rate, eleven seconds of `P` walked the yaw all
-        // the way to `MAX_YAW_RATE`, and letting go snapped the ship into a
-        // turn it took a second and a half to come out of.
+        // documented — a paused demo goes on flying itself and repainting. That
+        // took two corrections, and only one of them is still load-bearing.
         //
-        // Zeroing the step was half the answer, and the other half took a
-        // second report. The clock stayed on the wall on the argument that the
+        // The first: `advance` is where the steering damper lives, so an
+        // autopilot that went on working the stick through a pause was pushing
+        // against nothing, and eleven seconds of `P` walked the yaw all the way
+        // to `MAX_YAW_RATE` at any frame rate. Zeroing the step fixed it and
+        // the autopilot has since stopped touching the stick altogether, so
+        // that fault is unreachable rather than guarded — the rate assertion
+        // below is a control now, and what it watches for is something *else*
+        // moving the stick behind a pause.
+        //
+        // The second is the one holding this up. The clock stayed on the wall
+        // on the argument that the
         // throttle and the camera are closed forms of it and so are unaffected
         // — true of the throttle, and false of the camera, because the closed
         // form gives the orbit *target* and a frame is built from
@@ -2762,7 +2843,7 @@ mod tests {
         let mut flight = Flight::new(&args, 60, 20);
         // Ten seconds of flying, so there is a schedule underway to freeze.
         for frame in 0..(10 * 60) {
-            flight.fly_itself(&args, flight.time, 1.0 / 60.0);
+            flight.fly_itself(&args, flight.time);
             flight.advance(1.0 / 60.0);
             let _ = frame;
         }
@@ -2772,23 +2853,25 @@ mod tests {
         // is the one `advance` left behind, so the first paused frame catches
         // up by the step the last flying one took and every frame after it is
         // handed the same number.
-        flight.fly_itself(&args, flight.time, 0.0);
+        flight.fly_itself(&args, flight.time);
         let underway = (
             flight.ship.throttle,
             flight.orbit_target,
             flight.ship.warp_engaged,
         );
+        // An exact zero now rather than whatever the weave had left behind,
+        // which is why it is read rather than asserted: what has to hold is
+        // that thirty seconds of pause do not move it, wherever it starts.
         let held = (flight.ship.yaw_rate, flight.ship.pitch_rate);
 
         for _ in 0..(30 * 60) {
-            flight.fly_itself(&args, flight.time, 0.0);
+            flight.fly_itself(&args, flight.time);
         }
-        // Held rather than zero: the damper is in `advance` and a pause stops
-        // it, so whatever rate the ship was carrying it goes on carrying. What
-        // must not happen is the rate *growing*, which is what an impulse
-        // pushing against a stopped damper does — eleven seconds of `P` walked
-        // the yaw all the way to `MAX_YAW_RATE`, and letting go snapped the
-        // ship into a turn it took a second and a half to come out of.
+        // Held rather than zero, and the distinction is kept deliberately even
+        // though the value is now an exact zero: the damper is in `advance` and
+        // a pause stops it, so whatever rate the ship is carrying it goes on
+        // carrying. What must not happen is the rate *growing*, which is what
+        // an impulse pushing against a stopped damper does.
         assert_eq!(
             (flight.ship.yaw_rate, flight.ship.pitch_rate),
             held,
@@ -2816,7 +2899,7 @@ mod tests {
         );
 
         // And it picks the schedule back up rather than jumping into it.
-        flight.fly_itself(&args, flight.time, 1.0 / 60.0);
+        flight.fly_itself(&args, flight.time);
         flight.advance(1.0 / 60.0);
         assert!(
             (flight.ship.throttle - underway.0).abs() < 0.05,
@@ -2847,7 +2930,7 @@ mod tests {
         handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
         let asked = flight.orbit_target();
         for frame in 0..120 {
-            flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+            flight.fly_itself(&args, frame as f64 / 60.0);
         }
         assert_eq!(
             flight.orbit_target(),
@@ -2859,7 +2942,7 @@ mod tests {
 
         handle_key(press(KeyCode::Char('r')), &mut flight, &args, &mut paused);
         for frame in 120..360 {
-            flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+            flight.fly_itself(&args, frame as f64 / 60.0);
         }
         assert_ne!(
             flight.orbit_target(),
@@ -3040,7 +3123,7 @@ mod tests {
         ]);
         let mut flight = Flight::new(&args, 60, 20);
         for frame in 0..3000 {
-            flight.fly_itself(&args, frame as f64 / 60.0, 1.0 / 60.0);
+            flight.fly_itself(&args, frame as f64 / 60.0);
             flight.advance(1.0 / 60.0);
         }
         flight.draw(60.0, false, true);

@@ -49,7 +49,9 @@ const ASCII_HINTS: [&str; 3] = [
 /// rides with the ship, so a turn moves nothing an eye can see. What can
 /// usefully move in a view whose whole subject is the ship is the eye looking
 /// at it, so `WASD` swings the camera round the hull and over it and `QE` rolls
-/// it. The hints are the only place the controls are written down, and a stick
+/// it. The hints are the only place the controls are written down to somebody
+/// who is flying — and drawn only when somebody is, since a flight on autopilot
+/// gets no panel at all. A stick
 /// that means one thing in here and another out there has to say so in both
 /// places or it reads as a bug in the flight model.
 ///
@@ -196,9 +198,22 @@ pub struct Readout<'a> {
     /// one that was asked for rather than arrived at.
     pub magnitude: f32,
     pub paused: bool,
-    /// Whether to show the control hints. A screensaver quits on any key, so
-    /// listing which keys do what would be a lie.
-    pub hints: bool,
+    /// Whether to put any glass in front of the frame at all.
+    ///
+    /// Off exactly when the flight is flying itself — `--demo` and
+    /// `--screensaver` — because instruments are readings for somebody at the
+    /// controls and there is nobody there. What a viewer of those two wants is
+    /// the sky.
+    ///
+    /// This used to be `hints`, and gated the one hint line. That was right as
+    /// far as it went and it did not go far enough: the reason written down for
+    /// it was that a screensaver quits on any key, so listing which keys do
+    /// what would be a lie — which is an argument about one line of a panel
+    /// that had no business being drawn at all. The two flags are not kept side
+    /// by side because the narrower one would separate nothing: no frame draws
+    /// a panel with the hints off, so `draw_hints` is unconditional now and
+    /// this is the only question asked.
+    pub panel: bool,
     /// Which camera the frame under the glass was drawn with. The panel is the
     /// same either way except where the view itself has moved something: the
     /// reticle marks where the nose is pointed, which is only a thing you can
@@ -210,6 +225,12 @@ pub struct Readout<'a> {
 }
 
 pub fn draw(screen: &mut Screen, r: &Readout) {
+    // Above the size check rather than below it: the compact layout is this
+    // same panel on a window with no room for it, so a flight nobody is flying
+    // draws neither.
+    if !r.panel {
+        return;
+    }
     let (cols, rows) = screen.dims();
     let g = Glyphs::for_mode(screen.color_mode());
 
@@ -224,9 +245,7 @@ pub fn draw(screen: &mut Screen, r: &Readout) {
     draw_nav_panel(screen, r, g);
     draw_status_line(screen, r, cols, rows, g);
     draw_throttle(screen, r, rows, g);
-    if r.hints {
-        draw_hints(screen, cols, rows, g, r.view);
-    }
+    draw_hints(screen, cols, rows, g, r.view);
 }
 
 /// Everything the panel says, squeezed onto one line for a tiny window.
@@ -469,7 +488,7 @@ mod tests {
             fps: 60.0,
             magnitude: 6.0,
             paused: false,
-            hints: true,
+            panel: true,
             view: ViewMode::Cockpit,
             model: "normandy",
         }
@@ -718,7 +737,7 @@ mod tests {
                     fps: 60.0,
                     magnitude: 6.0,
                     paused: false,
-                    hints: true,
+                    panel: true,
                     view,
                     model: "enterprise",
                 },
@@ -763,10 +782,14 @@ mod tests {
 
         // Wide enough for the full panel, and narrow enough for the compact
         // one, and paused as well as under way: every branch that writes text.
-        // Both views, because they carry their own hints and CI's grep only
-        // ever sees a cockpit frame — the ASCII reference flight is a `--demo`,
-        // so a stray multi-byte glyph in the outside view's hints would get
-        // past it and this is the only thing looking.
+        // Both views, because they carry their own hints and CI's grep sees a
+        // cockpit frame only. It matters more than it did: `ascii.txt` is a
+        // `--demo` flight and a flight nobody is flying draws no panel, so that
+        // file is the starfield's brightness ramp and nothing else. The
+        // `headless` job pipes a second `--engage --color ascii` frame through
+        // the same grep to keep a panel under it at all, and even that one is a
+        // cockpit — so a stray multi-byte glyph in the outside view's hints
+        // still gets past everything but this, which is the only thing looking.
         for (cols, rows) in [(120, 34), (80, 24), (46, 12), (20, 6), (2, 2)] {
             for paused in [false, true] {
                 for view in ViewMode::ALL {
@@ -778,7 +801,7 @@ mod tests {
                             fps: 60.0,
                             magnitude: 6.0,
                             paused,
-                            hints: true,
+                            panel: true,
                             view,
                             model: "normandy",
                         },
@@ -825,15 +848,20 @@ mod tests {
         // readouts out of their columns on exactly the terminals least able
         // to spare the room.
         let ship = Ship::new();
-        // The hints are left out: "UP/DN" is genuinely wider than
-        // "\u{2191}\u{2193}", so that one line is expected to differ, and it is
-        // right-aligned on a row of its own precisely so it can.
+        // The hints are excluded from the sweep rather than switched off, and
+        // the distinction is the whole of this test's soundness. "UP/DN" is
+        // genuinely wider than "\u{2191}\u{2193}", so that one line is expected
+        // to differ, and it is right-aligned on a row of its own precisely so
+        // it can. There used to be a flag that left it out — `hints`, which is
+        // now `panel` and switches off the whole thing, so setting it false
+        // here would compare two empty footprints and pass on a panel that was
+        // never drawn.
         let quiet = Readout {
             ship: &ship,
             fps: 60.0,
             magnitude: 6.0,
             paused: false,
-            hints: false,
+            panel: true,
             view: ViewMode::Cockpit,
             model: "normandy",
         };
@@ -844,8 +872,16 @@ mod tests {
             let bare = blank_in(cols, rows, mode);
             let mut drawn = blank_in(cols, rows, mode);
             draw(&mut drawn, &quiet);
+            // The hint row is masked out at the sizes that draw one. Below the
+            // panel's minimum the compact layout puts the throttle there
+            // instead, in the same characters either way, so that row is
+            // compared like the rest.
+            let masked = (cols >= MIN_COLS && rows >= MIN_ROWS).then(|| hint_row(rows));
             (0..rows)
                 .map(|row| {
+                    if Some(row) == masked {
+                        return vec![false; cols];
+                    }
                     bare.row_text(row)
                         .chars()
                         .zip(drawn.row_text(row).chars())
@@ -856,8 +892,16 @@ mod tests {
         };
 
         for (cols, rows) in [(120, 34), (80, 24), (46, 12), (20, 6)] {
+            let truecolor = footprint(ColorMode::Truecolor, cols, rows);
+            // Two empty footprints agree beautifully, and this test spent a
+            // while able to produce a pair of them. Non-vacuity first, then the
+            // comparison.
+            assert!(
+                truecolor.iter().flatten().any(|stamped| *stamped),
+                "the panel stamped nothing at all at {cols}x{rows}"
+            );
             assert_eq!(
-                footprint(ColorMode::Truecolor, cols, rows),
+                truecolor,
                 footprint(ColorMode::Ascii, cols, rows),
                 "the two faces disagree about the layout at {cols}x{rows}"
             );
@@ -1118,10 +1162,19 @@ mod tests {
     }
 
     #[test]
-    fn control_hints_can_be_suppressed() {
-        // In screensaver mode any key quits, so advertising "SPACE warp" and
-        // friends would be telling the viewer something untrue.
-        let render = |hints: bool| {
+    fn the_panel_can_be_suppressed_outright() {
+        // A flight nobody is flying gets no glass in front of it: `--demo` and
+        // `--screensaver` want the sky, and instruments are readings for
+        // somebody at the controls. This used to switch off the hint line
+        // alone, on the narrower argument that a screensaver quits on any key
+        // so naming keys would be a lie — true, and an argument about one row
+        // of a panel that had no business being there at all.
+        //
+        // Asked as "nothing was stamped" rather than as three `!contains`,
+        // because what has to hold is that the frame under the panel comes
+        // through untouched — a reticle brightening four cells, or a nav rule
+        // dimming one, would satisfy any number of absent words.
+        let render = |panel: bool| {
             let mut screen = blank(120, 34);
             let ship = Ship::new();
             draw(
@@ -1131,7 +1184,7 @@ mod tests {
                     fps: 60.0,
                     magnitude: 6.0,
                     paused: false,
-                    hints,
+                    panel,
                     view: ViewMode::Cockpit,
                     model: "normandy",
                 },
@@ -1140,14 +1193,24 @@ mod tests {
             screen.flush(&mut out).unwrap();
             String::from_utf8_lossy(&out).into_owned()
         };
-        assert!(
-            render(true).contains("pause"),
-            "hints should be there by default"
+        // The frame as `compose` left it, handed to nothing.
+        let mut untouched = blank(120, 34);
+        let mut out = Vec::new();
+        untouched.flush(&mut out).unwrap();
+        let untouched = String::from_utf8_lossy(&out).into_owned();
+
+        assert_eq!(
+            render(false),
+            untouched,
+            "a suppressed panel still put something on the frame"
         );
-        let bare = render(false);
-        assert!(!bare.contains("pause"), "hints should be gone");
-        // Everything else still draws.
-        assert!(bare.contains("VELOCITY") && bare.contains("THR"));
+        // And the comparison is not two blank frames agreeing, which is the
+        // thing it would otherwise be very good at.
+        let drawn = render(true);
+        assert_ne!(drawn, untouched, "the panel drew nothing with `panel` set");
+        for word in ["VELOCITY", "THR", "pause"] {
+            assert!(drawn.contains(word), "the panel is missing {word}");
+        }
     }
 
     #[test]
@@ -1170,7 +1233,7 @@ mod tests {
                 fps: 42.0,
                 magnitude: 5.5,
                 paused: false,
-                hints: true,
+                panel: true,
                 view: ViewMode::Cockpit,
                 model: "normandy",
             },
@@ -1222,7 +1285,7 @@ mod tests {
                     fps: 60.0,
                     magnitude: 6.0,
                     paused: false,
-                    hints: true,
+                    panel: true,
                     view,
                     model: "normandy",
                 },
@@ -1250,7 +1313,7 @@ mod tests {
                     fps: 60.0,
                     magnitude: 6.0,
                     paused,
-                    hints: true,
+                    panel: true,
                     view: ViewMode::Cockpit,
                     model: "normandy",
                 },
