@@ -234,11 +234,16 @@ land *after* the drive lights at frame 60 or the whole framing says nothing. It
 was `-20,0,0` while a turn took 137 seconds; speeding that up to 43 would have
 put the same angle's crossing at frame 24, with the drive still cold.
 
-One split got *stronger* rather than weaker. The four `--demo` flights steer and
-the four `--engage` ones hold every rate at an exact zero from first frame to
-last — and the ship carries an attitude now, which the sky is projected through,
-so a turn moves the sky from **both** cameras where the band took no steering
-argument at all. `drift.txt` is the flight that watches that from outside.
+One split got *stronger* and then went away altogether, and the second half is
+the newer half. Five `--demo` flights used to steer against five `--engage` ones
+holding every rate at an exact zero, and the ship carries an attitude now, which
+the sky is projected through, so a turn moves the sky from **both** cameras
+where the band took no steering argument at all — `drift.txt` is the flight that
+watches that from outside. Then the autopilot stopped touching the stick, and
+all ten hold `LEVEL_AXES` to the bit. What that leaves is a control rather than
+a contrast, which is stronger for saying a steering change was the identity it
+looked like and useless for saying where one landed. See **By stick** below,
+which is the shape it collapsed into.
 
 **Any change to renderer arithmetic changes those hashes and turns the test
 red.** That is the point of them: an edit meant to touch one thing that touched
@@ -264,9 +269,11 @@ sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern
 ```
 
 Diff the old hashes against the new ones before committing and say which moved.
-The split is usually the sharpest thing you have, and it comes in four shapes
-now where it used to come in six — two of the old ones were about arithmetic the
-star band switched off when the camera was abeam, and there is no band.
+The split is usually the sharpest thing you have, and it comes in six shapes now
+where it used to come in eight — two of the old ones were about arithmetic the
+star band switched off when the camera was abeam, and there is no band. Count
+them when you edit the list: the number in this sentence has been wrong twice,
+which is what a hand-maintained count of the paragraphs below it will do.
 
 **By view.** A change aimed at the hull moves `side.txt`, `orbit.txt` and
 `astern.txt` and must leave all four cockpit flights alone — `warp.txt` is one
@@ -289,34 +296,38 @@ happens *off* the beam leaves it alone. Stopping the engine lance at its
 vanishing point moved `orbit.txt` and no other, and so did putting the drive
 behind the hull from ahead.
 
-**By stick.** A change to how the sky is *steered* moves the four `--demo`
-hashes and leaves the four `--engage` ones bit for bit, since `render_headless`
-gates the autopilot on `args.demo.is_some()` and those four hold every steering
-rate at an exact zero from first frame to last. The worked example is worth
-reading: taking the lean out of the cockpit picture deleted arithmetic from
-`Camera::project`, which every star and every hull vertex in the program goes
-through, and seven byte-identical hashes are what said the deletion really was
-the identity it looked like. Note that this shape now reaches the side view too
-— the ship carries an attitude and both cameras are projected through it — so a
-steering change that leaves `drift.txt` alone has probably missed something.
+**By stick — which is a control now rather than a split, and that is a loss as
+well as a gain.** Nothing in the reference steers. `render_headless` gates the
+autopilot on `args.unattended()`, the autopilot flies straight, and no flag on
+the command line puts a stick over — so all ten flights hold every steering rate
+at an exact zero and `LEVEL_AXES` to the bit from first frame to last. A change
+to how the sky is steered therefore moves *nothing*, and anything that does move
+for one has leaked.
 
-It also reaches the exposure's own geometry, and there it is sharper than four
-against four. A streak is the track a star swept while the shutter was open, so
-one the ship flew straight through is a segment and one it turned through is a
-curve — and whether a flight bends one is a question about what it *did*, not
-about whether `--demo` is on the command line. Only `steer.txt` and `drift.txt`
-qualify: they are the two whose drive lights at frame 60 of a twelve-second run
-with the weave still going. The three 60 fps `--demo` flights never leave
-sublight, so their exposure is an exact zero, and the five `--engage` ones hold
-`LEVEL_AXES` to the bit, so theirs never reaches back past a turn. A change to
-the track the sky is drawn along moves those two and leaves eight byte for byte,
-which is a control rather than a contrast — drawing the exposure along the flown
-track is the worked example, and `warp.txt` moving is what caught the fast path
-choosing itself by comparing two accumulations instead of asking about turns.
-What the pair do *not* cover is the shape of a curve: the weave turns about a
-twentieth of what a hand on the stick does, which asks for one leg. That is a
-variant rather than a region, so it is pinned by property tests in
-`universe.rs`.
+The gain is that a deletion from the steering path being the identity it looks
+like now shows in ten byte-identical hashes rather than in six. The worked
+example predates the collapse and is worth reading anyway: taking the lean out
+of the cockpit picture deleted arithmetic from `Camera::project`, which every
+star and every hull vertex in the program goes through, and seven byte-identical
+hashes were what said the deletion really was the identity it looked like.
+
+The loss is that this file can no longer say where a steering change landed, and
+it reaches further than steering. A streak is the track a star swept while the
+shutter was open, so one the ship flew straight through is a segment and one it
+turned through is a curve — and **no flight here draws the second kind**. It
+used to: `steer.txt` and `drift.txt` bent an exposure because their drive lights
+at frame 60 of a twelve-second run with the weave still going, and drawing the
+exposure along the flown track is what moved exactly those two. That contrast is
+gone with the weave. `Universe::stations`, the multi-leg walk through
+`Canvas::draw_path`, `Track::turn_over` and the near-plane cut on a tail a turn
+has swung are pinned by property tests in `universe.rs`, `track.rs` and
+`canvas.rs`, and by `a_turn_at_warp_can_be_flown_from_the_library_alone` — and
+by nothing in the reference. **A change that repainted every turn ever flown
+would move not one hash.** That is a hole with a floor under it rather than an
+oversight, and closing it honestly means a flight that steers, which means a way
+to steer one from a command line. `tests/golden.rs` asserts the premise rather
+than leaving it as prose, so an autopilot that picks the stick back up fails
+with a sentence instead of five unexplained hashes.
 
 **By which way the nose points.** The sign of
 `Orbit::nose_in_camera`'s depth component, `-cos(elevation)·sin(azimuth)`,
@@ -433,12 +444,17 @@ example of what that costs: its throttle came down by a fixed step per *frame*
 with no `dt` at all, so the eight-second drop-out shed 1.92 of throttle at
 60 fps and 0.32 at `--fps 10`, where it never reached its floor; and the weave
 was an impulse a frame against a decay a second, so the angle it swept was
-*proportional to the frame rate* over a fiftyfold range. Both are closed forms
-of the clock now. The one control that cannot be — the stick, which is
-impulse-driven because a terminal reports presses and not releases — is scaled
-by `dt`, and the identity that makes that exact is worth knowing: a per-frame
-impulse `a` against a decay `exp(-k·dt)` sweeps exactly `a/k` per frame whatever
-`dt` is, so an impulse proportional to `dt` sweeps a fixed angle per second.
+*proportional to the frame rate* over a fiftyfold range. It is no longer a
+counterexample at all: the throttle is a closed form of the clock, the weave is
+gone, `Autopilot::update` takes no `dt` and could not read one, so frame-rate
+independence there is structural rather than earned. The identity that governs
+anything impulse-driven is kept in that module's own doc with no live caller
+left, and is worth knowing before anything acquires one: a per-frame impulse `a`
+against a decay `exp(-k·dt)` sweeps exactly `a/k` per frame whatever `dt` is, so
+an unscaled impulse sweeps an angle proportional to the frame rate and one
+proportional to `dt` sweeps a fixed angle per second. The stick still works that
+way — it is impulse-driven because a terminal reports presses and not releases —
+and `handle_key` is where it is now applied.
 Perf edits are documented with the measurement that justified them —
 `draw_streak` takes one reciprocal per streak rather than a divide per sample,
 worth about six percent of drawing time at twenty thousand stars — so do not
@@ -506,8 +522,9 @@ The default cockpit frame at 200x60 went from 1.1 ms to 2.7.
 knowing before touching the exposure.** An exposure the ship flew straight
 through is two points and the arithmetic it always was, so the seven rows above
 measure a renderer with the curve switched off. `examples/bench.rs` has three
-rows with the stick buried, which is the most curve it can be asked for — the
-autopilot's weave sweeps about a twentieth of it. At 200x60 on this machine,
+rows with the stick buried, which is the most curve it can be asked for and now
+the only place in the tree a curve is measured at all — the autopilot flies
+straight, so a flight left alone never asks for one. At 200x60 on this machine,
 taking the minimum of five sweeps because the bench reports a bare mean of one
 run: the default sky draws in 1.04 ms straight and 3.02 turning, comfortably
 inside the frame budget either way; `--magnitude 8` draws in 6.77 and 40.13, and
@@ -560,7 +577,7 @@ lever is the sample budget in `Canvas::draw_leg`, not the pose count in
 src/lib.rs        module list and the orientation doc comment
 src/main.rs       parse, fly, report — nothing else
 src/app.rs        the three loops (interactive, headless, snapshot) and Flight
-src/autopilot.rs  the hand on the stick and the camera for --demo/--screensaver
+src/autopilot.rs  the throttle, the drive and the camera for --demo/--screensaver
 src/cli.rs        every flag, and the bounds each one is held to
 src/view.rs       ViewMode, the outside camera: its orbit, its range, the zoom
 src/ship.rs       flight model: throttle, warp, steering, transients
@@ -652,7 +669,11 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    out the frame edges included.
 6. `canvas.resolve_into(&tonemap, &mut pixels)` — HDR to 8-bit RGB.
 7. `screen.compose(&pixels)` — two pixel rows fold into one cell.
-8. `hud::draw(&mut screen, ..)`, then `menu::draw` if the picker is up.
+8. `hud::draw(&mut screen, ..)` — unless the flight is flying itself, in which
+   case the `Readout`'s `panel` is false and it returns having drawn nothing.
+   Then `menu::draw` if the picker is up, which is *not* gated the same way:
+   a panel is chrome that arrives unbidden and the picker is a dialogue
+   somebody pressed `M` for.
 
 Then `Screen::flush` (interactive: only cells that changed, and colour codes
 only when they differ from the last cell written) or `write_plain` (headless:
@@ -670,10 +691,18 @@ panel.
 | size | `resolved_size(args)` | `resolved_size(args)` | `args.size` or `(240, 68)` |
 | terminal | `RawGuard`, alt screen | none | none |
 | `--demo` | deadline **and** autopilot | autopilot only | autopilot only |
-
-The autopilot flies the camera as well as the ship in all three — `Flight::fly_itself`
-lays a swing of its own on top of whatever `--orbit` parked the shot at.
+| panel | `!args.unattended()` | the same | the same, and invisible |
 | output | `Screen::flush` | `write_plain` | `write_png` of `pixels()` |
+
+The autopilot flies the camera and the throttle in all three — `Flight::fly_itself`
+lays a swing of its own on top of whatever `--orbit` parked the shot at. It does
+not fly the *ship's attitude*: a flight nobody is flying holds the heading it
+was given, which is what `Args::unattended` gates along with the panel. Note the
+snapshot column: the panel is stamped into cells and a PNG is written from
+`pixels()`, so the gate cannot change a byte of one — it is spelled the same way
+there so that one predicate answers the question in all three loops, which is
+how the autopilot gate and the panel gate came to disagree about
+`--snapshot --screensaver` in the first place.
 
 `--demo 5 --headless` does not stop after five seconds; headless always runs
 exactly `--frames` frames. The deadline is checked only in the interactive loop.
@@ -694,12 +723,15 @@ arrive at and neither was a hedge.
 
 It gated `advance` alone, and the paragraph here said a paused `--demo` goes on
 flying itself, repainting and exiting at its deadline. The first correction was
-the *step*: the stick is an impulse against a damper and the damper is in
-`advance`, so a pause that stopped the damping and not the impulse ratcheted the
-rate with nothing bleeding it off — eleven seconds of `P` pinned the yaw at
-`MAX_YAW_RATE`, held the hull at its full lean, drove
-`models::drive_behind_hull` to a hard one, and snapped the ship into a turn on
-the way out. The second was the *clock*, and it was left on wall time on the
+the *step*, and it has since become unreachable rather than merely fixed: the
+stick was an impulse against a damper and the damper is in `advance`, so a pause
+that stopped the damping and not the impulse ratcheted the rate with nothing
+bleeding it off — eleven seconds of `P` pinned the yaw at `MAX_YAW_RATE`, held
+the hull at its full lean, drove `models::drive_behind_hull` to a hard one, and
+snapped the ship into a turn on the way out. A zero step was passed while paused
+to stop it, and that argument went with the weave: the autopilot touches no
+impulse now, so there is no step to zero and `fly_itself` takes none. The second
+correction is the one still holding this up. It was the *clock*, left on wall time on the
 argument that the throttle and the camera are closed forms of it and so are
 unaffected either way. True of the throttle and false of the camera: the closed
 form gives the orbit *target*, and a frame is built from `Flight::orbit`, which
@@ -716,7 +748,11 @@ holds where it was. The two things it goes on doing are the two that were worth
 having — it repaints, and it exits at its deadline, which still reads the wall.
 
 In screensaver mode `handle_key` is never reached at all — any non-release key
-breaks the loop, so there are no controls, not even pause. And `R` restores
+breaks the loop, so there are no controls, not even pause. That is half of why
+neither unattended mode draws an instrument panel: a hint line naming keys would
+be naming keys that quit. The other half is that the instruments are readings
+for somebody at the controls, and `--demo` has nobody there either even though
+its keyboard still works. And `R` restores
 what the *command line* asked for rather than any fixed number: `args.throttle`
 rather than `Ship::new()`'s 0.18, and `args.orbit` rather than `Orbit::LEVEL`.
 The zoom has no flag, so it goes back to `ZOOM_DEFAULT`. All three are snapped
@@ -1297,7 +1333,11 @@ neither order is the right one — so the drive is drawn twice there, sharing it
 light between the two sides, each pass skipped when its share is nothing. A hard
 swap was tried first and measured: crossing the beam moved a subpixel by 137 of
 255 and shifted thirty of them at once, on a ship nobody had touched, because
-the autopilot's weave carries the hull's lean across square every ten seconds.
+the autopilot wove in those days and the hull's lean crossed square every ten
+seconds. Who crosses it has since changed and the ramp has not — a ship nobody
+is flying holds its lean at an exact zero now, so what is left to cross are a
+hand on the stick and the camera walking round the hull, which `drift.txt`
+traverses at frame 72.
 With the ramp the crossing is indistinguishable from the frame either side of
 it. `OCCLUSION_BAND` is what sets the width, and both ends of it are held: any
 narrower and the step comes back, any wider and the drive goes on shining
@@ -1844,7 +1884,11 @@ genuinely wider than `↑↓`, so that row is right-aligned on a character count
 rather than assumed to match. Third, vertical resolution halves: with no colour
 to carry two pixels, `pixel_pair` averages both subpixels into one ramp glyph.
 
-**The panel has two layouts, not one that shrinks.** Below `MIN_COLS` (46) or
+**The panel has two layouts and a third state, and the third is decided by who
+is flying rather than by the window.** `Readout::panel` is false for `--demo`
+and `--screensaver`, and `hud::draw` returns before it measures anything — above
+the size check deliberately, since the compact layout is the same panel on a
+window with no room for it. Of the two layouts that remain: below `MIN_COLS` (46) or
 `MIN_ROWS` (12), `draw_compact` runs instead and drops the reticle, the nav
 panel and the hints rather than squeezing them.
 
@@ -2116,9 +2160,10 @@ hint line is chosen by width: the widest cockpit tier is 89 characters and so
 wants 91 columns, and on the eighty-column terminal most people have it falls to
 a tier naming four keys of a dozen, with `+` and `-` on no tier at any width and
 nothing at all below `MIN_COLS`. Widening the tiers is the wrong answer twice
-over — it costs columns the narrow tiers have not got, and the ten reference
-flights render at 120 columns with hints on, so every hash would move to say it.
-Help text costs no columns and moves nothing.
+over — it costs columns the narrow tiers have not got, and five of the ten
+reference flights render at 120 columns with a panel on them, so their hashes
+would move to say it. It was all ten until the flights that fly themselves
+stopped drawing one. Help text costs no columns and moves nothing.
 
 Watch how that guard first passed, because the shape recurs: `help.contains("M")`
 is true of a page that also spells `--magnitude <MAG>`, so it answered yes with
@@ -2143,8 +2188,11 @@ naming the camera cost three columns over `QE roll`: `WASDQE cam` rather than
 `draw_hints` needs `chars + 2 <= cols`, so it fits a sixty-column window with
 two columns to spare — and sixty is the width `tests/flight.rs` flies at, so a
 longer word there would shed the tier and lose the *throttle* to gain the
-camera. Those tiers are now the only place the keys are written down anywhere,
-so a control that fits none of them is one nothing ever tells the user about.
+camera. Those tiers are the only place the keys are written down to somebody
+flying, so a control that fits none of them is one nothing tells the user about
+outside `--help`. They are drawn only when somebody *is* flying: `--demo` and
+`--screensaver` get no panel, which is not a gap, since a screensaver has no
+keys but the one that quits.
 
 **Adding a NAV readout.** The panel has room for one, and the room is borrowed
 rather than earned. The bottom three rows are counted *up* from the bottom —
@@ -2272,10 +2320,11 @@ looked dimmer after the shift went in and its mean pixel had moved from 24.57 to
 and a middle ninth up from 45.5 to 49.0. Decode the PNG and take a mean, a lit
 count and a half-frame ratio before believing what the picture seems to say.
 
-The fourth is a *turn*, which no reference flight and no snapshot recipe
-reaches: `--demo`'s weave sweeps about a twentieth of what a hand on the stick
-does. Fly one and watch it, or drive `Flight::nudge_stick` from a scratch
-example and shoot a frame. What to look for is that a sustained bank draws
+The fourth is a *turn*, which nothing automatic reaches at all — not a reference
+flight, not a snapshot recipe, and not `--demo`, whose weave used to sweep about
+a twentieth of what a hand on the stick does and which flies straight now. So
+this is the only route rather than merely the better one: fly one and watch it,
+or drive `Flight::nudge_stick` from a scratch example and shoot a frame. What to look for is that a sustained bank draws
 smooth arcs, and that the corners a *hard* turn leaves are where the turn began
 rather than where the poses are: an abrupt start really does put a corner in
 every trail, and telling that from too few poses took measuring the drawn

@@ -1,27 +1,73 @@
-//! The hand on the stick when there is nobody at it.
+//! What a flight does when there is nobody flying it.
+//!
+//! Not a hand on the stick, which is what this used to be and what the name
+//! still suggests: it works the throttle, lights and shuts down the drive, and
+//! walks the camera round the hull. The stick it leaves alone.
 //!
 //! Both `--demo` and `--screensaver` fly this way, and a screensaver is left
 //! running for days, so the cycle has to keep coming round for all of them —
 //! hence the `f64` clock, and the tests that start one a week in.
 //!
-//! Two things are asked of everything in here and both are easier to get wrong
-//! than they look.
+//! Three things are asked of everything in here and all of them are easier to
+//! get wrong than they look.
 //!
 //! **The same flight at any frame rate.** Every value below is a closed form of
-//! the clock rather than something accumulated a frame at a time, and the one
-//! place that cannot be — the stick, which is impulse-driven because a terminal
-//! reports presses and not releases — is scaled by `dt` so that it is. The
-//! throttle used to come back down by a fixed step per *frame*, which meant the
-//! eight-second drop-out shed 1.92 of throttle at 60 fps, 3.84 at 120, and 0.32
-//! at `--fps 10`, where it never reached its floor at all.
+//! the clock rather than something accumulated a frame at a time, and there is
+//! no exception left. There was one — the stick, which is impulse-driven
+//! because a terminal reports presses and not releases — and nothing here
+//! touches the stick now. So the property is structural rather than earned:
+//! this module is handed no step and could not read one, and a flight sampled
+//! at ten frames a second and the same flight sampled at five hundred are two
+//! readings of one function of the clock.
+//!
+//! Both halves of how that used to be got wrong are worth keeping, because
+//! neither fault needs a weave to happen again. The throttle used to come back
+//! down by a fixed step per *frame*, so the eight-second drop-out shed 1.92 of
+//! throttle at 60 fps, 3.84 at 120, and 0.32 at `--fps 10`, where it never
+//! reached its floor at all. And the identity that governs anything
+//! impulse-driven, which nothing in this module has a use for any more and
+//! which [`crate::app::Flight::nudge_stick`] still points at: [`Ship::nudge_yaw`]
+//! adds an impulse and [`Ship::update`] damps the rate it lands on, so a
+//! per-frame impulse `a` against a decay of `exp(-k·dt)` sweeps exactly `a/k`
+//! of angle per *frame* whatever `dt` is — which makes an unscaled impulse
+//! sweep an angle proportional to the frame rate, and an impulse proportional
+//! to `dt` sweep a fixed angle per second. The weave was the first of those
+//! and then the second, and forty seconds of it swept a sixth of its 60 fps arc
+//! at ten frames a second before the `dt` went in.
+//!
+//! **A ship nobody is flying holds its nose still.** It used to weave, on the
+//! argument that the sublight half of the cycle has no streaks to carry the eye
+//! and so needed something moving in it. That was the wrong place to find the
+//! motion. The ship carries the attitude the whole sky is projected through, so
+//! a wander nobody asked for swung the field from both cameras, leaned the hull
+//! into itself, and put a curve in the exposure of every near star — a picture
+//! drifting off its heading rather than a ship flying somewhere. What carries
+//! the eye instead is what a viewer can tell they are being shown: the camera,
+//! which walks the whole way round the hull, and the drive, which lights and
+//! shuts down twice a minute. The nose is left exactly where the flight opened
+//! on it, to the bit, and
+//! `a_ship_nobody_is_flying_is_pointed_exactly_where_it_started` says so.
+//!
+//! What that costs is worth having measured rather than argued, because the
+//! weave's own case was about exactly this and it was not wrong about the
+//! symptom. Over a sublight second of `--demo` on a 90x26 terminal, 5 cells of
+//! 2340 change from frame to frame — the twinkle, and nothing else. The same
+//! second from `--view side` changes 266, because the camera is walking; the
+//! same second at warp changes 481. So the stillness is real and it lands on
+//! the *cockpit* at sublight, which is twenty of the forty-six seconds and no
+//! other part of the cycle. That is the trade taken deliberately: a picture
+//! that holds still is a ship flying somewhere, and a picture that wanders is a
+//! ship that cannot hold a heading. Widening the weave was the answer to it
+//! once, and the answer now is that a sky whose whole point is to hold still at
+//! impulse should be allowed to.
 //!
 //! **A flight that does not repeat itself.** A screensaver is watched for
 //! minutes at a time, and a schedule that comes round unchanged every
 //! forty-six seconds is read as a loop however pretty each pass is. The cycle's
 //! skeleton is fixed and its *content* is not: the throttle the run-up climbs
-//! to, how hard the weave leans on the stick, and where the camera is watching
-//! from are each carried by a wave on its own period, and no two of those
-//! periods — nor any of them and [`Autopilot::CYCLE`] — share a factor.
+//! to and where the camera is watching from are each carried by a wave on its
+//! own period, and no two of those periods — nor any of them and
+//! [`Autopilot::CYCLE`] — share a factor.
 
 use crate::ship::Ship;
 use crate::view::Orbit;
@@ -67,43 +113,6 @@ const COAST_FLOOR: f32 = 0.15;
 const PEAK_FLOOR: f32 = 0.78;
 const PEAK_SWING: f32 = 0.22;
 const PEAK_PERIOD: f64 = 71.0;
-
-/// How hard the weave leans on the stick, in keypresses a second.
-///
-/// A keypress a second rather than a keypress a frame, and that is the fix
-/// rather than a change of units. [`Ship::nudge_yaw`] adds an impulse and
-/// [`Ship::update`] damps the rate it lands on, so in steady state a per-frame
-/// impulse `a` against a decay of `exp(-k·dt)` sweeps exactly `a/k` of angle
-/// per frame whatever `dt` is — and an impulse that does *not* scale with `dt`
-/// therefore sweeps an angle proportional to the frame rate. It did, exactly:
-/// forty seconds of weaving swept a sixth of its 60 fps arc at `--fps 10` and
-/// eight and a third times it at the five hundred frames a second an uncapped
-/// burst of input reaches, where the lean it holds is nearly six degrees
-/// against three quarters of one. Scaled by `dt` the same forty seconds sweep
-/// 36.75° of arc at every rate from 10 to 500, agreeing to five figures.
-///
-/// Sixty times the per-frame figures they replace, so the flight at 60 fps is
-/// the one that was there before. What is left is the fixed `SIM_STEP` the
-/// heading is summed over, which does not vary with the frame rate either.
-const WEAVE_YAW: f32 = 0.18;
-const WEAVE_PITCH: f32 = 0.12;
-
-/// How long the weave takes to come round on each axis. Two periods rather than
-/// one so the two never quite line up, and neither divides the cycle.
-const WEAVE_YAW_PERIOD: f64 = 20.0;
-const WEAVE_PITCH_PERIOD: f64 = 33.0;
-
-/// How narrow the weave is allowed to get, as a fraction of its full width, and
-/// how long that takes to come round.
-///
-/// It narrows and widens rather than holding one amplitude, which is half of
-/// what keeps a long watch from reading as a loop. It never goes *above* full
-/// width, and that ceiling is load-bearing: `models::a_ship_nobody_is_flying_
-/// never_crosses_the_swap` measures how far the lean this produces carries the
-/// drive toward the side it is drawn on, and full width sits about a ninth of
-/// the way over against a bound of a quarter.
-const WEAVE_FLOOR: f32 = 0.30;
-const WEAVE_PERIOD: f64 = 149.0;
 
 /// How long the camera takes to walk all the way round the ship, in seconds.
 ///
@@ -160,21 +169,32 @@ impl Autopilot {
     /// Length of one full run-up-and-drop-out cycle, in seconds.
     ///
     /// The skeleton is fixed even though the flight is not. Every wave above
-    /// has a period that shares no factor with it — 29, 37, 43, 71 and 149 are
-    /// prime and 46 is 2·23 — so the schedule as a whole comes round on their
-    /// product, which is some seven hundred years. That is down from twenty
-    /// thousand, because speeding the camera up shortened three of the five;
-    /// what the figure has to be is longer than a machine stays up, and it is.
+    /// has a period that shares no factor with it — 29, 37, 43 and 71 are prime
+    /// and 46 is 2·23 — so the schedule as a whole comes round on their
+    /// product, 150 689 974 seconds, which is a little under four and three
+    /// quarter years.
+    ///
+    /// That is down from seven hundred years, and the arithmetic is worth
+    /// having written down because the figure moved without anybody aiming at
+    /// it: the 149 in that product was the weave's envelope, and it went with
+    /// the weave. What the figure has to be is longer than a machine stays up,
+    /// and four and a half years still is by a wide margin. If it ever wants
+    /// lengthening again the lever is another period rather than a longer one —
+    /// a fifth coprime wave multiplies, where stretching one of these four only
+    /// scales.
     pub const CYCLE: f64 = 46.0;
 
-    /// Fly the ship for one frame.
+    /// Fly the ship for one frame: the throttle, and the drive.
     ///
     /// `elapsed` is `f64` for the same reason `Flight::time` is: a screensaver
-    /// runs for days, and this has to keep cycling for all of them. `dt` is
-    /// what the stick is scaled by, and it is the *frame's* step rather than
-    /// the simulation's — the stick is pressed once a frame, and it is a frame
-    /// the impulse has to be worth the same amount of turn over.
-    pub fn update(&mut self, ship: &mut Ship, elapsed: f64, dt: f32) {
+    /// runs for days, and this has to keep cycling for all of them.
+    ///
+    /// There is deliberately no step to hand it, and the absence is the
+    /// property rather than an omission. Every arm below is a function of that
+    /// clock alone, so this cannot be made to fly a different flight by being
+    /// called more often — where a `dt` in the signature is an invitation to
+    /// accumulate something, and the last thing that did was the stick.
+    pub fn update(&mut self, ship: &mut Ship, elapsed: f64) {
         // Inside one cycle, so everything downstream is small enough for `f32`.
         let t = (elapsed % Self::CYCLE) as f32;
         let phase = match t {
@@ -211,15 +231,16 @@ impl Autopilot {
             _ => (DROPOUT_FLOOR - COAST_RATE * (t - COAST_AT)).max(COAST_FLOOR),
         };
 
-        // The weave, and it runs the whole cycle rather than only the warp leg.
-        // It used to sit inside the arm above, which left the run-up, the
-        // drop-out and the coast — twenty of the forty-six seconds — with every
-        // rate decaying to nothing and the sky perfectly still. That is the
-        // sublight half, where there are no streaks to carry the eye either, so
-        // it was the half that most needed something moving in it.
-        let width = WEAVE_FLOOR + (1.0 - WEAVE_FLOOR) * up(wave(elapsed, WEAVE_PERIOD));
-        ship.nudge_yaw(WEAVE_YAW * width * wave(elapsed, WEAVE_YAW_PERIOD) * dt);
-        ship.nudge_pitch(WEAVE_PITCH * width * wave(elapsed, WEAVE_PITCH_PERIOD) * dt);
+        // And nothing touches the stick. A weave used to run the whole cycle
+        // here, put in because the run-up, the drop-out and the coast — twenty
+        // of the forty-six seconds — are sublight, have no streaks to carry the
+        // eye, and were perfectly still without it. The motion was real and it
+        // was found in the wrong place: the sky is projected through the ship's
+        // own attitude, so a wander nobody asked for swings the whole field
+        // from both cameras and curves the exposure of every near star. What is
+        // left moving is what a viewer can tell they are being shown — the
+        // camera walking round the hull, the drive lighting and shutting down —
+        // and the nose stays exactly where the flight opened on it.
     }
 
     /// Where the camera should be watching from, as an offset from wherever
@@ -299,35 +320,33 @@ mod tests {
     /// module that owns the loop and this has to be the same flight it flies.
     const SIM_STEP: f32 = 1.0 / 120.0;
 
-    /// Fly the autopilot at `fps` for `seconds` and report what it did: the
-    /// heading it swept, the peak velocity it reached, and where it left the
-    /// ship.
+    /// Fly the autopilot at `fps` for `seconds` and report the peak velocity it
+    /// reached, and where it left the ship.
     ///
-    /// The stick is worked once a *frame* and the ship is stepped on a fixed
-    /// accumulator, which is `Flight::advance` and is the whole point. Stepping
-    /// the ship at the frame rate instead measures something else and looks
-    /// like a fault: `Ship::update` gains heading by a right-Riemann sum, so a
-    /// tenth-of-a-second step under-counts the turn by 12% where a
-    /// five-hundredth under-counts it by 0.3% — a fact about `Ship` at a step
-    /// nothing ever calls it at, arriving here as a frame-rate dependence the
-    /// autopilot does not have.
-    fn fly(fps: f64, seconds: f64, start: f64) -> (f32, f32, Ship) {
+    /// The ship is stepped on a fixed accumulator rather than at the frame
+    /// rate, which is what `Flight::advance` does and is the whole point of
+    /// flying it this way here. It mattered more when this returned a swept
+    /// heading — `Ship::update` gains heading by a right-Riemann sum, so a
+    /// tenth-of-a-second step under-counts a turn by 12% where a five-hundredth
+    /// under-counts it by 0.3%, a fact about `Ship` at a step nothing calls it
+    /// at that arrived here looking like a frame-rate dependence. Nothing turns
+    /// now, so that trap is asleep rather than gone; the accumulator stays
+    /// because a test of the autopilot should fly the loop the autopilot flies.
+    fn fly(fps: f64, seconds: f64, start: f64) -> (f32, Ship) {
         let dt = 1.0 / fps;
         let mut ship = Ship::new();
         let mut autopilot = Autopilot::default();
-        let (mut swept, mut peak, mut acc) = (0.0f32, 0.0f32, 0.0f32);
+        let (mut peak, mut acc) = (0.0f32, 0.0f32);
         for frame in 0..(seconds * fps) as usize {
-            autopilot.update(&mut ship, start + frame as f64 * dt, dt as f32);
+            autopilot.update(&mut ship, start + frame as f64 * dt);
             acc += dt as f32;
             while acc >= SIM_STEP {
-                let before = ship.heading;
                 ship.update(SIM_STEP);
-                swept += crate::ship::wrap_signed(ship.heading - before).abs();
                 acc -= SIM_STEP;
             }
             peak = peak.max(ship.velocity_c());
         }
-        (swept, peak, ship)
+        (peak, ship)
     }
 
     #[test]
@@ -339,7 +358,7 @@ mod tests {
         let mut engaged_at_some_point = false;
 
         for frame in 0..(Autopilot::CYCLE / dt as f64) as usize {
-            autopilot.update(&mut ship, frame as f64 * dt as f64, dt);
+            autopilot.update(&mut ship, frame as f64 * dt as f64);
             ship.update(dt);
             peak = peak.max(ship.velocity_c());
             engaged_at_some_point |= ship.warp_engaged;
@@ -365,7 +384,7 @@ mod tests {
             let (mut peak, mut engaged) = (0.0f32, false);
 
             for frame in 0..(2.0 * Autopilot::CYCLE / dt) as usize {
-                autopilot.update(&mut ship, start + frame as f64 * dt, dt as f32);
+                autopilot.update(&mut ship, start + frame as f64 * dt);
                 ship.update(dt as f32);
                 peak = peak.max(ship.velocity_c());
                 engaged |= ship.warp_engaged;
@@ -380,35 +399,43 @@ mod tests {
     }
 
     #[test]
-    fn the_weave_sweeps_the_same_sky_whatever_the_frame_rate() {
-        // The reported fault, and the reason for every `dt` in this module. The
-        // stick is impulse-driven, so an impulse applied once a frame and
-        // damped over the frame sweeps an angle proportional to the frame rate
-        // unless it is scaled by the frame. It was exactly that: the same forty
-        // seconds swept a sixth of its 60 fps arc at ten frames a second and
-        // eight and a third times it at five hundred, which is one autopilot
-        // flying a fiftyfold different turn.
+    fn a_ship_nobody_is_flying_is_pointed_exactly_where_it_started() {
+        // The property the weave was taken out for, stated as strongly as it
+        // can be. This module used to lean on the stick every frame — a lazy
+        // wander on the yaw and the pitch — and the sky is projected through
+        // `Ship::axes`, so what that produced was the whole field swinging
+        // under a viewer who had asked for a flight rather than a drift.
         //
-        // Five hundred is not a display rate. It is what the interactive loop
-        // reaches when the frame cap is abandoned to answer a key — a stuck key
-        // or a pasted burst — and it is the end of the range where the lean got
-        // large enough to matter, which is the half of this that
-        // `models::a_ship_nobody_is_flying_never_crosses_the_swap` measures.
+        // Exactly, not nearly, and that is the useful half. An attitude held to
+        // the bit is what lets ten reference hashes say that a change to the
+        // steering path really was the identity it looked like, and it is what
+        // makes every `--demo` flight in `tests/golden.rs` a control for that
+        // path rather than a contrast against it.
         //
-        // The arc rather than the net turn, because the weave comes back: a
-        // signed sum could be small because nothing moved or because it moved
-        // both ways.
-        let swept: Vec<f32> = [10.0, 30.0, 60.0, 120.0, 500.0]
-            .into_iter()
-            .map(|fps| fly(fps, 40.0, 0.0).0.to_degrees())
-            .collect();
-        let lo = swept.iter().cloned().fold(f32::INFINITY, f32::min);
-        let hi = swept.iter().cloned().fold(0.0f32, f32::max);
-        assert!(
-            hi < lo * 1.01,
-            "the same forty seconds of weaving sweeps {swept:?} degrees of \
-             heading at ten to five hundred frames a second"
-        );
+        // Three frame rates, kept from the test this replaces. Five hundred is
+        // not a display rate: it is what the interactive loop reaches when the
+        // frame cap is abandoned to answer a key, and it is where an impulse
+        // that had crept back in unscaled would show first and worst.
+        for fps in [10.0f64, 60.0, 500.0] {
+            let (_, ship) = fly(fps, 2.0 * Autopilot::CYCLE, 0.0);
+            assert_eq!(
+                ship.axes,
+                crate::ship::LEVEL_AXES,
+                "two cycles at {fps} frames a second moved the nose to {:?}",
+                ship.axes
+            );
+            for (name, rate) in [
+                ("yaw", ship.yaw_rate),
+                ("pitch", ship.pitch_rate),
+                ("roll", ship.roll_rate),
+                ("bank", ship.bank),
+            ] {
+                assert_eq!(
+                    rate, 0.0,
+                    "the autopilot left {rate} on the {name} at {fps} frames a second"
+                );
+            }
+        }
     }
 
     #[test]
@@ -428,7 +455,7 @@ mod tests {
                 let mut acc = 0.0f32;
                 for frame in 0..(Autopilot::CYCLE * fps) as usize {
                     let elapsed = frame as f64 * dt;
-                    autopilot.update(&mut ship, elapsed, dt as f32);
+                    autopilot.update(&mut ship, elapsed);
                     acc += dt as f32;
                     while acc >= SIM_STEP {
                         ship.update(SIM_STEP);
@@ -457,29 +484,31 @@ mod tests {
     }
 
     #[test]
-    fn the_stick_is_never_quite_still() {
-        // What the module doc has always claimed and what was true for only
-        // twenty-six of the forty-six seconds: the weave lived inside the warp
-        // leg, so the run-up, the drop-out and the coast left every rate
-        // decaying to zero and the sky dead.
+    fn the_stick_is_never_touched_at_all() {
+        // The exact inverse of the test that stood here, and the inversion was
+        // the point rather than a casualty. That one asserted the sky is never
+        // still for a whole second at a stretch, because a weave that lived
+        // inside the warp leg left the run-up, the drop-out and the coast —
+        // twenty of the forty-six seconds — with every rate decaying to nothing.
+        //
+        // Widening the weave to the whole cycle was the answer then. Taking it
+        // out is the answer now: a flight nobody is flying holds the heading it
+        // was given, and what carries the eye is the camera and the drive.
+        // Stated over two cycles a frame at a time rather than at the end, so a
+        // rate that was nudged and damped back to nothing between two samples
+        // cannot slip past.
         let dt = 1.0 / 60.0;
         let mut ship = Ship::new();
         let mut autopilot = Autopilot::default();
-        let (mut still, mut worst) = (0, 0);
         for frame in 0..(2.0 * Autopilot::CYCLE / dt as f64) as usize {
-            autopilot.update(&mut ship, frame as f64 * dt as f64, dt);
+            autopilot.update(&mut ship, frame as f64 * dt as f64);
             ship.update(dt);
-            if ship.yaw_rate.abs() < 1e-5 && ship.pitch_rate.abs() < 1e-5 {
-                still += 1;
-                worst = worst.max(still);
-            } else {
-                still = 0;
-            }
+            assert_eq!(
+                (ship.yaw_rate, ship.pitch_rate, ship.roll_rate),
+                (0.0, 0.0, 0.0),
+                "the autopilot put the stick over at frame {frame}"
+            );
         }
-        assert!(
-            worst < 60,
-            "the sky holds perfectly still for {worst} frames at a stretch"
-        );
     }
 
     #[test]
@@ -487,7 +516,7 @@ mod tests {
         // A screensaver is watched for minutes, and a schedule that comes round
         // unchanged is read as a loop however pretty one pass is.
         let peaks: Vec<f32> = (0..6)
-            .map(|cycle| fly(60.0, Autopilot::CYCLE, cycle as f64 * Autopilot::CYCLE).1)
+            .map(|cycle| fly(60.0, Autopilot::CYCLE, cycle as f64 * Autopilot::CYCLE).0)
             .collect();
         for (i, a) in peaks.iter().enumerate() {
             for b in &peaks[i + 1..] {
@@ -510,7 +539,7 @@ mod tests {
             let mut worst = f32::INFINITY;
             for cycle in 0..40 {
                 let at = start + cycle as f64 * Autopilot::CYCLE;
-                worst = worst.min(fly(60.0, Autopilot::CYCLE, at).1);
+                worst = worst.min(fly(60.0, Autopilot::CYCLE, at).0);
             }
             assert!(
                 worst > 300.0,

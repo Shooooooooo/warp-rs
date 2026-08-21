@@ -64,10 +64,13 @@ sheds detail to fit, and on eighty columns it names only the first few.
 | `--size COLSxROWS` | Override the terminal size. |
 | `--headless --frames N` | Print frames to stdout instead of taking over the terminal. In this mode `--fps` is the simulation timestep rather than a cap, so it changes the flight. |
 
-The autopilot flies the camera as well as the ship, so `--screensaver --view
-side` walks the shot round the hull rather than parking it, and no two runs up
-to warp are flown quite alike. `--orbit` still says where the shot starts; the
-camera wanders out from there.
+The autopilot works the throttle and the camera, so `--screensaver --view side`
+walks the shot round the hull rather than parking it, and no two runs up to warp
+are flown quite alike. `--orbit` still says where the shot starts; the camera
+wanders out from there. It does not steer: a flight nobody is flying holds the
+heading it was given and runs dead straight, and what moves is the camera and
+the drive. Neither `--demo` nor `--screensaver` draws the instrument panel,
+since there is nobody at the controls for it to be reporting to.
 
 ## The sky
 

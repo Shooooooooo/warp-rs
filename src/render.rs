@@ -342,7 +342,7 @@ mod tests {
             fps: 60.0,
             magnitude: 6.0,
             paused: false,
-            hints: true,
+            panel: true,
             view: crate::view::ViewMode::Cockpit,
             model: "normandy",
         }
