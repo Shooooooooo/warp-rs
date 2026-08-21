@@ -504,11 +504,24 @@ store through `self.buf`'s pointer is one the optimiser must assume could land
 on that pointer and its length; and `bend::subdivide` skips the length and the
 two curvatures when the arc budget is already one, which is every leg of every
 turning exposure and which the optimiser cannot fold away because the budget is
-a runtime value. Measured back to back, minimum of five sweeps: the outside view
-at warp with the stick buried went 55.7 ms to 48.2, the cockpit at 72 000 stars
-7.19% and the same in 256 colour 7.74%, the outside view straight 5.10%, and the
-default sky at 200x60 3.59%. The 80x24 row did not move, because at 0.30 ms it
-is under the granularity the bench reports.
+a runtime value.
+
+Measured back to back, minimum of five sweeps, and **run twice** — which is the
+part worth copying, because the two runs disagree and the disagreement is the
+honest width of this container's noise. The rows that moved, as a range across
+both: the outside view at warp with the stick buried 12.1 to 13.5% (55 ms to
+48), the same view flying straight 3.8 to 5.1%, the cockpit at 72 000 stars 3.0
+to 7.2% and the same sky in 256 colour 5.1 to 7.7%, and the turning cockpit 4.3
+to 4.7%. The two 200x60 rows at the *default* sky are the interesting ones: they
+came out 3.6% and 2.2% better on the first run and 1.2% and 1.1% worse on the
+second, which is to say they did not move at all — at 1.6 ms a row, this box's
+drift is wider than anything these edits do to it. The 80x24 row did not move
+either, and at 0.30 ms it is under what the bench resolves.
+
+**So the noise floor here is about two percent on a short row, and a single
+sweep cannot see past it.** Two of the experiments in the table below were
+rejected on exactly that basis, and one of them looked like a win on its first
+measurement.
 
 **Those figures are from before the sky went world-space and none of them is
 the number to reproduce now.** The same case is a different frame: the pool is
@@ -549,6 +562,8 @@ place:
 | row-walking `apply_vignette` with `chunks_exact_mut` | nothing; the indexed form already compiles to the same thing. |
 | dropping the `palette_256` → `palette_rgb` round trip in `quantize_256` | nothing; the constant divisors are already folded. |
 | taking `splat_inside`'s four taps through one `&mut self.buf[base..=base + right + below]`, to pay one bounds check instead of four | **worse** — the turning frame went up 1.3% and the outside view 2.4%, and callgrind says why: the four checks came out at 424M instructions and the inclusive-range slice put 614M back, for a net 191M *added*. Binding the buffer as a plain slice is the half of that idea that works and it is in the tree; slicing it down to the window is the half that does not. |
+| threading a bent sample's offsets through `bend`'s walk, so `shadowed`, `crosses_the_ring` and the next leg's chord test share one transform instead of taking three | **worse** — 5.211G instructions against 5.130G on the outside view at warp with the stick buried, a 1.6% *rise*, deterministic. The duplication is not real: `Lens::offsets` is a pure function of the lens and the point, nothing writes between the two calls, and LLVM had already common-subexpressioned them. What the change actually added was an `Option` carried across the loop and the register pressure to hold it. This is the `sin_cos` lesson again on a different function — read the profile, not the source. |
+| taking the divide out of `Lens::crosses_the_ring` when the dot product says the nearest point clamps to the near end | **worse** — the straight outside view went up 2.0% on both the minimum and the median of eleven runs. The shortcut is exact (only the squares of the nearest point are read, so the negative zero it hands back is unobservable) and it still does not pay: a bent image is pushed outward about half the time, so the branch is a coin flip, and a mispredict costs more than the `divss` it skips. A branch is only worth putting in front of a divide where it is *predictable*. |
 | `#[inline]` on `Sink::move_to`, `set_color` and `glyph`, on the reading that the enum's `Commands` arm keeps the ANSI path out of line | nothing at all — 0.400 ms of write column either side, to the millisecond's third decimal. The hint is advisory and fat LTO had already made its decision. Splitting the enum into two types is a different proposal and is untested; it would have to be measured against `Screen::flush` rather than this bench, which times `present_plain`. |
 
 Cachegrind is the other thing to know before reaching for a layout change, and
@@ -593,8 +608,9 @@ ratios did not move: about three to one on the default sky, five to one at
 **And the ratios are what moved when the five bit-exact edits above went in**,
 which is worth knowing because it is the first time anything here has bitten the
 turn harder than the straight flight. Measured on the same machine, minimum of
-five, the whole-frame column: 4.03 to 3.85 on the default sky turning, 48.07 to
-46.00 at `--magnitude 8`, and 55.72 to **48.20** from outside — so the outside
+five and repeated, the whole-frame column: 4.03 to 3.85 and 4.01 to 3.92 on the
+default sky turning, 48.07 to 46.00 and 47.62 to 45.38 at `--magnitude 8`, and
+55.72 to **48.20** and 54.96 to **48.32** from outside — so the outside
 view's turn came down from a little under five times its straight cost to about
 four and a half, and almost all of that is one edit. `bend::subdivide` was
 taking a square root and two `Lens::curvature` calls per leg to decide a number
