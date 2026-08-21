@@ -713,6 +713,27 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
          about the track being pinned nowhere here is out of date"
     );
 
+    // And every flight here spends most of itself with the shutter fully open,
+    // which is a premise rather than a property of the renderer and is exactly
+    // why it is worth asserting. A shot opens out of black, so the front of
+    // every one of these is the sky arriving rather than the sky. At the
+    // default that is 26 frames of 120 at 60 fps and 5 of 120 at `--fps 10`;
+    // raise `cli::DEFAULT_FADE` far enough and the two-second flights would be
+    // most fade, and the ten would go on passing while pinning the arrival
+    // instead of the arithmetic. Measured against the whole fade rather than
+    // against its rise, which is the shorter half and the one that reaches
+    // these — so this is the conservative statement of it.
+    for (name, case) in CASES {
+        let args = reference_args(case);
+        let seconds = args.frames as f32 / args.fps as f32;
+        assert!(
+            seconds > args.fade * 2.0,
+            "{name} is {seconds} seconds long against a fade of {}, so less \
+             than half of what it pins is a settled frame",
+            args.fade
+        );
+    }
+
     // And the warp cases really are at warp rather than nominally engaged: a
     // flight that lit the drive and never spooled up would pin the same
     // sublight arithmetic under a different name.

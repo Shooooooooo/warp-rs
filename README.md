@@ -59,6 +59,7 @@ sheds detail to fit, and on eighty columns it names only the first few.
 | `--ship NAME` | Which ship to fly, and only visible from outside: `enterprise` (the default) or `normandy`. |
 | `--throttle 0..1` | Starting throttle. |
 | `--exposure N` | Tonemap exposure. Higher is brighter. |
+| `--fade SECS` | How long a camera change takes, dipping through black. The sky arrives over the tail of one at the start of a run. Default 0.6; `0` cuts straight. |
 | `--aa N` | Samples per subpixel, per axis, for the hull's outline. Default 3; `1` is a hard edge. |
 | `--seed N` | Fix the sky. Omit for a different one each run. |
 | `--size COLSxROWS` | Override the terminal size. |

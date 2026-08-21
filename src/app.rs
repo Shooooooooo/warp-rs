@@ -50,6 +50,74 @@ const MAX_STEP_DT: f32 = 1.0;
 /// which is the invariant `cli::MAX_STARS` used to hold, one door further back.
 const MAGNITUDE_STEP: f32 = 0.5;
 
+/// How much of a cut is spent going dark, as a fraction of `--fade`.
+///
+/// Held at both ends. Smaller and the outgoing picture is gone before the eye
+/// has registered that anything happened, which is a hard switch with a flicker
+/// on it rather than a cut. Larger and the shot sags — a picture that sits
+/// there dying reads as a fault rather than as a change of camera. It also sets
+/// what a *run* opens on, since the program starts at the bottom of a cut it
+/// was never on the other side of: a fresh flight rises over the other
+/// `1 - FADE_OUT_SHARE` of the fade, which at the default is the four tenths of
+/// a second anybody actually looks at once a run.
+const FADE_OUT_SHARE: f32 = 0.3;
+/// Both ends of that fraction, as a build failure rather than a runtime one:
+/// [`fade_t`] divides by `fade - fade * FADE_OUT_SHARE` on the rise, which is
+/// nonzero for a positive fade exactly while this is strictly inside the unit
+/// interval.
+const _: () = assert!(
+    FADE_OUT_SHARE > 0.0 && FADE_OUT_SHARE < 1.0,
+    "a cut has to spend some of itself going down and some coming back"
+);
+
+/// Where a cut has got to, as the parameter the light is ramped from: 1.0 for a
+/// settled shot, 0.0 at the bottom of the dip.
+///
+/// A closed form of the clock rather than a decaying transient like
+/// [`Ship::flash`], and the reason is not the one it looks like. `exp(-k·dt)`
+/// is frame-rate independent too — that is why everything in `ship.rs` eases
+/// that way. What a closed form buys is what the autopilot's throttle bought
+/// when it stopped stepping: independence that is *structural*, because nothing
+/// is being stepped at all, and an end that is reached exactly rather than
+/// approached. That second half is load-bearing. A gain a single ulp under one
+/// would repaint the whole sky for the rest of the flight, where this returns a
+/// literal 1.0 and `v * 1.0` is the identity.
+///
+/// `from` is where the fall starts, and it is a field rather than a constant
+/// because a second cut can land while the first is still going down. Stamping
+/// a fresh cut with `from` at one would slam the picture back to full
+/// brightness and drop it again — a flash in the one feature whose whole job is
+/// to look right, and auto-repeat on `C` reaches it constantly.
+fn fade_t(elapsed: f32, fade: f32, from: f32) -> f32 {
+    if fade <= 0.0 {
+        return 1.0;
+    }
+    let out = fade * FADE_OUT_SHARE;
+    if elapsed < out {
+        from * (1.0 - elapsed / out)
+    } else {
+        ((elapsed - out) / (fade - out)).min(1.0)
+    }
+}
+
+/// The shutter a frame is resolved through, from where the cut has got to.
+///
+/// Smoothstep for soft ends at both stops, then squared — and the square is
+/// chosen against the tonemap's gamma of 2.2 rather than by eye. Perceived
+/// level goes as the gain to the power of one over that, so a linear ramp on
+/// the gain is already half-bright a fifth of the way through and the fade
+/// reads as a step followed by a wait. Squaring the eased parameter puts the
+/// level at very nearly the parameter itself, so half way through a cut in time
+/// is half way through it in brightness. `e * e` rather than a `powf` of 2.2
+/// because it is exact at both ends and costs no call; the tenth of an exponent
+/// left over leaves the picture very slightly front-loaded, which is the right
+/// way round for something arriving.
+fn fade_gain(elapsed: f32, fade: f32, from: f32) -> f32 {
+    let t = fade_t(elapsed, fade, from).clamp(0.0, 1.0);
+    let eased = t * t * (3.0 - 2.0 * t);
+    eased * eased
+}
+
 /// Fly, in whichever of the three modes the arguments asked for.
 pub fn run(args: &Args) -> io::Result<()> {
     #[cfg(feature = "snapshot")]
@@ -77,6 +145,28 @@ pub struct Flight {
     /// Which camera is flying, which ship is being flown, and whether the
     /// picker is up over the top of it.
     view: ViewMode,
+    /// Which camera the *picture* was on when the current cut was made, and
+    /// where that cut is in its dip.
+    ///
+    /// `view` above is which camera the *flight* is on: it changes the instant
+    /// `C` is pressed, so the stick, the wheel and the hint tiers all change
+    /// hands at once and nothing has to know about a switch that has not landed
+    /// yet. What this frame is drawn from is [`Flight::shown`], which holds
+    /// `previous` until the bottom of the dip. The cut is made in the dark,
+    /// where there is nothing on screen to change over.
+    ///
+    /// `cut` joins `time` below on the `f64` list and for the same reason: it
+    /// tracks a clock that only grows, and a screensaver left up for a week
+    /// would have an `f32` copy of it unable to resolve half a second at all.
+    /// `from` and `fade` stay `f32` for the reason the zoom does — both are
+    /// bounded and neither accumulates.
+    previous: ViewMode,
+    cut: f64,
+    from: f32,
+    /// How long a cut takes, straight off the command line. Carried here rather
+    /// than read off `args` in [`Flight::draw`] so that function's signature
+    /// never moves: `tests/flight.rs` and `examples/bench.rs` both call it.
+    fade: f32,
     model: usize,
     menu: Option<Menu>,
     /// How far the outside camera has been pushed in or out, and where it is
@@ -144,12 +234,26 @@ impl Flight {
         let seed = seed(args);
         let sky = Universe::new(args.magnitude, seed);
 
-        let mut flight = Self {
+        // The camera the shot opens on, set here rather than by a `set_view`
+        // call after the fact — which is what this used to do, and which would
+        // now arm a whole cut at `t = 0`, dipping `--view side` down from a
+        // cockpit nobody asked to see.
+        let view = args.view.resolve();
+        Self {
             ship,
             sky,
             renderer,
             autopilot: Autopilot::default(),
-            view: ViewMode::Cockpit,
+            view,
+            previous: view,
+            // A shot opens at the bottom of a cut it was never on the other
+            // side of: `time` starts at zero, so seating the cut exactly one
+            // fall behind it puts the first frame on the trough and the sky
+            // arrives over the rise. One field, one curve, and no special case
+            // for the opening.
+            cut: -((args.fade * FADE_OUT_SHARE) as f64),
+            from: 1.0,
+            fade: args.fade,
             model: args.ship,
             menu: None,
             zoom: view::ZOOM_DEFAULT,
@@ -160,11 +264,7 @@ impl Flight {
             seed,
             time: 0.0,
             accumulator: 0.0,
-        };
-        if args.view.resolve() == ViewMode::Side {
-            flight.set_view(ViewMode::Side);
         }
-        flight
     }
 
     /// Which camera is flying.
@@ -316,15 +416,88 @@ impl Flight {
         self.zoom_target = (view::ZOOM_DEFAULT * zoom).clamp(view::ZOOM_MIN, view::ZOOM_MAX);
     }
 
-    /// Change camera.
+    /// Change camera, and cut to it through black.
     ///
     /// It used to build the outside view's sky here, the first time that view
     /// was asked for, from a seed of its own so the cockpit's stream stayed
     /// untouched. There is one sky now and it is already built, so a view is a
     /// question about where to stand and nothing else — which is also why the
     /// `C` key can no longer show two different universes.
+    ///
+    /// The whole of the cut is here because this is the only funnel: `C` comes
+    /// through [`Self::cycle_view`] and `M` through [`Self::open_menu`], which
+    /// forces the outside view. The early return is what keeps `M` pressed
+    /// while already outside from dipping the picture for a dialogue that is
+    /// only opening.
+    ///
+    /// `previous` is taken from [`Self::shown`] rather than from `self.view`,
+    /// and the difference only shows when a second cut lands inside the first
+    /// one's fall: what has to fade out is whatever is actually on screen, not
+    /// a camera the flight had committed to and never drawn. Order is
+    /// load-bearing too — both `shown` and `fade_t` read the *old* `cut`, so
+    /// they have to be asked before it is overwritten.
     fn set_view(&mut self, view: ViewMode) {
+        if view == self.view {
+            return;
+        }
+        self.previous = self.shown();
+        self.from = fade_t(self.since_cut(), self.fade, self.from);
+        self.cut = self.time;
         self.view = view;
+    }
+
+    /// How long the current cut has been running, in flight seconds.
+    ///
+    /// Subtracted in `f64` and only the small difference narrowed, which is the
+    /// same care [`Renderer::camera`] takes with the shake: the two terms are a
+    /// screensaver's whole uptime apart from each other and their difference is
+    /// under a second.
+    fn since_cut(&self) -> f32 {
+        (self.time - self.cut) as f32
+    }
+
+    /// Which camera *this frame* is built from, as against [`Self::view`],
+    /// which is the one the flight is being flown on. They differ only over the
+    /// fall of a cut.
+    fn shown(&self) -> ViewMode {
+        if self.since_cut() < self.fade * FADE_OUT_SHARE {
+            self.previous
+        } else {
+            self.view
+        }
+    }
+
+    /// The shutter this frame is resolved through.
+    fn gain(&self) -> f32 {
+        fade_gain(self.since_cut(), self.fade, self.from)
+    }
+
+    /// Land whatever cut is in flight, at once.
+    ///
+    /// `P` stops [`Self::advance`], which is the only thing that moves `time`,
+    /// so a cut made while the flight is stopped never gets anywhere: it sits
+    /// at zero elapsed, where the gain is exactly one and `shown` is still the
+    /// old camera. Pressing `C` while paused would therefore hold the outgoing
+    /// view at full brightness and look like a key that does nothing at all,
+    /// which is the thing `handle_key`'s whole split over which control belongs
+    /// to which view exists to avoid.
+    ///
+    /// So: there is nothing to dissolve between while nothing is moving, and a
+    /// cut made with the flight stopped lands where it was going. The nearest
+    /// precedent is `R`, which snaps the orbit and the zoom rather than easing
+    /// them, because a key pressed when the view has got away from you wants an
+    /// answer now. This owes nothing on the way out either, unlike the camera
+    /// bug `P` used to have: `from` goes back to one and the picture is
+    /// settled, so unpausing resumes an ordinary flight rather than replaying a
+    /// stored dip.
+    ///
+    /// A whole second past the end rather than exactly the end, because
+    /// `time - fade` and then the difference back again do not round-trip to
+    /// `fade` at large `time`, and a gain one ulp under one is a gain that
+    /// repaints the frame.
+    fn land_cut(&mut self) {
+        self.cut = self.time - self.fade as f64 - 1.0;
+        self.from = 1.0;
     }
 
     pub fn menu_open(&self) -> bool {
@@ -448,7 +621,24 @@ impl Flight {
     /// for, and hiding one of those would leave the key swallowing a press and
     /// giving nothing back, which is the thing `handle_key`'s whole split over
     /// which view a control belongs to exists to avoid.
+    ///
+    /// `paused` does one thing beyond the readout, and a caller driving a
+    /// flight from outside the binary should know it: it lands any camera cut
+    /// that is in flight, at once. A cut dips the picture through black as a
+    /// function of the flight's own clock, and a pause is what stops that
+    /// clock — so a cut begun with the flight stopped would otherwise sit
+    /// where it was armed, showing the outgoing camera, until the flight was
+    /// let go again.
     pub fn draw(&mut self, fps: f32, paused: bool, panel: bool) {
+        // A cut cannot get anywhere with the clock stopped, so it lands here
+        // instead — see [`Self::land_cut`]. This is the only function in the
+        // tree handed both the flight and whether it is stopped, which is why
+        // it covers `C` while paused, `M` while paused, and a `P` taken in the
+        // middle of a cut, all in one line.
+        if paused {
+            self.land_cut();
+        }
+        let gain = self.gain();
         let model = self.drawn_model();
         let readout = Readout {
             ship: &self.ship,
@@ -456,10 +646,14 @@ impl Flight {
             magnitude: self.magnitude(),
             paused,
             panel,
+            // The camera the flight is on rather than the one on screen: the
+            // hint tiers name keys, and over the fall of a cut the keys have
+            // already changed hands. The `SHIP` row goes the same way, since it
+            // belongs to whoever is flying rather than to what is drawn.
             view: self.view,
             model: model.name,
         };
-        match self.view {
+        match self.shown() {
             ViewMode::Side => {
                 let cam = self.renderer.exterior_camera(&self.ship, self.time);
                 let scene = Exterior {
@@ -470,12 +664,12 @@ impl Flight {
                     zoom: self.zoom,
                     orbit: self.orbit,
                 };
-                self.renderer.render_exterior(scene, &cam, &readout);
+                self.renderer.render_exterior(scene, &cam, gain, &readout);
             }
             ViewMode::Cockpit => {
                 let cam = self.renderer.camera(&self.ship, self.time);
                 self.renderer
-                    .render(&self.sky, &self.ship, &cam, self.time, &readout);
+                    .render(&self.sky, &self.ship, &cam, self.time, gain, &readout);
             }
         }
         // Over the top of everything, panel included: it is a dialogue, and it
@@ -1071,12 +1265,19 @@ mod tests {
         }
     }
 
-    /// A flight already outside, which is where the zoom lives.
+    /// A flight already outside, which is where the zoom lives — and settled,
+    /// with the cut that `c` armed landed and the shot opened.
+    ///
+    /// Landed rather than flown through, because every test built on this is
+    /// about something else: a flight left inside its opening fade draws dim
+    /// frames, and two dim frames agree about a great deal more than two lit
+    /// ones do.
     fn outside(args: &Args) -> Flight {
         let mut flight = Flight::new(args, 80, 24);
         let mut paused = false;
         handle_key(press(KeyCode::Char('c')), &mut flight, args, &mut paused);
         assert_eq!(flight.view(), ViewMode::Side);
+        flight.land_cut();
         flight
     }
 
@@ -1305,8 +1506,22 @@ mod tests {
 
     #[test]
     fn the_same_seed_produces_the_same_flight() {
+        // `--fade 0` pinned rather than left to the default, the way
+        // `tests/flight.rs` pins its colour mode: thirty frames is half a
+        // second and the shot opens over most of it, so what these two would
+        // otherwise be comparing is mostly how dark the opening is. The same
+        // note covers the sibling below.
         let render = || {
-            let args = args_for(&["--seed", "7", "--magnitude", "4.5", "--size", "40x12"]);
+            let args = args_for(&[
+                "--seed",
+                "7",
+                "--magnitude",
+                "4.5",
+                "--size",
+                "40x12",
+                "--fade",
+                "0",
+            ]);
             let mut flight = Flight::new(&args, 40, 12);
             let mut out = Vec::new();
             for _ in 0..30 {
@@ -1322,7 +1537,16 @@ mod tests {
     #[test]
     fn different_seeds_produce_different_skies() {
         let render = |seed: &str| {
-            let args = args_for(&["--seed", seed, "--magnitude", "4.5", "--size", "40x12"]);
+            let args = args_for(&[
+                "--seed",
+                seed,
+                "--magnitude",
+                "4.5",
+                "--size",
+                "40x12",
+                "--fade",
+                "0",
+            ]);
             let mut flight = Flight::new(&args, 40, 12);
             let mut out = Vec::new();
             for _ in 0..30 {
@@ -1388,6 +1612,16 @@ mod tests {
             );
             let mut flight = Flight::new(&args, 60, 20);
             let mut paused = false;
+            // Flown out of the opening fade before anything is sampled, or the
+            // question below stops being asked: a shot opens out of black, so
+            // the frame at the press and the frame a step later differ by the
+            // fade alone whatever key was pressed — and at the very first step
+            // they can both be black instead. Taken off the flag rather than
+            // written out, so moving the default cannot make this vacuous
+            // again.
+            while flight.time < args.fade as f64 {
+                flight.advance(1.0 / 60.0);
+            }
             let before = frame_of(&mut flight);
             handle_key(press(code), &mut flight, &args, &mut paused);
             flight.advance(1.0 / 60.0);
@@ -1589,6 +1823,361 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_is_over_and_exactly_over_when_its_seconds_are_up() {
+        // Every claim here is an equality rather than a tolerance, because what
+        // rests on them is a bitwise one: the shutter multiplies the linear
+        // light on its way to eight bits, and `v * 1.0` is the identity — so a
+        // settled frame is byte for byte the frame the fade is not there for. A
+        // gain a single ulp under one would repaint the whole sky for the rest
+        // of a flight instead, and no reference hash would say which change did
+        // it.
+        let fade = cli::DEFAULT_FADE;
+        let out = fade * FADE_OUT_SHARE;
+        assert_eq!(fade_gain(0.0, fade, 1.0), 1.0, "a cut steps at the press");
+        assert_eq!(
+            fade_gain(out, fade, 1.0),
+            0.0,
+            "the bottom of the dip is lit"
+        );
+        assert_eq!(
+            fade_gain(fade, fade, 1.0),
+            1.0,
+            "a cut is not over when it says"
+        );
+        assert_eq!(
+            fade_gain(1e6, fade, 1.0),
+            1.0,
+            "a cut came back after a week"
+        );
+
+        // And no fade at all is the renderer this arrived on, at every instant
+        // and from wherever a fall happened to have got to.
+        for elapsed in [0.0, 0.001, 1.0, 1e9] {
+            for from in [0.0, 0.5, 1.0] {
+                assert_eq!(fade_gain(elapsed, 0.0, from), 1.0, "`--fade 0` faded");
+            }
+        }
+
+        // Down, then up, and never past fully open.
+        let steps = 600;
+        let mut previous = fade_gain(0.0, fade, 1.0);
+        for i in 1..=steps {
+            let elapsed = out * i as f32 / steps as f32;
+            let now = fade_gain(elapsed, fade, 1.0);
+            assert!(now <= previous, "the fall went back up at {elapsed}");
+            previous = now;
+        }
+        previous = fade_gain(out, fade, 1.0);
+        for i in 1..=steps {
+            let elapsed = out + (fade - out) * i as f32 / steps as f32;
+            let now = fade_gain(elapsed, fade, 1.0);
+            assert!(now >= previous, "the rise went back down at {elapsed}");
+            assert!(now <= 1.0, "the shutter opened past full at {elapsed}");
+            previous = now;
+        }
+    }
+
+    #[test]
+    fn the_camera_changes_hands_at_the_press_and_the_picture_in_the_dark() {
+        // The whole of the design in one test. `C` hands the stick, the wheel
+        // and the hint tiers over at once, so nothing in `handle_key` has to
+        // know about a switch that has not landed; what waits is the picture,
+        // and it changes over at the bottom of the dip, where there is nothing
+        // on screen to change over.
+        let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+        }
+
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        assert_eq!(
+            flight.view(),
+            ViewMode::Side,
+            "the flight did not change camera"
+        );
+        assert_eq!(
+            flight.shown(),
+            ViewMode::Cockpit,
+            "the picture changed over before there was any dark to change it in"
+        );
+        while flight.since_cut() < args.fade * FADE_OUT_SHARE {
+            assert_eq!(flight.shown(), ViewMode::Cockpit, "the picture cut early");
+            flight.advance(1.0 / 60.0);
+        }
+        assert_eq!(
+            flight.shown(),
+            ViewMode::Side,
+            "the picture never changed over"
+        );
+    }
+
+    #[test]
+    fn the_picture_dips_through_black_and_comes_back_when_the_camera_changes() {
+        let args = args_for(&["--seed", "11", "--magnitude", "4.5", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+        }
+        let light = |flight: &Flight| -> u64 {
+            flight
+                .renderer
+                .pixels()
+                .iter()
+                .map(|p| p.iter().map(|v| *v as u64).sum::<u64>())
+                .sum()
+        };
+
+        flight.draw(60.0, false, false);
+        let before: Vec<[u8; 3]> = flight.renderer.pixels().to_vec();
+        let lit = light(&flight);
+        assert!(lit > 0, "nothing was lit, so there was nothing to dip");
+
+        // A cut does not step. The frame at the press is the frame before it,
+        // bit for bit — which is what makes a fall a fall rather than a jump
+        // followed by one.
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        flight.draw(60.0, false, false);
+        assert_eq!(
+            flight.renderer.pixels(),
+            &before[..],
+            "the picture jumped at the press instead of starting to go"
+        );
+
+        let mut darkest = lit;
+        while flight.since_cut() < args.fade {
+            flight.advance(1.0 / 60.0);
+            flight.draw(60.0, false, false);
+            darkest = darkest.min(light(&flight));
+        }
+        assert!(
+            darkest * 50 < lit,
+            "the cut only got down to {darkest} against {lit}, which is a wobble \
+             rather than a dip"
+        );
+        assert_eq!(flight.gain(), 1.0, "the cut never finished");
+        assert!(light(&flight) > 0, "the picture never came back");
+    }
+
+    #[test]
+    fn a_second_cut_fades_out_what_is_actually_on_screen() {
+        // Two claims, and each masks the other if it is the only one made, so
+        // both are here. Auto-repeat means a second cut landing inside the
+        // first one's fall is the ordinary case rather than the awkward one.
+        //
+        // Measured to fail on each of the two things it guards: `previous`
+        // taken from `view` rather than from `shown` hard-cuts the picture to a
+        // camera nothing has drawn, and `from` dropped slams the shutter back
+        // open and drops it again — a flash in the one feature whose whole job
+        // is to look right.
+        let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+        }
+
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        for _ in 0..4 {
+            flight.advance(1.0 / 60.0);
+        }
+        let falling = flight.gain();
+        assert!(
+            falling > 0.0 && falling < 1.0,
+            "the first cut was not still on its way down: {falling}"
+        );
+
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        assert_eq!(
+            flight.view(),
+            ViewMode::Cockpit,
+            "two presses should come round"
+        );
+        assert_eq!(
+            flight.shown(),
+            ViewMode::Cockpit,
+            "the second cut faded out a camera that had never been drawn"
+        );
+        assert_eq!(
+            flight.gain(),
+            falling,
+            "the second cut opened the shutter it should have gone on closing"
+        );
+        for _ in 0..4 {
+            flight.advance(1.0 / 60.0);
+            assert!(
+                flight.gain() <= falling,
+                "the picture brightened inside a fall"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_made_while_the_flight_is_stopped_is_a_hard_cut() {
+        // `P` stops the only thing that moves `time`, and the dip is a function
+        // of it — so without landing the cut it never gets anywhere: it sits at
+        // zero elapsed, where the shutter is fully open and the picture is
+        // still the outgoing camera. `C` would look like a key that does
+        // nothing whatever.
+        let args = args_for(&["--seed", "11", "--magnitude", "4.5", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+        }
+
+        handle_key(press(KeyCode::Char('p')), &mut flight, &args, &mut paused);
+        assert!(paused, "`P` did not stop the flight");
+        handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
+        flight.draw(60.0, paused, true);
+        assert_eq!(
+            flight.shown(),
+            ViewMode::Side,
+            "a cut made with the clock stopped is still waiting for it"
+        );
+        assert_eq!(
+            flight.gain(),
+            1.0,
+            "a paused cut left the shutter part shut"
+        );
+        assert!(
+            flight
+                .renderer
+                .pixels()
+                .iter()
+                .any(|p| p.iter().any(|v| *v > 0)),
+            "the frame a paused cut landed on came out black"
+        );
+
+        // And it owes nothing on the way out, unlike the camera bug `P` used to
+        // have: letting the flight go does not replay the dip.
+        handle_key(press(KeyCode::Char('p')), &mut flight, &args, &mut paused);
+        for _ in 0..30 {
+            flight.advance(1.0 / 60.0);
+            assert_eq!(
+                flight.gain(),
+                1.0,
+                "unpausing replayed a cut that had landed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shot_opens_at_the_bottom_of_a_cut_it_was_never_on_the_other_side_of() {
+        // Both views, because `--view side` used to reach its camera through a
+        // `set_view` call made after construction — which would now arm a whole
+        // dip out of a cockpit nobody asked to see. And at two frame rates,
+        // because a fade is a length of flight rather than a number of frames.
+        for view in ["cockpit", "side"] {
+            for step in [1.0 / 60.0, 1.0 / 10.0] {
+                let args = args_for(&[
+                    "--seed",
+                    "3",
+                    "--magnitude",
+                    "4.5",
+                    "--size",
+                    "60x20",
+                    "--engage",
+                    "--view",
+                    view,
+                ]);
+                let mut flight = Flight::new(&args, 60, 20);
+                assert_eq!(flight.gain(), 0.0, "{view} did not open on black");
+                assert_eq!(
+                    flight.shown(),
+                    flight.view(),
+                    "{view} opened on the wrong camera"
+                );
+                flight.draw(60.0, false, false);
+                assert!(
+                    flight.renderer.pixels().iter().all(|p| *p == [0, 0, 0]),
+                    "{view} opened on a lit frame"
+                );
+
+                // A shot opens on the trough, so what is left of the cut is its
+                // rise. Nothing on the way up may overshoot.
+                let rise = args.fade * (1.0 - FADE_OUT_SHARE);
+                while flight.time < rise as f64 {
+                    flight.advance(step);
+                    assert!(flight.gain() <= 1.0, "{view} opened past full at {step}");
+                }
+                assert_eq!(flight.gain(), 1.0, "{view} never arrived at {step}");
+                flight.draw(60.0, false, false);
+                assert!(
+                    flight
+                        .renderer
+                        .pixels()
+                        .iter()
+                        .any(|p| p.iter().any(|v| *v > 0)),
+                    "{view} came up black"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_instruments_are_not_in_the_exposure() {
+        // The fade is an exposure and the panel is on the glass rather than in
+        // it: stamped into cells after `compose`, which is the same line the
+        // snapshot PNG already draws between the scene and the chrome. So a
+        // shot opens on instruments over a dark sky, and the one place the keys
+        // are written down to somebody flying is never on a clock.
+        let args = args_for(&["--seed", "3", "--magnitude", "4.5", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        flight.draw(60.0, false, true);
+        assert!(
+            flight.renderer.pixels().iter().all(|p| *p == [0, 0, 0]),
+            "the shot did not open on black, so this measured nothing"
+        );
+        let mut out = Vec::new();
+        let _ = flight.present_plain(&mut out);
+        assert!(
+            String::from_utf8_lossy(&out).contains("VELOCITY"),
+            "the panel went dark with the sky"
+        );
+    }
+
+    #[test]
+    fn the_picker_does_not_cut_to_a_camera_it_is_already_on() {
+        // `M` forces the outside view through the same funnel `C` uses, so from
+        // the cockpit it cuts — and from outside it must not, or opening a
+        // dialogue would dip the picture behind it for nothing.
+        let args = args_for(&["--seed", "11", "--magnitude", "4.5", "--size", "60x20"]);
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut paused = false;
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+        }
+
+        handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
+        assert_eq!(
+            flight.view(),
+            ViewMode::Side,
+            "`M` did not go outside to look"
+        );
+        // A step first, because a cut does not step at the press: at zero
+        // elapsed the shutter is still fully open whether one was armed or not,
+        // which is the property the dip is built on and is why asking the gain
+        // straight after a keypress answers nothing.
+        flight.advance(1.0 / 60.0);
+        assert!(flight.gain() < 1.0, "`M` from the cockpit did not cut");
+
+        let mut flight = outside(&args);
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+        }
+        handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
+        flight.advance(1.0 / 60.0);
+        assert_eq!(
+            flight.gain(),
+            1.0,
+            "`M` cut to the camera it was already on"
+        );
+    }
+
+    #[test]
     fn the_stick_flies_the_camera_outside_and_the_ship_inside() {
         // Out there the camera rides with the ship, so a turn of the *hull*
         // moves nothing an eye can see: the stars stream on as they were and
@@ -1752,6 +2341,12 @@ mod tests {
 
             handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
             assert_eq!(flight.view(), ViewMode::Side);
+            // The cut `c` armed, landed. Without this the first frames here
+            // are the cockpit dipping rather than the hull, under a sky that
+            // is deliberately empty — so a third of what follows would be two
+            // black buffers agreeing, which is exactly what a comparison like
+            // the one below must never be allowed to become.
+            flight.land_cut();
             let mut pixels = Vec::new();
             for _ in 0..30 {
                 flight.advance(1.0 / 60.0);
@@ -1762,6 +2357,10 @@ mod tests {
         };
 
         let (crooked, straight) = (frames(true), frames(false));
+        assert!(
+            straight.iter().any(|p| p.iter().any(|v| *v > 0)),
+            "the hull never lit a subpixel, so the two agreed about nothing"
+        );
         let differing = crooked
             .iter()
             .zip(&straight)
@@ -2520,6 +3119,14 @@ mod tests {
         let (near, far) = (frame(view::ZOOM_MAX), frame(view::ZOOM_MIN));
         let (w, h) = (80usize, 48usize);
         assert_eq!(near.len(), w * h);
+        // The sweep below is a claim about *where* the two differ, which says
+        // nothing at all if they do not differ anywhere. `outside` lands the
+        // opening cut so these are lit frames rather than dim ones, and this
+        // is what says so.
+        assert!(
+            near.iter().zip(&far).any(|(a, b)| a != b),
+            "the two zooms drew the same frame, so nothing below was measured"
+        );
 
         // Generous: the hull at the widest zoom, and the bubble that would
         // hold it. Nothing outside that has any business having changed.
@@ -2642,6 +3249,15 @@ mod tests {
         back.draw(60.0, false, true);
 
         let got = back.renderer.pixels();
+        // Both flights press `c` at the same instant and take the same forty
+        // steps, so the cut and the shutter it opens through cancel — but a
+        // pair of black frames would cancel too, and this is the acceptance
+        // test for the whole camera. Forty steps is two thirds of a second,
+        // which clears the default fade, and this is what says it did.
+        assert!(
+            want.iter().any(|p| p.iter().any(|v| *v > 0)),
+            "the shot came out black, so nothing below was compared"
+        );
         let differing = want.iter().zip(got).filter(|(a, b)| a != b).count();
         assert_eq!(
             differing, 0,

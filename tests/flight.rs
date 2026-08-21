@@ -20,8 +20,17 @@ use warp_rs::cli::Args;
 /// default moves. It is truecolor either way today — that is the point of the
 /// pin rather than an argument against it. A caller that cares can pass its own
 /// `--color`.
+///
+/// `--fade 0` is pinned for exactly that reason and one sharper one. A shot
+/// opens out of black now, so a flight of twenty frames spends a third of a
+/// second of its life dim and its first frames entirely dark — and a test that
+/// compares two of those is comparing two black grids, which agree beautifully.
+/// `a_frame_does_not_repeat_a_colour_it_is_already_using` is the worst of it:
+/// it draws exactly one frame, and would have been asking whether the writer
+/// repeats a colour of a picture with one colour in it. The fade has its own
+/// test below; nothing else here is about it.
 fn fly(argv: &[&str], cols: usize, rows: usize, frames: usize) -> Vec<u8> {
-    let mut full = vec!["warp", "--color", "truecolor"];
+    let mut full = vec!["warp", "--color", "truecolor", "--fade", "0"];
     full.extend_from_slice(argv);
     let args = Args::try_parse_from(full).expect("arguments should parse");
 
@@ -64,6 +73,9 @@ fn a_flight_can_be_left_to_fly_itself() {
         "warp",
         "--color",
         "truecolor",
+        // Pinned for the reason `fly` above pins it.
+        "--fade",
+        "0",
         "--demo",
         "--view",
         "side",
@@ -163,6 +175,9 @@ fn a_turn_at_warp_can_be_flown_from_the_library_alone() {
             "1.0",
             "--color",
             "truecolor",
+            // Pinned for the reason `fly` above pins it.
+            "--fade",
+            "0",
         ])
         .expect("arguments should parse");
         let mut flight = Flight::new(&args, 60, 20);
@@ -287,6 +302,9 @@ fn a_flight_survives_a_step_the_caller_should_not_have_asked_for() {
         "warp",
         "--color",
         "truecolor",
+        // Pinned for the reason `fly` above pins it.
+        "--fade",
+        "0",
         "--seed",
         "5",
         "--magnitude",
@@ -347,5 +365,58 @@ fn a_frame_does_not_repeat_a_colour_it_is_already_using() {
             assert!(last != Some(code), "row {row} set `{code}` twice in a row");
             last = Some(code);
         }
+    }
+}
+
+#[test]
+fn a_fade_can_be_asked_for_from_the_command_line() {
+    // The flag's whole contract, stated where another program would have to
+    // read it. A shot opens out of black; and once it has arrived, the frames
+    // are byte for byte the ones a flight that never faded draws — which is
+    // what lets `--fade 0` stand as the control the ten reference flights were
+    // regenerated against, and what says the shutter reaches nothing but the
+    // resolve.
+    let frames = |fade: &str| -> Vec<Vec<u8>> {
+        let args = Args::try_parse_from([
+            "warp",
+            "--color",
+            "truecolor",
+            "--seed",
+            "4",
+            "--magnitude",
+            "4.5",
+            "--size",
+            "60x20",
+            "--fade",
+            fade,
+        ])
+        .expect("arguments should parse");
+        let mut flight = Flight::new(&args, 60, 20);
+        let mut out = Vec::new();
+        for _ in 0..120 {
+            flight.advance(1.0 / 60.0);
+            flight.draw(60.0, false, false);
+            let mut frame = Vec::new();
+            flight
+                .present_plain(&mut frame)
+                .expect("writing to a Vec cannot fail");
+            out.push(frame);
+        }
+        out
+    };
+
+    let (plain, faded) = (frames("0"), frames("0.5"));
+    assert_ne!(
+        plain[0], faded[0],
+        "half a second of fade left the opening frame exactly as it was"
+    );
+    // A shot opens at the bottom of the dip, so the rise is the whole of the
+    // fade less its fall: half a second of `--fade` is settled by frame 21 at
+    // a sixtieth of a second a frame. Thirty is well clear of it.
+    for (i, (a, b)) in plain.iter().zip(&faded).enumerate().skip(30) {
+        assert_eq!(
+            a, b,
+            "frame {i} is past the fade and still differs from the flight that had none"
+        );
     }
 }

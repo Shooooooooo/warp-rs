@@ -1085,13 +1085,36 @@ impl Canvas {
     /// Collapse the HDR buffer to 8-bit sRGB-ish pixels, row-major, into a
     /// caller-owned buffer. Taking one rather than returning a fresh `Vec`
     /// keeps a 98 KB allocation out of every single frame.
-    pub fn resolve_into(&self, tone: &Tonemap, out: &mut Vec<[u8; 3]>) {
+    ///
+    /// `gain` is the shutter — the whole frame's light multiplied by one number
+    /// fixed for that frame, which is what a shot opening out of black and a
+    /// cut between cameras are both made of. It rides this loop rather than a
+    /// pass of its own because this is the one pass that already visits every
+    /// subpixel: `clear` fills, `add_flash` adds, and `apply_vignette`
+    /// multiplies by a radius, so none of them is a place to put a number that
+    /// does not vary over the canvas.
+    ///
+    /// Scaling the *linear* light rather than the eight bits at the other end
+    /// is what makes it a stop of exposure rather than a dissolve. The tonemap
+    /// is `1 - exp(-v * exposure)`, so a gain on `v` is algebraically a gain on
+    /// the exposure: the faint stars go out first and the bright ones hold on,
+    /// which is the same order the catalogue's own fade brings them back in.
+    /// The same multiply applied to the eight bits `tone` hands back would be
+    /// perceptually even and would posterise, because what it scaled would
+    /// already have been quantised into two hundred and fifty six levels.
+    ///
+    /// There is deliberately no `gain == 1.0` fast path. `v * 1.0` is the
+    /// identity in IEEE for every finite value, for both zeroes and for a NaN,
+    /// so this body already *is* the body it replaced on every frame that is
+    /// not mid-fade — and a branch would be a second spelling of arithmetic the
+    /// reference frames are pinned to, which is the edit they exist to catch.
+    pub fn resolve_into(&self, tone: &Tonemap, gain: f32, out: &mut Vec<[u8; 3]>) {
         out.clear();
         out.extend(self.buf.iter().map(|px| {
             [
-                tone.channel(px[0]),
-                tone.channel(px[1]),
-                tone.channel(px[2]),
+                tone.channel(px[0] * gain),
+                tone.channel(px[1] * gain),
+                tone.channel(px[2] * gain),
             ]
         }));
     }
@@ -1116,7 +1139,7 @@ mod tests {
 
     fn resolve(canvas: &Canvas, exposure: f32, gamma: f32) -> Vec<[u8; 3]> {
         let mut out = Vec::new();
-        canvas.resolve_into(&Tonemap::new(exposure, gamma), &mut out);
+        canvas.resolve_into(&Tonemap::new(exposure, gamma), 1.0, &mut out);
         out
     }
 
@@ -2227,12 +2250,12 @@ mod tests {
         let tone = Tonemap::new(1.9, 2.2);
         let mut out = Vec::new();
 
-        canvas.resolve_into(&tone, &mut out);
+        canvas.resolve_into(&tone, 1.0, &mut out);
         assert_eq!(out.len(), 64 * 32);
         let capacity = out.capacity();
         for _ in 0..10 {
             canvas.splat(1.0, 1.0, [1.0; 3], 1.0);
-            canvas.resolve_into(&tone, &mut out);
+            canvas.resolve_into(&tone, 1.0, &mut out);
         }
         assert_eq!(
             out.capacity(),
@@ -2242,10 +2265,10 @@ mod tests {
 
         // The length has to follow a resize rather than the old dimensions.
         canvas.resize(40, 9);
-        canvas.resolve_into(&tone, &mut out);
+        canvas.resolve_into(&tone, 1.0, &mut out);
         assert_eq!(out.len(), 40 * 9);
         canvas.resize(200, 100);
-        canvas.resolve_into(&tone, &mut out);
+        canvas.resolve_into(&tone, 1.0, &mut out);
         assert_eq!(out.len(), 200 * 100);
     }
 
@@ -2253,6 +2276,90 @@ mod tests {
     fn an_empty_canvas_resolves_to_black() {
         let canvas = Canvas::new(16, 16);
         assert!(resolve(&canvas, 1.4, 2.2).iter().all(|p| *p == [0, 0, 0]));
+    }
+
+    /// The body [`Canvas::resolve_into`] had before it took a shutter, kept
+    /// here as its oracle the way `one_sample_a_subpixel_is_the_rasteriser_
+    /// this_replaced` keeps its own. Do not delete it to tidy up: it is the
+    /// only thing the claim below is measured against, and the ten reference
+    /// hashes all rest on that claim.
+    fn resolve_with_no_shutter(canvas: &Canvas, tone: &Tonemap) -> Vec<[u8; 3]> {
+        canvas
+            .buf
+            .iter()
+            .map(|px| {
+                [
+                    tone.channel(px[0]),
+                    tone.channel(px[1]),
+                    tone.channel(px[2]),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_full_shutter_resolves_to_the_pass_it_replaced() {
+        // The whole of why the fade could land in this loop rather than in a
+        // pass of its own: `v * 1.0` is the identity, so the shutter costs a
+        // multiply and changes nothing while it is open. Checked bit for bit
+        // rather than within a level, because ten reference hashes are what
+        // would say otherwise, and they say it minutes later and in CI.
+        let mut canvas = Canvas::new(32, 16);
+        for i in 0..8 {
+            canvas.draw_streak(&streak((1.0, 1.0 + i as f32), (28.0, 12.0 - i as f32)));
+        }
+        canvas.add_flash([0.2, 0.3, 0.4], 0.05);
+        // The three the curve is asked about at its edges, put in by hand
+        // because nothing that draws lays one down: past where the table
+        // saturates, below zero, and not a number at all.
+        canvas.buf[0] = [1e9, -5.0, f32::NAN];
+
+        let tone = Tonemap::new(1.9, 2.2);
+        let mut got = Vec::new();
+        canvas.resolve_into(&tone, 1.0, &mut got);
+        assert_eq!(
+            got,
+            resolve_with_no_shutter(&canvas, &tone),
+            "a shutter fully open is not the pass it replaced"
+        );
+        assert!(
+            got.iter().any(|p| *p != [0, 0, 0]),
+            "the canvas came out black, so the two agreed about nothing"
+        );
+    }
+
+    #[test]
+    fn a_shutter_only_ever_takes_light_away() {
+        // And it reaches nothing at all: the fade is a stop of exposure, so a
+        // closed shutter is a black frame rather than a dim one.
+        let mut canvas = Canvas::new(32, 16);
+        for i in 0..8 {
+            canvas.draw_streak(&streak((1.0, 1.0 + i as f32), (28.0, 12.0 - i as f32)));
+        }
+        let tone = Tonemap::new(1.9, 2.2);
+        let (mut open, mut half, mut shut) = (Vec::new(), Vec::new(), Vec::new());
+        canvas.resolve_into(&tone, 1.0, &mut open);
+        canvas.resolve_into(&tone, 0.5, &mut half);
+        canvas.resolve_into(&tone, 0.0, &mut shut);
+
+        assert!(
+            open.iter().any(|p| *p != [0, 0, 0]),
+            "nothing was lit, so nothing below compares anything"
+        );
+        assert!(
+            shut.iter().all(|p| *p == [0, 0, 0]),
+            "a shut shutter let light through"
+        );
+        for (a, b) in open.iter().zip(&half) {
+            assert!(
+                a.iter().zip(b).all(|(o, h)| h <= o),
+                "half a stop of exposure made a subpixel brighter: {a:?} -> {b:?}"
+            );
+        }
+        assert!(
+            open.iter().zip(&half).any(|(a, b)| a != b),
+            "half a stop of exposure changed nothing at all"
+        );
     }
 
     #[test]
