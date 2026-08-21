@@ -81,8 +81,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 330 unit + 16 elsewhere, about 25s
-cargo test --locked --all-features      # 334 unit — adds the snapshot-gated ones
+cargo test                              # 343 unit + 17 elsewhere, about 25s
+cargo test --locked --all-features      # 347 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -268,10 +268,17 @@ sha256sum truecolor.txt ascii.txt ansi256.txt warp.txt side.txt orbit.txt astern
 # then put the comment block at the top of that file back
 ```
 
+There is a step before that one now, and it is cheap enough to be routine: run
+the same ten with `--fade 0` appended and check them against the digests you are
+about to replace. A shot opens out of black, so every hash here moves for that
+alone — and `--fade 0` is the renderer with the fade taken back out, to the bit.
+If those ten do not reproduce exactly, the change reached something other than
+what it was aimed at and there is no point regenerating anything yet.
+
 Diff the old hashes against the new ones before committing and say which moved.
-The split is usually the sharpest thing you have, and it comes in six shapes now
-where it used to come in eight — two of the old ones were about arithmetic the
-star band switched off when the camera was abeam, and there is no band. Count
+The split is usually the sharpest thing you have, and it comes in eight shapes
+now: six about *what* a flight is doing, and two the fade added about *when* in
+one a change bites and whether the tree can still be asked for a control. Count
 them when you edit the list: the number in this sentence has been wrong twice,
 which is what a hand-maintained count of the paragraphs below it will do.
 
@@ -364,6 +371,23 @@ and into `frames.sha256`'s comment block, and it is the only reason any of it is
 known. A first attempt at it measured "the shift" on a tree that still carried
 the respelling and reported a leak that was not there — decompose to one change
 per build or the answer is noise.
+
+**And by *when* in a flight, which is the newest shape and the only one that
+splits a file rather than the set.** All ten open out of black now, so a change
+to the fade moves every hash — and moves nothing past frame 26 at 60 fps or
+frame 5 at `--fps 10`, which is the fade less its fall, since a shot opens on
+the trough rather than above it. Comparing the tails is a sharper statement than
+"all ten moved" and it costs one `cmp` a case.
+
+**And the other half of that: `--fade 0` is a control the tree can still be
+asked for.** It restores the renderer to the bit — the gain is a literal one and
+the view swaps at the press — so the ten commands with `--fade 0` appended have
+to reproduce the digests the change replaced, exactly, in every case. That was
+run before anything was regenerated and it is the strongest single check in this
+file's history: it says the change reached nothing but the shutter, where a
+moved hash only says something moved. It is also the one all-ten mover on the
+list that never had to give a control up, which is what the trap above is about.
+Any future change with a runtime switch owes the same check.
 
 A hash moving outside the shape its change predicts has leaked.
 
@@ -667,7 +691,10 @@ for headless and snapshot stepping at `1.0 / --fps` with `--fps` floored at 1.
    and only the flame's gutter reads it.
 5. `apply_vignette`, then `add_flash` on top of it so a drive catching whites
    out the frame edges included.
-6. `canvas.resolve_into(&tonemap, &mut pixels)` — HDR to 8-bit RGB.
+6. `canvas.resolve_into(&tonemap, gain, &mut pixels)` — HDR to 8-bit RGB, and
+   the one place the shutter is applied. `gain` is 1.0 for an ordinary frame
+   and less while a shot is opening or a cut is dipping; see **The cut** below
+   for why it rides this pass and nothing else.
 7. `screen.compose(&pixels)` — two pixel rows fold into one cell.
 8. `hud::draw(&mut screen, ..)` — unless the flight is flying itself, in which
    case the `Readout`'s `panel` is false and it returns having drawn nothing.
@@ -681,7 +708,15 @@ a self-contained block of text).
 
 **The panel and the picker are written into cells, after `compose`.** They are
 not in `renderer.pixels()`. That is why the snapshot PNG has no instrument
-panel.
+panel — and why neither of them fades. The shutter is an exposure and the panel
+is on the glass rather than in it, so a shot opens on instruments over a dark
+sky, and the one place the keys are written down to somebody flying is never on
+a clock. Taking them with it would need the gain threaded through every stamp in
+`hud.rs` and `menu.rs`, where `--color ascii` discards colour outright so the
+panel could not fade at all — a picture effect that exists in two colour modes
+out of three is not one — or a second pass over the cell grid, on eight bits,
+which would dim the picker twice because `overlay_panel` is deliberately not
+idempotent.
 
 ### The three loops
 
@@ -1228,12 +1263,17 @@ full set, because turning off a mode that was never on costs nothing and
 leaving one on hands the next program a terminal that reports clicks at it.
 
 **`f64` where a screensaver would otherwise break it.** `Flight::time`,
-`Autopilot::update`'s `elapsed`, the twinkle phase folded once per frame, the
-four shake terms and the engine flame's gutter are `f64` because a screensaver
-is left running for days and an `f32` accumulator stops advancing after about
-six — freezing the twinkle, the shake and the flame with it.
+`Flight::cut`, `Autopilot::update`'s `elapsed`, the twinkle phase folded once
+per frame, the four shake terms and the engine flame's gutter are `f64` because
+a screensaver is left running for days and an `f32` accumulator stops advancing
+after about six — freezing the twinkle, the shake and the flame with it.
+`Flight::cut` is on the list for a variant of the same reason rather than for
+the same one: it does not accumulate, it *stamps* the clock that does, so an
+`f32` copy of it would be unable to resolve half a second against a week of
+uptime and every cut after the first day would land already over.
 `Flight::accumulator` stays `f32` deliberately: it is bounded by one sim step
-and never drifts. Do not "unify" these.
+and never drifts, and so do the cut's own `from` and `fade`, which are bounded
+at both ends. Do not "unify" these.
 
 Everything the autopilot reads off that clock is on the same list, and one of
 them needs more than `f64` to survive: the camera's azimuth is a *ramp* rather
@@ -1542,6 +1582,80 @@ and all four have to keep holding:
   is always beyond and the vignette and the flash are over everything — so it
   is the one thing the three rules above cannot place, and `drive_behind_hull`
   is the whole of the answer.
+
+**The cut is made in the dark, and the whole of it is four fields and one
+multiply.** A change of camera dips the picture to black, changes over at the
+bottom, and brings the new one up; a run opens at that same bottom and rises out
+of it, which is why the two are one mechanism rather than two. `--fade` is the
+length of the whole cut and `app::FADE_OUT_SHARE` is how much of it goes down.
+
+Five things about it are load-bearing and none is obvious from the code alone.
+
+*It is a closed form of `Flight::time`, not a decaying transient.* `Ship::flash`
+is the tree's model for "a thing that happens and then stops", and it is the
+wrong one here for a reason that is **not** frame-rate independence —
+`exp(-k·dt)` has that too, which is why `ship.rs` eases that way. What a closed
+form buys is what the autopilot's throttle bought when it stopped stepping:
+independence that is structural because nothing is stepped, and an end that is
+*reached* rather than approached. That second half is what everything else rests
+on. `app::fade_gain` returns a literal 1.0 past the end, `v * 1.0` is the
+identity in IEEE, and so a settled frame is byte for byte the frame the fade is
+not there for. A gain a single ulp under one would repaint the whole sky for the
+rest of a flight and no hash here could say which change did it.
+
+*The gain rides `Canvas::resolve_into` and nothing else.* That is the one pass
+that already visits every subpixel — `clear` fills, `add_flash` adds, and
+`apply_vignette` multiplies by a radius — so the fade costs no pass of its own,
+and it measured as costing nothing at all: 8.22 ms of drawing against 7.96, and
+0.93 against 0.92 in the cockpit, minimum of five sweeps at 200x60. Scaling the
+*linear* light rather than the eight bits at the far end is what makes it a stop
+of exposure instead of a dissolve, since the tonemap is `1 - exp(-v·exposure)`
+and a gain on `v` is algebraically a gain on the exposure: the faint stars go
+out first and the bright ones hold on. There is deliberately **no**
+`gain == 1.0` fast path — a branch would be a second spelling of arithmetic the
+reference frames are pinned to, and the multiply is already the identity.
+
+*`Flight::view` and `Flight::shown` are two different questions.* The first is
+which camera the *flight* is on and it changes the instant `C` is pressed, so
+the stick split in `handle_key`, the wheel in `handle_mouse` and the hint tiers
+all change hands at once and nothing has to learn about a switch that has not
+landed. The second is which camera *this frame* is built from, and it waits for
+the bottom of the dip. `Readout` carries the first, because the hints name keys
+and the keys have already moved.
+
+*`set_view` is the only funnel and it takes `previous` from `shown`, not from
+`view`.* The difference shows only when a second cut lands inside the first
+one's fall, which auto-repeat on `C` reaches constantly: what has to fade out is
+whatever is on screen, not a camera the flight committed to and never drew. The
+`from` field is the other half of that — the curve parameter the fall starts
+from — and without it a second press would slam the shutter back open and drop
+it again. The early return is what keeps `M` pressed while already outside from
+dipping the picture for a dialogue that is only opening, and it is why `R`, a
+resize and a change of ship cut nothing: none of them changes the view.
+
+*A cut made while the flight is stopped lands at once.* `P` stops `advance`,
+which is the only thing that moves `time`, so a cut armed there never gets
+anywhere — it sits at zero elapsed, where the shutter is fully open and the
+picture is still the outgoing camera, and `C` looks like a key that does nothing
+whatever. `Flight::draw` lands it, because that is the only function in the tree
+handed both the flight and whether it is stopped, so one line covers `C` while
+paused, `M` while paused, and a `P` taken mid-cut. The argument against the long
+essay on `P` above is that a cut is not a schedule: it is a dissolve between two
+moving pictures and a stopped flight has neither. The nearest precedent is `R`,
+which snaps rather than eases for the same reason. And unlike the camera bug
+that essay is built on, this owes nothing on the way out — `from` goes back to
+one and the picture is settled, so unpausing resumes a flight rather than
+replaying a stored dip.
+
+Two consequences worth knowing and neither worth fixing. While a fade runs every
+cell moves a level or two a frame, so `Screen::flush`'s diff stops skipping
+anything and emits the whole grid for the length of the cut; it is bounded by
+the cut's own length, and the frames at the trough are identically black, where
+the diff emits nothing at all. And `--snapshot --warmup 0` now shoots the
+trough, which is a black PNG — that is what `--fade 0` is for, and the flag's
+help says so. Everything in the tree clears the fade by a wide margin: `--warmup`
+defaults to 300 frames, CI's snapshot step uses 120, and both `docs/` recipes
+use 600.
 
 **`q` flies something, it does not quit.** It rolls the ship inside and the
 camera outside, and it has never been the way out since it went on the stick.
@@ -2150,6 +2264,12 @@ stick does in it: `handle_key`'s `steers`, `flies_the_camera` and `zooms` are
 all `== ViewMode::X` today, so a third view wants a third answer to each of the
 three — and a key matching none of them falls through to nothing at all, which
 is a control that has quietly gone missing rather than a compile error.
+
+The cut costs a third view nothing, and that is worth knowing rather than
+rediscovering: `Flight::set_view` is the only funnel, it compares views rather
+than enumerating them, and `Flight::shown` picks between two names without
+caring which. The arm in `Flight::draw` matches on `shown()` rather than on
+`view`, so the new one only has to be added there once, like the other two.
 
 **Changing the controls.** Five places now, and the fifth is the one a user
 reads. `CONTROLS` in `src/cli.rs` is an `after_help` block naming every key,

@@ -187,6 +187,30 @@
 #                 more than one that did, and a commit that takes the last one
 #                 away owes the reader the build that had it.
 #
+#   Cut.          All ten moved when a shot started opening out of black and a
+#                 camera change started dipping through it, and the shape of
+#                 that is the whole of the entry. Every flight here renders from
+#                 frame 0, so the first `--fade` seconds of each are dimmer and
+#                 nothing past that moved at all.
+#
+#                 Two things say so rather than one, and both are worth copying
+#                 the next time something moves all ten. `--fade 0` reproduces
+#                 the ten digests this paragraph replaced *exactly*, in every
+#                 case — which is a control the tree can still be asked for, so
+#                 this is the one all-ten mover on the list that did not have to
+#                 give one up (see "Shift." above for what that costs). And each
+#                 file compares byte for byte against that run from its own
+#                 first settled frame onward: 26 at 60 fps and 5 at `--fps 10`,
+#                 which is the fade less its fall, since a shot opens on the
+#                 trough rather than above it.
+#
+#                 One consequence for what the spread covers. Nothing here
+#                 presses `C`, so these ten watch the opening rise and neither
+#                 the dip nor the changeover; both of those are guarded at the
+#                 level they live at, in `app.rs`. And `ascii.txt` carries a
+#                 little less than it did over that window — with no colour to
+#                 fade, a dim frame is a grid of spaces.
+#
 #   Zero point.   All ten moved when the sky's baseline came down a fifth of a
 #                 magnitude to make room for the shift above, and that is the
 #                 shape rather than a leak: the dim is not gated on the drive,
@@ -328,13 +352,13 @@
 #
 # Regenerating: build a release binary and run the ten commands in `CLAUDE.md`,
 # then put this block back. Say in the commit message which moved and why.
-66b97893772c0be8e3560fad00c57a8e2768f0e1488f9140b837302439efbfeb  truecolor.txt
-771117b9c5c28e8ef8201d18e9b366a5e01bac840767f9476d53a79f171ec5b3  ascii.txt
-22931f7f727b1b7f0bbd8a3f33a8580da460a641b5189012d8f54204da73b1c2  ansi256.txt
-d9a8d1084abdde4af89f39d563c4374a04785569bd3f5e1c5341998c939c43fe  warp.txt
-228b2b59fa5a424ad862a5af8efffc43cea004dc833408c30d5474790d73e27e  side.txt
-c03d0db985044dbf2bb4cdbf2dbfdb064c278a54e1d45823e783b2b2efbe21af  orbit.txt
-4a0c3d9454f37400bfe9cf4d270390e2b6ef0dbce8ed199ec7338066069330da  astern.txt
-30341c12b36d6834ca2004cf644ec6dea917520fc4b13ca41ee53437787553fe  steer.txt
-b94194c006ebfb80c9c285ffa2a7cce522eea32971691d1031dec466540e374b  drift.txt
-9f2ea58ac67fc4ad2846a13eb244a7e8141ab77e71cba48169cf8c4078409ee9  ahead.txt
+39f882db3de9310cfe11f46581803284536359b9136546e32ce1aaadf47bd003  truecolor.txt
+526139cb505f192138b66d875d39c25f2dcabe89da06455286fbfdcae6b3f8f8  ascii.txt
+dcd692fb91b2ae704a7259fa6e1e50c99d7c319df58d6e4d52d951b3669929ba  ansi256.txt
+470ffd08a623c38620d8665f86cd400590fd8260a1bdef40ac65d1540064c37d  warp.txt
+1e62d6ceb3c93fcd0d70f3e26357b6e3e38968c9145cd5858f4f2333a01f6c4b  side.txt
+b806d3307fbc046bf3add76ac1f5cb28fb5dd2eb7237b0e2053ed2b6b12121f9  orbit.txt
+8f81aa1b9fcbdc342dec961ab5474b055e35e900d9b1e2738015c1f8ce00f7f2  astern.txt
+b9ac8d0fa880008eeb6ab560fbdf6874f449c134e2905ddd66a0dc3782b61246  steer.txt
+a622a1277d343df667a3043a42aa454ae0e9ebd90607a6068a164dbafdeb8159  drift.txt
+1f1846efb1028c0940176813fbd8fb73b5bc2a79b30a3aedf35ab1c7eba1eb2e  ahead.txt

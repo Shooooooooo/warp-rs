@@ -157,7 +157,27 @@ impl Renderer {
     }
 
     /// Draw one frame into the cell grid. Nothing reaches the terminal yet.
-    pub fn render(&mut self, sky: &Universe, ship: &Ship, cam: &Camera, time: f64, hud: &Readout) {
+    ///
+    /// `gain` is the shutter the frame is resolved through — 1.0 for an
+    /// ordinary frame, and less than that while a shot is opening or a cut is
+    /// dipping through black. A parameter rather than something held on the
+    /// renderer, because the tests below drive this directly and assert what a
+    /// frame has to light up: passing a literal 1.0 at each of them says the
+    /// fade is not what they are measuring, where a field would leave them
+    /// rendering through whatever it last held.
+    ///
+    /// Seven arguments counting `self`, which is exactly as many as clippy
+    /// allows. The next one wants bundling, the way [`Exterior`] bundles the
+    /// side view's.
+    pub fn render(
+        &mut self,
+        sky: &Universe,
+        ship: &Ship,
+        cam: &Camera,
+        time: f64,
+        gain: f32,
+        hud: &Readout,
+    ) {
         let warp = ship.warp_intensity();
         let eye = Observer::cockpit(ship.axes, ship.position, warp);
 
@@ -225,7 +245,8 @@ impl Renderer {
                 .add_flash([1.0, 1.0, 1.0], ship.flash.powf(1.6) * 0.85);
         }
 
-        self.canvas.resolve_into(&self.tonemap, &mut self.pixels);
+        self.canvas
+            .resolve_into(&self.tonemap, gain, &mut self.pixels);
         self.screen.compose(&self.pixels);
         hud::draw(&mut self.screen, hud);
     }
@@ -246,7 +267,7 @@ impl Renderer {
     /// which is what it used to be and what had silently gone wrong: the
     /// number outlived the constants it was measured from by some margin, and
     /// a wrong figure guarding an invariant reads exactly like a right one.
-    pub fn render_exterior(&mut self, scene: Exterior<'_>, cam: &Camera, hud: &Readout) {
+    pub fn render_exterior(&mut self, scene: Exterior<'_>, cam: &Camera, gain: f32, hud: &Readout) {
         let Exterior {
             sky,
             ship,
@@ -311,7 +332,8 @@ impl Renderer {
                 .add_flash([1.0, 1.0, 1.0], ship.flash.powf(1.6) * 0.85);
         }
 
-        self.canvas.resolve_into(&self.tonemap, &mut self.pixels);
+        self.canvas
+            .resolve_into(&self.tonemap, gain, &mut self.pixels);
         self.screen.compose(&self.pixels);
         hud::draw(&mut self.screen, hud);
     }
@@ -371,7 +393,7 @@ mod tests {
                 ship.warp_intensity(),
                 ship.velocity_ly_per_s(),
             );
-            renderer.render(&sky, &ship, &cam, time, &readout(&ship));
+            renderer.render(&sky, &ship, &cam, time, 1.0, &readout(&ship));
 
             if frame == 120 {
                 // Something must actually be lit up by now.
@@ -408,7 +430,7 @@ mod tests {
                     ship.warp_intensity(),
                     ship.velocity_ly_per_s(),
                 );
-                renderer.render(&sky, &ship, &cam, time, &readout(&ship));
+                renderer.render(&sky, &ship, &cam, time, 1.0, &readout(&ship));
             }
             let (w, h) = renderer.canvas_dims();
             let px = renderer.pixels();
@@ -493,7 +515,7 @@ mod tests {
                 zoom,
                 orbit,
             };
-            renderer.render_exterior(scene, &cam, &readout);
+            renderer.render_exterior(scene, &cam, 1.0, &readout);
         }
         renderer
     }
@@ -624,7 +646,7 @@ mod tests {
                     ship.warp_intensity(),
                     ship.velocity_ly_per_s(),
                 );
-                renderer.render(&sky, &ship, &cam, 0.0, &readout(&ship));
+                renderer.render(&sky, &ship, &cam, 0.0, 1.0, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();
 
@@ -664,7 +686,7 @@ mod tests {
                     ship.warp_intensity(),
                     ship.velocity_ly_per_s(),
                 );
-                renderer.render(&sky, &ship, &cam, i as f64, &readout(&ship));
+                renderer.render(&sky, &ship, &cam, i as f64, 1.0, &readout(&ship));
             }
             renderer.present(&mut Vec::new()).unwrap();
         }

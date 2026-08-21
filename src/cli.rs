@@ -67,6 +67,32 @@ const _: () = assert!(
     DEFAULT_MAGNITUDE >= MIN_MAGNITUDE && DEFAULT_MAGNITUDE <= MAX_MAGNITUDE,
     "the default limiting magnitude is outside its own bounds"
 );
+/// How long a camera change takes, in seconds, dipping through black and
+/// coming back — and, because the program opens at the bottom of a cut it was
+/// never on the other side of, how long the sky takes to arrive at the start of
+/// a run.
+///
+/// Pulled both ways by the same thing. Shorter and a cut stops reading as a cut
+/// at all: the eye needs long enough to register that the picture went away
+/// before the next one arrives, or the dip is a flicker on a hard switch.
+/// Longer and the shot sags — a change of camera nobody can watch happen turns
+/// into one they have to wait out, and `--demo` takes any positive float, so a
+/// second of fade is most of a `--demo 2`.
+pub const DEFAULT_FADE: f32 = 0.6;
+/// The ceiling on `--fade`, for the reason every other number in this file has
+/// one: a flag that answers "how long" with nothing holding it is how `--stars`
+/// and `--magnitude` both went wrong. Nothing here allocates — what an absurd
+/// value costs is a picture rather than an address space, since `--fade 1e9` is
+/// a program that is simply always black — so the bound is generous rather than
+/// tight. Five seconds is already longer than a good many `--demo` runs.
+const MAX_FADE: f32 = 5.0;
+/// The same compile-time guard [`DEFAULT_MAGNITUDE`] carries, and for the same
+/// reason: a default the parser would refuse fails on every invocation rather
+/// than at build time.
+const _: () = assert!(
+    DEFAULT_FADE >= 0.0 && DEFAULT_FADE <= MAX_FADE,
+    "the default fade is outside its own bounds"
+);
 /// Ceiling on the two counts that are spent rather than allocated — `--frames`
 /// and `--warmup`. Nothing runs out of memory over these; a `u32` of them is
 /// simply a process that never comes back, and at sixty a second this is
@@ -286,6 +312,26 @@ pub struct Args {
     #[arg(long, default_value_t = 1.9, value_parser = positive)]
     pub exposure: f32,
 
+    /// Seconds a camera change takes, dipping through black on the way. The sky
+    /// arrives over the tail of one at the start of a run. `0` changes camera
+    /// instantly and opens on a lit sky, which is also what `--snapshot
+    /// --warmup 0` wants, since without it the shot is taken at the bottom of
+    /// the dip and comes out black.
+    ///
+    // `allow_hyphen_values` for the reason `--magnitude` carries it: without
+    // it clap answers `--fade -1` with "unexpected argument", where the parser
+    // below answers with the range. And a `//` block rather than a `///` one
+    // because clap publishes the second as this flag's help entry, which is
+    // addressed to whoever is running the program rather than editing it.
+    #[arg(
+        long,
+        value_name = "SECS",
+        default_value_t = DEFAULT_FADE,
+        allow_hyphen_values = true,
+        value_parser = fade_seconds
+    )]
+    pub fade: f32,
+
     /// How finely a hull's outline is measured, in samples per subpixel on each
     /// axis. `1` is the hard-edged rasteriser this replaced.
     ///
@@ -497,6 +543,23 @@ fn magnitude(text: &str) -> Result<f32, String> {
     }
 }
 
+/// How long a cut takes, held to a range rather than clamped into one.
+fn fade_seconds(text: &str) -> Result<f32, String> {
+    let v: f32 = text
+        .parse()
+        .map_err(|_| format!("`{text}` is not a number"))?;
+    // Not `clamp`, for the reason `magnitude` is not: a NaN goes straight
+    // through it, and a NaN here reads as `fade <= 0.0` further down — which is
+    // "no fade at all", a silent success rather than a refusal.
+    if v.is_finite() && (0.0..=MAX_FADE).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!(
+            "expected a fade of between 0 and {MAX_FADE} seconds, got {text}"
+        ))
+    }
+}
+
 /// Always an error, and the error is the point.
 fn no_star_count(text: &str) -> Result<String, String> {
     Err(format!(
@@ -572,6 +635,7 @@ mod tests {
         // star count. That it survives to the writer is a separate question and
         // has its own test below.
         assert_eq!(args.color, ColorArg::Truecolor);
+        assert_eq!(args.fade, DEFAULT_FADE);
     }
 
     #[test]
@@ -753,6 +817,37 @@ mod tests {
         assert!(
             err.contains("--magnitude"),
             "the error does not name what replaced it: {err}"
+        );
+    }
+
+    #[test]
+    fn the_fade_is_bounded_rather_than_believed() {
+        // The bound is not about memory — nothing here allocates — but a fade
+        // is a number a person types and a NaN one would read as no fade at
+        // all further down, which is the kind of silent success this file
+        // refuses everything else by name to avoid.
+        let fade = |v: &str| Args::try_parse_from(["warp", "--fade", v]);
+        for refused in ["-1", "nan", "inf", "abc", "1e9"] {
+            let err = fade(refused)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| panic!("`--fade {refused}` was believed"));
+            assert!(
+                err.contains("between 0 and") || err.contains("not a number"),
+                "`--fade {refused}` was refused without saying what the range is: {err}"
+            );
+        }
+        // Both ends are reached rather than approached, and the near one is
+        // the whole of the escape hatch: `--fade 0` is the renderer this
+        // arrived on, to the bit.
+        for taken in ["0", "0.25"] {
+            assert!(fade(taken).is_ok(), "`--fade {taken}` is a legal ask");
+        }
+        assert_eq!(
+            fade(&MAX_FADE.to_string())
+                .expect("the ceiling is reachable")
+                .fade,
+            MAX_FADE
         );
     }
 
