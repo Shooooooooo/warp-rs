@@ -81,8 +81,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 343 unit + 17 elsewhere, about 25s
-cargo test --locked --all-features      # 347 unit — adds the snapshot-gated ones
+cargo test                              # 344 unit + 17 elsewhere, about 25s
+cargo test --locked --all-features      # 348 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -490,6 +490,26 @@ span it already measured (−2.5%), and the twinkle `sin` skipped at warp, where
 its amount is a hard zero (−2%). Together they took the expensive frame — the
 outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2.
 
+Five more went in later and all five are **bit-exact**, which is the property to
+protect when touching any of them: the ten reference flights did not move for
+any, and that is what says each one really is the identity it looks like rather
+than very nearly one. `Canvas::clip` takes a segment with both ends already on
+the canvas without solving for it, and drops one with both ends past the same
+edge without solving either; `draw_leg` returns the span it measured so
+`draw_path` stops taking the same square root three times over; the divide and
+the two conversions at the top of `draw_leg` moved *below* the clip, where a
+rejected leg no longer pays for a `per_sample` nothing reads; `splat_inside`
+binds the buffer once instead of indexing through `self` four times, since a
+store through `self.buf`'s pointer is one the optimiser must assume could land
+on that pointer and its length; and `bend::subdivide` skips the length and the
+two curvatures when the arc budget is already one, which is every leg of every
+turning exposure and which the optimiser cannot fold away because the budget is
+a runtime value. Measured back to back, minimum of five sweeps: the outside view
+at warp with the stick buried went 55.7 ms to 48.2, the cockpit at 72 000 stars
+7.19% and the same in 256 colour 7.74%, the outside view straight 5.10%, and the
+default sky at 200x60 3.59%. The 80x24 row did not move, because at 0.30 ms it
+is under the granularity the bench reports.
+
 **Those figures are from before the sky went world-space and none of them is
 the number to reproduce now.** The same case is a different frame: the pool is
 what a limiting magnitude asks for rather than a count, and a streak is a few
@@ -528,15 +548,23 @@ place:
 | `get_unchecked_mut` in `splat_inside`, 28% of a cockpit frame's instructions | 2.5%. Not a price worth the first `unsafe` in the tree, but worth knowing the size of before anyone argues for it. |
 | row-walking `apply_vignette` with `chunks_exact_mut` | nothing; the indexed form already compiles to the same thing. |
 | dropping the `palette_256` → `palette_rgb` round trip in `quantize_256` | nothing; the constant divisors are already folded. |
+| taking `splat_inside`'s four taps through one `&mut self.buf[base..=base + right + below]`, to pay one bounds check instead of four | **worse** — the turning frame went up 1.3% and the outside view 2.4%, and callgrind says why: the four checks came out at 424M instructions and the inclusive-range slice put 614M back, for a net 191M *added*. Binding the buffer as a plain slice is the half of that idea that works and it is in the tree; slicing it down to the window is the half that does not. |
+| `#[inline]` on `Sink::move_to`, `set_color` and `glyph`, on the reading that the enum's `Commands` arm keeps the ANSI path out of line | nothing at all — 0.400 ms of write column either side, to the millisecond's third decimal. The hint is advisory and fat LTO had already made its decision. Splitting the enum into two types is a different proposal and is untested; it would have to be measured against `Screen::flush` rather than this bench, which times `present_plain`. |
 
-Cachegrind is the other thing to know before reaching for a layout change: the
-D1 miss rate is 1.4% and last-level misses are in the tens of thousands for a
-whole run. The working set fits. This is instruction-bound, and shrinking
-`Star` or restriping the canvas is solving a problem it does not have.
+Cachegrind is the other thing to know before reaching for a layout change, and
+this paragraph has been remeasured on the world-space sky rather than inherited
+from the one before it. **The conclusion survives and one of its numbers did
+not.** On the turning cockpit frame at 200x60 and 72 000 stars the D1 miss rate
+is **3.4% overall and 4.6% on reads**, against the 1.4% recorded when the pool
+was thirty-six times smaller — but last-level misses are 71 482 for a whole run,
+a rate that rounds to zero, so every one of those D1 misses is an L2 hit that an
+out-of-order core largely covers. The working set still fits. This is still
+instruction-bound, and shrinking `Star` or restriping the canvas is still
+solving a problem it does not have: `splat_inside` alone retires 41% of the
+turning frame's instructions and `draw_leg` another 22%, which is where an
+optimisation has to go to be worth anything.
 
-Those figures predate the world-space sky and its pool is thirty-six times
-larger, so the cache claim in particular wants remeasuring before it is leaned
-on again. What has been measured since is the wall clock, and it went the good
+What has been measured since is the wall clock, and it went the good
 way: the expensive frame — the outside view at warp — runs 12.2 ms against 21.1
 before, with 72 000 stars against 20 000, because a streak that is a few
 subpixels long costs a few samples where one across the frame costs a hundred.
@@ -561,6 +589,33 @@ percent between sessions and rather more between machines, so the ratios are the
 part to carry forward and the absolute numbers are the part to re-measure. The
 ratios did not move: about three to one on the default sky, five to one at
 `--magnitude 8`, and a little under five to one from outside.
+
+**And the ratios are what moved when the five bit-exact edits above went in**,
+which is worth knowing because it is the first time anything here has bitten the
+turn harder than the straight flight. Measured on the same machine, minimum of
+five, the whole-frame column: 4.03 to 3.85 on the default sky turning, 48.07 to
+46.00 at `--magnitude 8`, and 55.72 to **48.20** from outside — so the outside
+view's turn came down from a little under five times its straight cost to about
+four and a half, and almost all of that is one edit. `bend::subdivide` was
+taking a square root and two `Lens::curvature` calls per leg to decide a number
+that a budget of one had already decided, and a turning exposure is
+twenty-three legs against a `MAX_ARCS` of twenty-four, so the whole of that work
+was dead in exactly the case that could least afford it: 7.5% of the most
+expensive frame the program draws, on its own.
+
+**Why the turn costs what it does was measured rather than reasoned about, and
+one plausible story is wrong.** It is not the `steps.clamp(1, ..)` floor putting
+a sample under each of twenty-three legs where a straight star pays one: a leg
+the canvas rejects returns before `steps` is ever computed. Callgrind on the two
+frames says it plainly — `splat_inside` retires 8.04 times the instructions
+turning that it does straight, and `splat_inside` is one call per subpixel of
+arc. The smear is *rotational*, so a star sweeps the same few frame-widths of
+arc whether it is ten light years out or a thousand, and the frame keeps
+whatever crosses it. The cost is the arc length sampled, which is what this file
+has said all along; what the profile adds is that it is the sample count and not
+the leg count, so the per-leg overheads are worth taking only because they are
+free, and the sample budget in `Canvas::draw_leg` is still the only lever that
+would bound the thing.
 
 That last pair is a fivefold cost and it was accepted rather than capped, on two
 grounds. It is self-limiting — the steering rates decay in under a second and

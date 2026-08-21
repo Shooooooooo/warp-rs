@@ -443,8 +443,17 @@ impl Canvas {
             (base + below, (1.0 - fx) * fy),
             (base + right + below, fx * fy),
         ];
+        // The buffer taken as a local slice before the four taps rather than
+        // indexed through `self` four times. A store through `self.buf`'s
+        // pointer is, as far as the optimiser can tell, a store that might land
+        // on `self.buf`'s own pointer and length — `&mut self` says nothing
+        // about a pointer derived from it — so the pair had to be reloaded
+        // after every tap. Binding them once says they cannot move, which is
+        // three reloads a splat gone in the innermost loop in the program.
+        // Nothing about the arithmetic or the order of the taps changes.
+        let buf = self.buf.as_mut_slice();
         for (idx, share) in taps {
-            let px = &mut self.buf[idx];
+            let px = &mut buf[idx];
             let w = weight * share;
             for i in 0..3 {
                 px[i] += color[i] * w;
@@ -573,7 +582,9 @@ impl Canvas {
             (streak.from.0, streak.from.1, total),
             (streak.to.0, streak.to.1, total),
         );
-        self.draw_leg(from, to, 0.0, &ramp, &mut None);
+        // The span comes back measured and is the streak's own length, which
+        // this already has in `total`; nothing here needs it a second time.
+        let _ = self.draw_leg(from, to, 0.0, &ramp, &mut None);
     }
 
     /// Lay one leg of a streak down, with the ramp and the falloff evaluated
@@ -590,6 +601,14 @@ impl Canvas {
     /// `resume_at` carries where the previous leg stopped, so a shared vertex is
     /// not splatted twice; without it every joint is a bright bead and a finely
     /// subdivided curve is a dotted line.
+    ///
+    /// It hands back the span it measured, which is the one number a caller
+    /// walking a path needs and would otherwise take a second square root for.
+    /// [`Canvas::draw_path`] measured every leg twice over — once to total
+    /// the polyline and once to carry `travelled` forward — on top of the one
+    /// taken here, three roots a leg where two will do. Returning it rather than
+    /// taking it as an argument keeps the measurement in the one place that
+    /// cannot do without it, so the two spellings cannot drift apart.
     fn draw_leg(
         &mut self,
         a: Trace,
@@ -597,8 +616,7 @@ impl Canvas {
         travelled: f32,
         ramp: &Ramp,
         resume_at: &mut Option<(f32, f32)>,
-    ) {
-        let (max_x, max_y) = (self.max_x(), self.max_y());
+    ) -> f32 {
         let span = length_of(b.0 - a.0, b.1 - a.1);
         // How thinly this leg spreads what it caught, from the pace the image
         // was moving at rather than from the length of the whole track. A leg
@@ -609,15 +627,24 @@ impl Canvas {
         } else {
             ramp.total
         };
-        let per_sample = ramp.intensity / spread(pace);
         let (a, b) = ((a.0, a.1), (b.0, b.1));
         // Clipping moves the endpoints, so the ramp has to be evaluated
         // against where they ended up along the *original* segment — not
         // against the clipped one, which would stretch the ramp back out
         // over whatever fragment survived.
         let Some((from, to)) = self.clip(a, b) else {
-            return;
+            return span;
         };
+        // Below the clip rather than above it, which is where the divide and
+        // the two conversions used to sit. Most of the legs a turning exposure
+        // is cut into are off the canvas entirely — the smear is rotational,
+        // so a star sweeps several frame-widths of arc and the frame keeps a
+        // fraction of it — and each was paying for a `per_sample` that nothing
+        // ever read. Nothing is reassociated by the move: these are the
+        // same three expressions on the same values, evaluated only when there
+        // is something to spend them on.
+        let (max_x, max_y) = (self.max_x(), self.max_y());
+        let per_sample = ramp.intensity / spread(pace);
         // A segment the canvas did not cut is the overwhelming case,
         // and there all three of these are already in hand: the near
         // end is exactly where the walk had got to, the far end exactly
@@ -656,6 +683,7 @@ impl Canvas {
             let y = (from.1 + dy * s).clamp(0.0, max_y);
             self.splat_inside(x, y, ramp.color, per_sample * level);
         }
+        span
     }
 
     /// Draw a streak that has been bent into a curve: the same light a
@@ -717,8 +745,7 @@ impl Canvas {
 
         for pair in points.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            self.draw_leg(a, b, travelled, &ramp, &mut resume_at);
-            travelled += length_of(b.0 - a.0, b.1 - a.1);
+            travelled += self.draw_leg(a, b, travelled, &ramp, &mut resume_at);
         }
     }
 
@@ -915,6 +942,45 @@ impl Canvas {
         let (max_x, max_y) = (self.width as f32 - 1.0, self.height as f32 - 1.0);
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
         let (mut t0, mut t1) = (0.0f32, 1.0f32);
+
+        // A segment with both ends already on the canvas is the overwhelming
+        // case — every leg of every exposure the frame keeps — and the loop
+        // below spends four divisions discovering that it has nothing to do.
+        // Taking it here is worth about a twentieth of a turning frame, where
+        // there are twenty-odd legs a star rather than one.
+        //
+        // It is an exact shortcut rather than a near one, which is the whole of
+        // why it may stand on a path the reference frames are pinned through.
+        // Both ends inside means, for each edge, either `p == 0` with `q >= 0`,
+        // which changes nothing, or a quotient whose *real* value is already
+        // past the end it would clamp: at the near edge `r <= 0` against a `t0`
+        // of zero, at the far edge `r >= 1` against a `t1` of one, because
+        // `max - a` is a rounding of a real no smaller than the one `b - a` is
+        // a rounding of. Rounding to nearest is monotone and both 0.0 and 1.0
+        // are exactly representable, so a real that is no less than one cannot
+        // round to less than one — the loop provably leaves `t0` and `t1`
+        // where they started. The two points are then spelled with the same
+        // multiply-add the loop would have spelled them with rather than
+        // handed back as `a` and `b`, since `a.0 + dx * 0.0` and `a.0` differ
+        // in the sign of a zero, and `a.0 + dx * 1.0` is not `b.0` at all once
+        // the two are far enough apart for the subtraction to have rounded.
+        // Wholly past one edge: the loop reaches the same `None` and spends
+        // divides getting there. Both ends on the far side of one side is the
+        // whole of the test.
+        if (a.0 < 0.0 && b.0 < 0.0)
+            || (a.0 > max_x && b.0 > max_x)
+            || (a.1 < 0.0 && b.1 < 0.0)
+            || (a.1 > max_y && b.1 > max_y)
+        {
+            return None;
+        }
+        let inside = |p: (f32, f32)| p.0 >= 0.0 && p.0 <= max_x && p.1 >= 0.0 && p.1 <= max_y;
+        if inside(a) && inside(b) {
+            return Some((
+                (a.0 + dx * t0, a.1 + dy * t0),
+                (a.0 + dx * t1, a.1 + dy * t1),
+            ));
+        }
 
         for (p, q) in [(-dx, a.0), (dx, max_x - a.0), (-dy, a.1), (dy, max_y - a.1)] {
             if p == 0.0 {
@@ -1141,6 +1207,131 @@ mod tests {
         let mut out = Vec::new();
         canvas.resolve_into(&Tonemap::new(exposure, gamma), 1.0, &mut out);
         out
+    }
+
+    /// The two shortcuts at the top of [`Canvas::clip`] answer for the
+    /// Liang–Barsky solve they stand in front of, bit for bit, and this is what
+    /// says so — over the segments a frame actually hands it and over the ones
+    /// it never would.
+    ///
+    /// The accept arm is provable and the reject arm is not, which is the whole
+    /// reason this is here. Both ends inside means every edge either has
+    /// `p == 0` with `q >= 0`, or a quotient whose real value is already past
+    /// the end it would clamp; rounding to nearest is monotone and 0.0 and 1.0
+    /// are exactly representable, so the parameters provably finish where they
+    /// started. Both ends *outside* one edge only reaches `None` through a
+    /// strict comparison — `r > t1` — and a real quotient strictly greater
+    /// than one can in principle round down onto it, which would leave the
+    /// solve returning a degenerate segment where the shortcut returns nothing.
+    /// So the reject arm is checked rather than argued, against the body it
+    /// replaced, kept here as its oracle. Do not delete that oracle to tidy up:
+    /// it is the only thing the shortcut is measured against.
+    ///
+    /// The sweep is deliberately weighted onto the boundary. Uniform random
+    /// coordinates almost never land on an edge, and an edge is the only place
+    /// the two spellings could part company.
+    #[test]
+    fn the_clip_shortcuts_answer_for_the_solve_they_stand_in_front_of() {
+        fn oracle(c: &Canvas, a: (f32, f32), b: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
+            if !(a.0.is_finite() && a.1.is_finite() && b.0.is_finite() && b.1.is_finite()) {
+                return None;
+            }
+            let (max_x, max_y) = (c.width as f32 - 1.0, c.height as f32 - 1.0);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let (mut t0, mut t1) = (0.0f32, 1.0f32);
+            for (p, q) in [(-dx, a.0), (dx, max_x - a.0), (-dy, a.1), (dy, max_y - a.1)] {
+                if p == 0.0 {
+                    if q < 0.0 {
+                        return None;
+                    }
+                } else {
+                    let r = q / p;
+                    if p < 0.0 {
+                        if r > t1 {
+                            return None;
+                        }
+                        t0 = t0.max(r);
+                    } else {
+                        if r < t0 {
+                            return None;
+                        }
+                        t1 = t1.min(r);
+                    }
+                }
+            }
+            Some((
+                (a.0 + dx * t0, a.1 + dy * t0),
+                (a.0 + dx * t1, a.1 + dy * t1),
+            ))
+        }
+
+        let same =
+            |x: Option<((f32, f32), (f32, f32))>, y: Option<((f32, f32), (f32, f32))>| match (x, y)
+            {
+                (None, None) => true,
+                (Some(p), Some(q)) => {
+                    p.0 .0.to_bits() == q.0 .0.to_bits()
+                        && p.0 .1.to_bits() == q.0 .1.to_bits()
+                        && p.1 .0.to_bits() == q.1 .0.to_bits()
+                        && p.1 .1.to_bits() == q.1 .1.to_bits()
+                }
+                _ => false,
+            };
+
+        let canvas = Canvas::new(200, 60);
+        let (max_x, max_y) = (canvas.max_x(), canvas.max_y());
+        // A cheap reproducible walk rather than a dependency: the constants are
+        // the usual 64-bit LCG, and nothing here needs more than a spread.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+        let mut cut = 0usize;
+        for i in 0..400_000 {
+            // Three regimes: comfortably inside, hugging an edge to the last
+            // representable step, and wildly outside. The middle one is the
+            // only place the two spellings could disagree, so it gets half.
+            let coord = |t: f32, hi: f32| match i % 5 {
+                0 => t * hi,
+                1 | 2 => {
+                    let edge = if i % 2 == 0 { 0.0 } else { hi };
+                    let step = (t - 0.5) * 4.0;
+                    edge + step * f32::EPSILON * hi.max(1.0)
+                }
+                // Exactly on a boundary, signed zero included. Snapping matters
+                // rather than merely hugging: widening the reject from `<` to
+                // `<=` is a segment lying *along* the edge dropped instead of
+                // drawn, and a sweep that only ever comes within an epsilon of
+                // zero goes on passing with that mutation in place.
+                3 => [0.0f32, -0.0, hi, hi * 0.5][(t * 4.0) as usize & 3],
+                _ => (t - 0.5) * 6.0 * hi,
+            };
+            let a = (coord(next(), max_x), coord(next(), max_y));
+            let b = (coord(next(), max_x), coord(next(), max_y));
+            let (mine, theirs) = (canvas.clip(a, b), oracle(&canvas, a, b));
+            assert!(
+                same(mine, theirs),
+                "the shortcut and the solve part company at {a:?} -> {b:?}: \
+                 {mine:?} against {theirs:?}"
+            );
+            match theirs {
+                None => rejected += 1,
+                Some((from, to)) if from == a && to == b => accepted += 1,
+                Some(_) => cut += 1,
+            }
+        }
+        // Two blank answers agree beautifully. This says the sweep really did
+        // reach all three arms rather than spending itself on one.
+        assert!(
+            accepted > 1_000 && rejected > 1_000 && cut > 1_000,
+            "the sweep should exercise every arm: {accepted} whole, {rejected} \
+             dropped, {cut} clipped"
+        );
     }
 
     #[test]
