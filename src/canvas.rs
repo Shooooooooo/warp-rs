@@ -1265,15 +1265,36 @@ mod tests {
             ))
         }
 
+        // Bitwise, with one carve-out that is a fact about the *solve* rather
+        // than about the shortcut: the two may disagree about the sign of a
+        // zero, and the solve does not agree with itself about it across
+        // platforms. `t0` is accumulated with `f32::max`, and `max(0.0, -0.0)`
+        // is precisely the case IEEE-754's `maxNum` declines to pin down — a
+        // Linux box hands back `+0.0` and a Windows runner hands back `-0.0`,
+        // which is what turned this test red there and nowhere else. At
+        // `(-0.0, 59.0) -> (99.5, 0.0)` the last edge contributes an `r` of
+        // `-0.0`, so the solve's near end comes out `-0.0 + 99.5 * -0.0` on
+        // one and `+0.0` on the other, and the shortcut — which spells `t0` as
+        // the literal it provably still holds — says `+0.0` on both.
+        //
+        // Nothing downstream can see it. `draw_leg` compares the clipped ends
+        // with `==`, where the two zeros are equal; a sample is clamped and
+        // then truncated to a subpixel index, where both are index zero; the
+        // fraction they leave differs only in its own sign, so the tap weight
+        // does too, and the canvas is cleared to `+0.0`, where adding either
+        // zero leaves `+0.0`. So this asks equality of *value* on the zeros
+        // and identity of bits everywhere else, which is the strongest
+        // statement the arithmetic underneath actually supports.
+        let agree = |x: f32, y: f32| x.to_bits() == y.to_bits() || (x == 0.0 && y == 0.0);
         let same =
             |x: Option<((f32, f32), (f32, f32))>, y: Option<((f32, f32), (f32, f32))>| match (x, y)
             {
                 (None, None) => true,
                 (Some(p), Some(q)) => {
-                    p.0 .0.to_bits() == q.0 .0.to_bits()
-                        && p.0 .1.to_bits() == q.0 .1.to_bits()
-                        && p.1 .0.to_bits() == q.1 .0.to_bits()
-                        && p.1 .1.to_bits() == q.1 .1.to_bits()
+                    agree(p.0 .0, q.0 .0)
+                        && agree(p.0 .1, q.0 .1)
+                        && agree(p.1 .0, q.1 .0)
+                        && agree(p.1 .1, q.1 .1)
                 }
                 _ => false,
             };

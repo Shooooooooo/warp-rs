@@ -441,6 +441,21 @@ platforms** — `sin`, `cos`, `exp` and `powf` come from the system maths librar
 and recycling the star pool turns a one-ulp difference into a different sky. So
 they are checked on `ubuntu-latest` only.
 
+**libm is not the only thing that differs across the matrix, and the second one
+is worth knowing before you write a test that compares two spellings bitwise.**
+`f32::max` is `maxNum`, and `maxNum(+0.0, -0.0)` is exactly the case IEEE-754
+declines to pin down: `ubuntu-latest` hands back `+0.0` and `windows-latest`
+hands back `-0.0`. `Canvas::clip` accumulates `t0` with it, so the *solve* does
+not agree with itself across the matrix about the sign of the zero it returns
+for a segment starting on the left edge — and a differential test asserting
+`to_bits()` equality against it goes green on three of the four legs of the
+`test` job and red on the fourth. Nothing in a frame can see it: the clipped
+ends are compared with `==`, a sample is clamped and truncated to a subpixel
+index, and the canvas is cleared to `+0.0`, where adding either zero leaves
+`+0.0`. So the rule is to compare bits everywhere and *values* on the zeros,
+which is what `the_clip_shortcuts_answer_for_the_solve_they_stand_in_front_of`
+does and says.
+
 The consequence for how you edit: **do not "clean up" duplicated float
 arithmetic on the pinned paths.** `Renderer::exterior_camera` spells out the
 same shake calculation as `Renderer::camera` rather than sharing a helper, and
