@@ -145,15 +145,28 @@ fn subdivide(points: &[Trace], lens: &Lens, out: &mut Vec<Trace>) {
     let budget = (MAX_ARCS / points.len().saturating_sub(1).max(1)).max(1);
     for (leg, pair) in points.windows(2).enumerate() {
         let (a, b) = (pair[0], pair[1]);
+        // A budget of one is a `clamp(_, 1, 1)`, which is one whatever the arc
+        // asks for — a saturating `as usize` puts a NaN at zero and an
+        // infinity at the top, and both clamp to the same one. So when the
+        // exposure has already been cut finely enough to spend the whole
+        // allowance, the length and the two curvatures below decide nothing
+        // and are not worth taking: a root and two calls into the lens, per
+        // leg, per star. That is exactly the turning case — twenty-three legs
+        // against a `MAX_ARCS` of twenty-four — and the optimiser cannot see
+        // it, because `budget` is a runtime value it cannot fold against.
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let length = crate::canvas::length_of(dx, dy);
-        // The far end of the leg, which for the first one is where the star
-        // actually is, speaks for it.
-        let bend = lens.curvature((b.0, b.1)).max(lens.curvature((a.0, a.1)));
-        let pieces = if length.is_finite() {
-            ((length * bend / ARC_STEP).ceil() as usize).clamp(1, budget)
-        } else {
+        let pieces = if budget == 1 {
             1
+        } else {
+            let length = crate::canvas::length_of(dx, dy);
+            // The far end of the leg, which for the first one is where the star
+            // actually is, speaks for it.
+            let bend = lens.curvature((b.0, b.1)).max(lens.curvature((a.0, a.1)));
+            if length.is_finite() {
+                ((length * bend / ARC_STEP).ceil() as usize).clamp(1, budget)
+            } else {
+                1
+            }
         };
         let inv = 1.0 / pieces as f32;
         // Only the first leg lays its own near end down; every later one starts

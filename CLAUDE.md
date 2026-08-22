@@ -81,8 +81,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 343 unit + 17 elsewhere, about 25s
-cargo test --locked --all-features      # 347 unit — adds the snapshot-gated ones
+cargo test                              # 344 unit + 17 elsewhere, about 25s
+cargo test --locked --all-features      # 348 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -441,6 +441,21 @@ platforms** — `sin`, `cos`, `exp` and `powf` come from the system maths librar
 and recycling the star pool turns a one-ulp difference into a different sky. So
 they are checked on `ubuntu-latest` only.
 
+**libm is not the only thing that differs across the matrix, and the second one
+is worth knowing before you write a test that compares two spellings bitwise.**
+`f32::max` is `maxNum`, and `maxNum(+0.0, -0.0)` is exactly the case IEEE-754
+declines to pin down: `ubuntu-latest` hands back `+0.0` and `windows-latest`
+hands back `-0.0`. `Canvas::clip` accumulates `t0` with it, so the *solve* does
+not agree with itself across the matrix about the sign of the zero it returns
+for a segment starting on the left edge — and a differential test asserting
+`to_bits()` equality against it goes green on three of the four legs of the
+`test` job and red on the fourth. Nothing in a frame can see it: the clipped
+ends are compared with `==`, a sample is clamped and truncated to a subpixel
+index, and the canvas is cleared to `+0.0`, where adding either zero leaves
+`+0.0`. So the rule is to compare bits everywhere and *values* on the zeros,
+which is what `the_clip_shortcuts_answer_for_the_solve_they_stand_in_front_of`
+does and says.
+
 The consequence for how you edit: **do not "clean up" duplicated float
 arithmetic on the pinned paths.** `Renderer::exterior_camera` spells out the
 same shake calculation as `Renderer::camera` rather than sharing a helper, and
@@ -490,6 +505,39 @@ span it already measured (−2.5%), and the twinkle `sin` skipped at warp, where
 its amount is a hard zero (−2%). Together they took the expensive frame — the
 outside view at twenty thousand stars on 200×60 — from 21.7 ms to 19.2.
 
+Five more went in later and all five are **bit-exact**, which is the property to
+protect when touching any of them: the ten reference flights did not move for
+any, and that is what says each one really is the identity it looks like rather
+than very nearly one. `Canvas::clip` takes a segment with both ends already on
+the canvas without solving for it, and drops one with both ends past the same
+edge without solving either; `draw_leg` returns the span it measured so
+`draw_path` stops taking the same square root three times over; the divide and
+the two conversions at the top of `draw_leg` moved *below* the clip, where a
+rejected leg no longer pays for a `per_sample` nothing reads; `splat_inside`
+binds the buffer once instead of indexing through `self` four times, since a
+store through `self.buf`'s pointer is one the optimiser must assume could land
+on that pointer and its length; and `bend::subdivide` skips the length and the
+two curvatures when the arc budget is already one, which is every leg of every
+turning exposure and which the optimiser cannot fold away because the budget is
+a runtime value.
+
+Measured back to back, minimum of five sweeps, and **run twice** — which is the
+part worth copying, because the two runs disagree and the disagreement is the
+honest width of this container's noise. The rows that moved, as a range across
+both: the outside view at warp with the stick buried 12.1 to 13.5% (55 ms to
+48), the same view flying straight 3.8 to 5.1%, the cockpit at 72 000 stars 3.0
+to 7.2% and the same sky in 256 colour 5.1 to 7.7%, and the turning cockpit 4.3
+to 4.7%. The two 200x60 rows at the *default* sky are the interesting ones: they
+came out 3.6% and 2.2% better on the first run and 1.2% and 1.1% worse on the
+second, which is to say they did not move at all — at 1.6 ms a row, this box's
+drift is wider than anything these edits do to it. The 80x24 row did not move
+either, and at 0.30 ms it is under what the bench resolves.
+
+**So the noise floor here is about two percent on a short row, and a single
+sweep cannot see past it.** Two of the experiments in the table below were
+rejected on exactly that basis, and one of them looked like a win on its first
+measurement.
+
 **Those figures are from before the sky went world-space and none of them is
 the number to reproduce now.** The same case is a different frame: the pool is
 what a limiting magnitude asks for rather than a count, and a streak is a few
@@ -528,15 +576,25 @@ place:
 | `get_unchecked_mut` in `splat_inside`, 28% of a cockpit frame's instructions | 2.5%. Not a price worth the first `unsafe` in the tree, but worth knowing the size of before anyone argues for it. |
 | row-walking `apply_vignette` with `chunks_exact_mut` | nothing; the indexed form already compiles to the same thing. |
 | dropping the `palette_256` → `palette_rgb` round trip in `quantize_256` | nothing; the constant divisors are already folded. |
+| taking `splat_inside`'s four taps through one `&mut self.buf[base..=base + right + below]`, to pay one bounds check instead of four | **worse** — the turning frame went up 1.3% and the outside view 2.4%, and callgrind says why: the four checks came out at 424M instructions and the inclusive-range slice put 614M back, for a net 191M *added*. Binding the buffer as a plain slice is the half of that idea that works and it is in the tree; slicing it down to the window is the half that does not. |
+| threading a bent sample's offsets through `bend`'s walk, so `shadowed`, `crosses_the_ring` and the next leg's chord test share one transform instead of taking three | **worse** — 5.211G instructions against 5.130G on the outside view at warp with the stick buried, a 1.6% *rise*, deterministic. The duplication is not real: `Lens::offsets` is a pure function of the lens and the point, nothing writes between the two calls, and LLVM had already common-subexpressioned them. What the change actually added was an `Option` carried across the loop and the register pressure to hold it. This is the `sin_cos` lesson again on a different function — read the profile, not the source. |
+| taking the divide out of `Lens::crosses_the_ring` when the dot product says the nearest point clamps to the near end | **worse** — the straight outside view went up 2.0% on both the minimum and the median of eleven runs. The shortcut is exact (only the squares of the nearest point are read, so the negative zero it hands back is unobservable) and it still does not pay: a bent image is pushed outward about half the time, so the branch is a coin flip, and a mispredict costs more than the `divss` it skips. A branch is only worth putting in front of a divide where it is *predictable*. |
+| `#[inline]` on `Sink::move_to`, `set_color` and `glyph`, on the reading that the enum's `Commands` arm keeps the ANSI path out of line | nothing at all — 0.400 ms of write column either side, to the millisecond's third decimal. The hint is advisory and fat LTO had already made its decision. Splitting the enum into two types is a different proposal and is untested; it would have to be measured against `Screen::flush` rather than this bench, which times `present_plain`. |
 
-Cachegrind is the other thing to know before reaching for a layout change: the
-D1 miss rate is 1.4% and last-level misses are in the tens of thousands for a
-whole run. The working set fits. This is instruction-bound, and shrinking
-`Star` or restriping the canvas is solving a problem it does not have.
+Cachegrind is the other thing to know before reaching for a layout change, and
+this paragraph has been remeasured on the world-space sky rather than inherited
+from the one before it. **The conclusion survives and one of its numbers did
+not.** On the turning cockpit frame at 200x60 and 72 000 stars the D1 miss rate
+is **3.4% overall and 4.6% on reads**, against the 1.4% recorded when the pool
+was thirty-six times smaller — but last-level misses are 71 482 for a whole run,
+a rate that rounds to zero, so every one of those D1 misses is an L2 hit that an
+out-of-order core largely covers. The working set still fits. This is still
+instruction-bound, and shrinking `Star` or restriping the canvas is still
+solving a problem it does not have: `splat_inside` alone retires 41% of the
+turning frame's instructions and `draw_leg` another 22%, which is where an
+optimisation has to go to be worth anything.
 
-Those figures predate the world-space sky and its pool is thirty-six times
-larger, so the cache claim in particular wants remeasuring before it is leaned
-on again. What has been measured since is the wall clock, and it went the good
+What has been measured since is the wall clock, and it went the good
 way: the expensive frame — the outside view at warp — runs 12.2 ms against 21.1
 before, with 72 000 stars against 20 000, because a streak that is a few
 subpixels long costs a few samples where one across the frame costs a hundred.
@@ -561,6 +619,34 @@ percent between sessions and rather more between machines, so the ratios are the
 part to carry forward and the absolute numbers are the part to re-measure. The
 ratios did not move: about three to one on the default sky, five to one at
 `--magnitude 8`, and a little under five to one from outside.
+
+**And the ratios are what moved when the five bit-exact edits above went in**,
+which is worth knowing because it is the first time anything here has bitten the
+turn harder than the straight flight. Measured on the same machine, minimum of
+five and repeated, the whole-frame column: 4.03 to 3.85 and 4.01 to 3.92 on the
+default sky turning, 48.07 to 46.00 and 47.62 to 45.38 at `--magnitude 8`, and
+55.72 to **48.20** and 54.96 to **48.32** from outside — so the outside
+view's turn came down from a little under five times its straight cost to about
+four and a half, and almost all of that is one edit. `bend::subdivide` was
+taking a square root and two `Lens::curvature` calls per leg to decide a number
+that a budget of one had already decided, and a turning exposure is
+twenty-three legs against a `MAX_ARCS` of twenty-four, so the whole of that work
+was dead in exactly the case that could least afford it: 7.5% of the most
+expensive frame the program draws, on its own.
+
+**Why the turn costs what it does was measured rather than reasoned about, and
+one plausible story is wrong.** It is not the `steps.clamp(1, ..)` floor putting
+a sample under each of twenty-three legs where a straight star pays one: a leg
+the canvas rejects returns before `steps` is ever computed. Callgrind on the two
+frames says it plainly — `splat_inside` retires 8.04 times the instructions
+turning that it does straight, and `splat_inside` is one call per subpixel of
+arc. The smear is *rotational*, so a star sweeps the same few frame-widths of
+arc whether it is ten light years out or a thousand, and the frame keeps
+whatever crosses it. The cost is the arc length sampled, which is what this file
+has said all along; what the profile adds is that it is the sample count and not
+the leg count, so the per-leg overheads are worth taking only because they are
+free, and the sample budget in `Canvas::draw_leg` is still the only lever that
+would bound the thing.
 
 That last pair is a fivefold cost and it was accepted rather than capped, on two
 grounds. It is self-limiting — the steering rates decay in under a second and
