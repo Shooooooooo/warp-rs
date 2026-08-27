@@ -1,14 +1,5 @@
 //! A floating-point RGB canvas that everything is drawn into before it ever
 //! becomes a character.
-//!
-//! Light is *added*, not written, so a hundred streaks crossing the same
-//! subpixel pile up into something bright instead of the last one winning.
-//! Values are allowed to run past 1.0 and are pulled back into range once, at
-//! the end, by the tonemap — which is what makes overlapping streaks bloom
-//! rather than clip into flat white.
-//!
-//! This is a look, not a colour-managed pipeline: exposure and gamma here are
-//! tuned by eye against what the terminal actually shows.
 
 use crate::camera::Streak;
 
@@ -16,45 +7,10 @@ use crate::camera::Streak;
 /// its light instead of burning a line through the frame.
 const LENGTH_FALLOFF: f32 = 0.12;
 /// Backstop on samples per streak, over and above the canvas's own diagonal.
-///
-/// It is a backstop and not the bound, which is a correction: the comment here
-/// used to say clipping already bounded this in practice, and clipping does —
-/// to the canvas, which is not a fixed size. `--size` admits `MAX_CELLS` in any
-/// arrangement, so `200x10000` is a canvas whose diagonal is twenty thousand
-/// subpixels against a cap of four thousand. Past the cap a streak is sampled
-/// every fifth subpixel instead of every one, which is a dashed line — and,
-/// because a leg deposits `per_sample` once per *step* rather than per unit
-/// length, five times too little light with it. The same flight would then look
-/// different on two terminals, which is the one thing this tree is written to
-/// stop.
-///
-/// So the real bound is `Canvas::max_samples`, which follows the canvas the way
-/// `Camera::focal` does, and this is the floor under it: below it on any
-/// ordinary terminal, so nothing about an ordinary frame changed.
 const MAX_SAMPLES: usize = 4096;
 
 /// How finely a hull's outline is measured, per subpixel and per axis, when
 /// `--aa` is left alone. Nine samples, so ten levels of coverage.
-///
-/// Square rather than tall, because a canvas subpixel is roughly square — a
-/// cell is about one by two and holds two subpixel rows — and a three-by-two
-/// grid would sharpen the ship along one axis while softening it along the
-/// other. Odd, so the grid contains the subpixel's own centre: that is the one
-/// sample the rasteriser this replaced took, which keeps the brightest part of
-/// a hairline plate on the subcolumn the old fill would have chosen.
-///
-/// Two is not enough. Four levels, no centre sample, and the tonemap makes the
-/// *first* rung the biggest — a quarter of a hull colour already resolves to
-/// about half the hull's brightness, so an edge fading in still arrives as a
-/// step, where a ninth lands a third of the way up.
-///
-/// Four was compared against three on the shot this ships pictures of, and it
-/// is very slightly the smoother: sixteen levels, and a first rung gentler
-/// again. It was not taken, because what it buys at the bottom of the ramp it
-/// pays for by dropping the centre sample, and because the difference between
-/// three and four is a fraction of the difference between one and three. The
-/// margin is small enough to be a matter of taste rather than of fact, which is
-/// most of why `--aa` takes a number instead of an on and an off.
 pub const HULL_SAMPLES: usize = 3;
 
 /// Ceiling on `--aa`. It enters squared, like `--scale` does: the band is
@@ -68,34 +24,9 @@ const _: () = assert!(
 
 /// One point of a streak's track: where it is on the canvas, and how fast the
 /// star's image was moving on the leg that *leaves* it.
-///
-/// The pace is what makes a streak an exposure rather than a shape, and it is
-/// there because `spread` needs it: a star lays its light down in proportion
-/// to how long its image dwelt on a place, and dwelling is a fact about pace.
-/// It is measured as the length the whole exposure would have covered had the
-/// image kept this pace throughout — so for a streak flown straight through it
-/// is simply the streak's own length, which is the number the falloff always
-/// took.
-///
-/// Carried per point rather than worked out from the points, and that is the
-/// decision here. It could be derived by handing each vertex the *moment* it
-/// sits at and dividing, and that was tried: it is the same number for a star
-/// and the wrong one the instant [`crate::lens`] re-images the streak, because
-/// the bubble's own stretching would then be charged to the star's motion —
-/// where it belongs to the magnification the bend already applies. Measured, it
-/// repainted seventy percent of every exterior frame. A pace travels through a
-/// bend unchanged, which is the honest thing for it to do.
-///
-/// The last point's pace is never read: a path of `n` points has `n - 1` legs.
 pub type Trace = (f32, f32, f32);
 
 /// What a leg of a streak needs that does not vary along it.
-///
-/// A bundle rather than six more arguments to [`Canvas::draw_leg`], which is
-/// one past where clippy — run as an error in CI — starts asking what all of
-/// them are for. It is also the honest unit: every field here is a fact about
-/// the *whole* streak, which is exactly what a leg is not allowed to work out
-/// for itself.
 struct Ramp {
     /// Reciprocal of the whole streak's length, so a leg can say where along it
     /// it sits without a division per sample.
@@ -114,68 +45,17 @@ struct Ramp {
 
 /// The curve `LENGTH_FALLOFF` describes, asked of how fast the image was moving
 /// rather than of how far it went.
-///
-/// The argument it is handed is a *pace*: the length the whole exposure would
-/// have covered had the image moved this fast for all of it. For a streak flown
-/// straight through that is simply its length, and this is the number it always
-/// was. For one the ship turned through it is not, and the difference is the
-/// whole of why this takes a pace now.
-///
-/// A star lays its light down in proportion to how long its image dwelt on a
-/// place. Dividing by the *total* length instead says the light is spread
-/// evenly along the track, which is only true at a constant pace — and a
-/// turning exposure is the opposite of that. Its tail swings toward the near
-/// plane, where the projection accelerates hyperbolically, so the image spends
-/// almost no time out there and should leave almost nothing behind it. Measured
-/// against the even model, over a sweep from the axis out to
-/// `universe::TAIL_COS`: the visible near-axis part of the track was being
-/// drawn 4.6 times too dim on the axis and about 3 times at the frame edge,
-/// with the light that belonged there charged to an excursion five canvas
-/// heights off the side of the picture. Worse, the size of the error was set by
-/// where that cut happens to sit rather than by anything about the star.
-///
-/// It reduces to what it replaced exactly when the pace is even, at any
-/// subdivision — a path cut into 1, 2, 5 or 23 equal-paced legs lays down
-/// identical bytes — which is what keeps every straight streak, every sublight
-/// frame and every piece [`crate::bend`] chops a streak into where they were.
-///
-/// Every caller measures the *whole* streak here, before any clipping, and the
-/// two used to disagree: `draw_path` measured the polyline it was handed and
-/// `draw_streak` measured what survived the window. Both readings are
-/// defensible on their own and they cannot both be right about one star. The
-/// unclipped one is, because the falloff is a statement about light: a star
-/// lays its brightness down along the track it flew, so the part of that track
-/// on screen carries the part of the light that fell on it. Measured on the
-/// clipped remainder, the whole star's light was poured into whatever fragment
-/// the frame happened to keep — an edge streak burned up to three times
-/// brighter per subpixel than the same streak on a wider terminal, which is the
-/// one thing this test suite exists to stop. It is also the argument the lance
-/// has always made — where the window cuts a plume is not a fact about the
-/// plume — and there was never a reason it stopped at the lance.
-///
-/// What it buys past the honesty is that a two-point [`Canvas::draw_path`] is
-/// now the bytes [`Canvas::draw_streak`] lays down whether the segment was
-/// clipped or not, rather than only when it was not. That is what lets one star
-/// swap between the two mid-flight — which is what the sky does the moment a
-/// hand touches the stick — without the frame changing brightness underneath
-/// it.
 fn spread(length: f32) -> f32 {
     1.0 + length * LENGTH_FALLOFF
 }
 
 /// Entries in the tonemap table. The curve is sampled on a square-root
 /// compressed domain, which spends resolution where the output moves fastest;
-/// 1024 holds the worst error to a single 8-bit level and keeps the whole
-/// table inside L1.
+/// 1024 holds the worst error to a single 8-bit level and keeps the whole table
+/// inside L1.
 const TONEMAP_LUT: usize = 1024;
 
 /// The tonemap curve, precomputed.
-///
-/// Exposure and gamma are fixed for the life of a run and the output is only
-/// eight bits wide, so the entire curve fits in a table. That turns what was
-/// an `exp` and a `powf` per channel per subpixel — around 98k of each per
-/// frame on a large terminal, and the most expensive thing the renderer did —
-/// into a square root and an index.
 pub struct Tonemap {
     lut: Box<[u8; TONEMAP_LUT]>,
     /// Reciprocal of the smallest HDR value that already resolves to 255.
@@ -225,19 +105,6 @@ fn saturation_point(exposure: f32, gamma: f32) -> f32 {
 }
 
 /// The length of a span on the canvas.
-///
-/// `f32::hypot` is libm's overflow-safe, correctly-rounded routine, and none of
-/// what makes it expensive is being used here: every span this measures is a
-/// difference of two canvas coordinates, so the squares cannot overflow, and
-/// the last bit of a length is not what a streak's sampling rate turns on. It
-/// was a real call out to the maths library per span, and the bent-streak path
-/// takes four of them per segment — four percent of every instruction an
-/// exterior frame retires.
-///
-/// Here rather than in [`crate::lens`] because [`Canvas::draw_path`] wants it
-/// too, and the two have to agree to the bit: `draw_path` reuses a span it
-/// measured once as the length it samples along, which is only sound while both
-/// are spelled the same way.
 #[inline]
 pub fn length_of(dx: f32, dy: f32) -> f32 {
     (dx * dx + dy * dy).sqrt()
@@ -245,11 +112,6 @@ pub fn length_of(dx: f32, dy: f32) -> f32 {
 
 /// One face of a hull, ready to paint: where its outline lies on the canvas,
 /// and what colour it came out.
-///
-/// Everything else a [`crate::models`] plate carries — its depth, its shade —
-/// is the caller's business, and settled by the time it gets here. Faces arrive
-/// as a slice rather than one at a time, which is the whole of the design
-/// rather than a convenience; the essay is on [`Canvas::fill_hull`].
 pub struct Facet<'a> {
     pub points: &'a [(f32, f32)],
     pub color: [f32; 3],
@@ -257,11 +119,6 @@ pub struct Facet<'a> {
 
 /// One subsample of the band: what colour landed on it, and whether anything
 /// did at all.
-///
-/// A flag rather than a test for black. Nothing in the fleet paints a plate
-/// exactly zero — `AMBIENT` of any hull colour is not — but that is a
-/// relationship nothing checks, and the failure mode of leaning on it is a hole
-/// through the shadowed side of a ship.
 #[derive(Clone, Copy)]
 struct Sample {
     color: [f32; 3],
@@ -287,13 +144,6 @@ struct BandFace {
 
 /// Where a convex outline crosses one sample row: the outermost two crossings,
 /// which convexity makes the whole span — no sorting, no parity rule.
-///
-/// A crossing is worked out from the edge's own two endpoints taken in the
-/// order their `y` puts them in, rather than the order the face happens to walk
-/// them. Two faces sharing an edge therefore evaluate the identical expression
-/// on the identical floats and agree to the bit about where it crosses a row,
-/// so the seam between two plates of one hull cannot open a crack that neither
-/// of them fills.
 fn crossings(points: &[(f32, f32)], row: f32) -> Option<(f32, f32)> {
     let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
     for i in 0..points.len() {
@@ -364,13 +214,11 @@ impl Canvas {
             self.height = height;
             // Cleared, not just re-length-ed: the row stride follows the width,
             // so light left over from the old layout would reappear somewhere
-            // it was never drawn. Every frame clears before it draws, but that
-            // is the renderer's habit, not something resize may lean on.
+            // it was never drawn.
             self.buf.clear();
             self.buf.resize(width * height, [0.0; 3]);
             // The band is cleared every time it is used, so stale samples are
-            // not the hazard here — its *length* is. A canvas narrowed with a
-            // band still sized for the old width indexes past the end of it.
+            // not the hazard here — its *length* is.
             let band = width * self.hull_samples * self.hull_samples;
             self.band.resize(band, Sample::EMPTY);
         }
@@ -383,8 +231,6 @@ impl Canvas {
     /// Add light at a subpixel position, spread bilinearly over the four
     /// neighbouring cells. The interpolation is what keeps slow stars from
     /// visibly hopping from cell to cell.
-    ///
-    /// Anywhere at all: off the canvas, NaN, negative. Everything is checked.
     pub fn splat(&mut self, x: f32, y: f32, color: [f32; 3], weight: f32) {
         if weight <= 0.0 || !x.is_finite() || !y.is_finite() {
             return;
@@ -420,16 +266,12 @@ impl Canvas {
     /// The same splat for a point already known to be on the canvas, which is
     /// every sample of a clipped streak — the overwhelming majority of them.
     ///
-    /// Worth the duplication because this is the innermost loop in the program:
-    /// at warp a single frame can splat a couple of million times, and the
-    /// general path spends most of that testing four taps it already knows the
-    /// answer for. The one case still needing care is the far edge, where the
-    /// `+1` neighbour does not exist — but a point can only sit on the last
-    /// column when its fraction is exactly zero, so that tap's weight is zero
-    /// too and folding it back onto the pixel itself adds nothing to it.
-    ///
-    /// Arithmetic and ordering are identical to `splat`, deliberately: this is
-    /// meant to produce the same frame, not merely a similar one.
+    /// Does no bounds checking and will panic: every caller must clamp its
+    /// samples to [`Canvas::max_x`] and [`Canvas::max_y`] first, since a point
+    /// interpolated between two clipped endpoints can still land a hair
+    /// outside. The arithmetic and tap order match [`Canvas::splat`]
+    /// deliberately, so the two produce the same frame rather than a similar
+    /// one.
     fn splat_inside(&mut self, x: f32, y: f32, color: [f32; 3], weight: f32) {
         let (x0, y0) = (x as usize, y as usize); // non-negative, so a floor
         let (fx, fy) = (x - x0 as f32, y - y0 as f32);
@@ -444,13 +286,7 @@ impl Canvas {
             (base + right + below, fx * fy),
         ];
         // The buffer taken as a local slice before the four taps rather than
-        // indexed through `self` four times. A store through `self.buf`'s
-        // pointer is, as far as the optimiser can tell, a store that might land
-        // on `self.buf`'s own pointer and length — `&mut self` says nothing
-        // about a pointer derived from it — so the pair had to be reloaded
-        // after every tap. Binding them once says they cannot move, which is
-        // three reloads a splat gone in the innermost loop in the program.
-        // Nothing about the arithmetic or the order of the taps changes.
+        // indexed through `self` four times.
         let buf = self.buf.as_mut_slice();
         for (idx, share) in taps {
             let px = &mut buf[idx];
@@ -472,34 +308,12 @@ impl Canvas {
 
     /// The most samples one leg may take: the canvas's own diagonal, or
     /// [`MAX_SAMPLES`], whichever is larger.
-    ///
-    /// A clipped span cannot be longer than the diagonal, so on any canvas at
-    /// all this is the number that makes the cap unreachable — which is what
-    /// the cap was always described as being and, past about a three thousand
-    /// subpixel diagonal, was not. Taken as the sum of the sides rather than as
-    /// a root, because it only has to be an upper bound and this one costs an
-    /// add: a diagonal is never longer than the two sides that make it.
     fn max_samples(&self) -> usize {
         (self.width + self.height).max(MAX_SAMPLES)
     }
 
     /// How far a streak's light would be spread along this segment: the factor
     /// [`Self::draw_streak`] is about to divide its per-sample brightness by.
-    ///
-    /// Public because of one caller with an unusual problem. The falloff exists
-    /// so that a *star*, whose streak length is its own motion, spreads its
-    /// light rather than burning a line through the frame — the length is the
-    /// physics and dimming with it is the point. The engine trail is the other
-    /// case: above light speed its reach is measured against the frame, so
-    /// without dividing this back out the width of the terminal would decide
-    /// how bright the drive burns, and the same flight would not look the same
-    /// on two machines.
-    ///
-    /// It consults the segment and not the canvas, which is a change from what
-    /// it used to do and is the whole of what makes it agree with
-    /// [`Self::draw_path`]. See `spread`: a streak's light is spread along
-    /// the track it flew, and where the window happens to cut that track is not
-    /// a fact about the streak.
     pub fn streak_spread(&self, from: (f32, f32), to: (f32, f32)) -> f32 {
         let total = length_of(to.0 - from.0, to.1 - from.1);
         if !total.is_finite() || total < 0.75 {
@@ -510,42 +324,6 @@ impl Canvas {
 
     /// Draw one streak: a line from where the light ran out to where it is,
     /// brightening toward the head and running out at nothing.
-    ///
-    /// There used to be two of these. A star's ramp stopped at a floor of a
-    /// third and only the engine lance ran out at nothing, on the argument that
-    /// a star's tail "is simply where it was a frame ago" and that light
-    /// stopping dead there would read as a dash with no star on it. A frame ago
-    /// a floor is harmless, because nothing ever leaves a streak through its
-    /// tail. That premise went when a streak became an exposure seconds long:
-    /// the tail is now where the shutter closes, everything that ages out of
-    /// the picture leaves through exactly that edge, and a floor made it leave
-    /// at a *third of full brightness*. Eight bits' worth: level 178 against a
-    /// head of 237, and the next subpixel zero.
-    ///
-    /// What that looked like is what it was — a hard bright edge dragged across
-    /// the frame. Hold a turn at low warp, where the whole trail is the smear
-    /// the turn left, and the sky holds its streaks steady for a second after
-    /// the stick comes back and is then wiped: measured, the lit subpixels sat
-    /// at 59 000 for a second and fell to 9 000 over the next one and three
-    /// quarters. Every star shares one shutter, so they all went together.
-    ///
-    /// So there is one ramp, it runs out at nothing, and the argument that got
-    /// the lance there first is now the argument for all of it: where a streak
-    /// ends is where its light ran out. For the lance that means it may be
-    /// aimed exactly at the point its own exhaust vanishes toward — every bell
-    /// shares that point, and a floor put a third of full brightness from every
-    /// lane of every one of them on the single subpixel they all end on, a bead
-    /// hanging in the sky precisely where the exhaust was meant to have gone.
-    /// For a star it means the oldest light in the exposure is the faintest,
-    /// which is what makes a trail thin away as it ages instead of being cut.
-    ///
-    /// The ramp is measured on the *whole* streak rather than on what survived
-    /// clipping. A lance abeam is stretched to the frame's diagonal and leaves
-    /// by the edge, so its tail is off-screen; ramped over the clipped
-    /// remainder it would fade to nothing at the edge of the *picture* instead
-    /// of at the end of the plume, and a drive whose reach is the frame's would
-    /// stop short of the frame on every terminal. Where the window happens to
-    /// cut a streak is not a fact about the streak.
     pub fn draw_streak(&mut self, streak: &Streak) {
         // A dark star has nothing to add, and a NaN one would spread across the
         // buffer — nothing recovers a pixel once it is not a number.
@@ -555,10 +333,8 @@ impl Canvas {
         let total = length_of(streak.to.0 - streak.from.0, streak.to.1 - streak.from.1);
         // A streak that went nowhere, or one with a NaN in it, is a point — and
         // it is asked of the streak rather than of what survived the window, so
-        // a long streak clipped down to a sliver is still drawn as the streak it
-        // is. It used to be the other way round, and the short branch skips the
-        // falloff, so such a streak came out at *full* intensity: a bright dot
-        // in the corner of the frame where a fading smear belonged.
+        // a long streak clipped down to a sliver is still drawn as the streak
+        // it is.
         if !total.is_finite() || total < 0.75 {
             let Some((_, head)) = self.clip(streak.from, streak.to) else {
                 return;
@@ -589,26 +365,6 @@ impl Canvas {
 
     /// Lay one leg of a streak down, with the ramp and the falloff evaluated
     /// against the whole streak the leg is part of.
-    ///
-    /// One body, shared by the straight primitive and the bent one, and the
-    /// sharing is the point rather than a tidiness: a star swaps between them
-    /// mid-flight — the sky does it the moment a hand touches the stick — and
-    /// two nearly-agreeing spellings would step the whole frame's brightness
-    /// as it happened. Written once, they cannot.
-    ///
-    /// `travelled` is how far along the whole streak this leg begins, which is
-    /// what lets the ramp be a fact about the streak rather than about the leg.
-    /// `resume_at` carries where the previous leg stopped, so a shared vertex is
-    /// not splatted twice; without it every joint is a bright bead and a finely
-    /// subdivided curve is a dotted line.
-    ///
-    /// It hands back the span it measured, which is the one number a caller
-    /// walking a path needs and would otherwise take a second square root for.
-    /// [`Canvas::draw_path`] measured every leg twice over — once to total
-    /// the polyline and once to carry `travelled` forward — on top of the one
-    /// taken here, three roots a leg where two will do. Returning it rather than
-    /// taking it as an argument keeps the measurement in the one place that
-    /// cannot do without it, so the two spellings cannot drift apart.
     fn draw_leg(
         &mut self,
         a: Trace,
@@ -619,37 +375,28 @@ impl Canvas {
     ) -> f32 {
         let span = length_of(b.0 - a.0, b.1 - a.1);
         // How thinly this leg spreads what it caught, from the pace the image
-        // was moving at rather than from the length of the whole track. A leg
-        // handed no pace at all falls back to its own length, which is what a
-        // single-leg streak's pace is anyway.
+        // was moving at rather than from the length of the whole track.
         let pace = if a.2 > 0.0 && a.2.is_finite() {
             a.2
         } else {
             ramp.total
         };
         let (a, b) = ((a.0, a.1), (b.0, b.1));
-        // Clipping moves the endpoints, so the ramp has to be evaluated
-        // against where they ended up along the *original* segment — not
-        // against the clipped one, which would stretch the ramp back out
-        // over whatever fragment survived.
+        // Clipping moves the endpoints, so the ramp has to be evaluated against
+        // where they ended up along the *original* segment — not against the
+        // clipped one, which would stretch the ramp back out over whatever
+        // fragment survived.
         let Some((from, to)) = self.clip(a, b) else {
             return span;
         };
-        // Below the clip rather than above it, which is where the divide and
-        // the two conversions used to sit. Most of the legs a turning exposure
-        // is cut into are off the canvas entirely — the smear is rotational,
-        // so a star sweeps several frame-widths of arc and the frame keeps a
-        // fraction of it — and each was paying for a `per_sample` that nothing
-        // ever read. Nothing is reassociated by the move: these are the
-        // same three expressions on the same values, evaluated only when there
-        // is something to spend them on.
+        // Below the clip, so a rejected leg does not pay for a `per_sample`
+        // nothing reads.
         let (max_x, max_y) = (self.max_x(), self.max_y());
         let per_sample = ramp.intensity / spread(pace);
-        // A segment the canvas did not cut is the overwhelming case,
-        // and there all three of these are already in hand: the near
-        // end is exactly where the walk had got to, the far end exactly
-        // one span further on, and the length is that span. Measuring
-        // them again is three roots for numbers already known.
+        // A segment the canvas did not cut is the overwhelming case, and there
+        // all three of these are already in hand: the near end is exactly where
+        // the walk had got to, the far end exactly one span further on, and the
+        // length is that span.
         let (t0, t1, length) = if from == a && to == b {
             (
                 travelled * ramp.inv_total,
@@ -662,10 +409,7 @@ impl Canvas {
         };
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         let steps = (length.ceil() as usize).clamp(1, self.max_samples());
-        // One reciprocal per leg rather than a division per sample. At warp
-        // a frame walks a couple of million of them, and a float divide is
-        // several times dearer than the multiply that replaces it: about six
-        // percent of the time spent drawing, at twenty thousand stars.
+        // One reciprocal per leg rather than a division per sample.
         let inv_steps = 1.0 / steps as f32;
         let first = usize::from(*resume_at == Some(from));
         *resume_at = Some(to);
@@ -673,12 +417,9 @@ impl Canvas {
             let s = i as f32 * inv_steps;
             // How far along the whole streak this sample sits, which is the
             // brightness it carries: `from` is where the light ran out and `to`
-            // is the head. See [`Canvas::draw_streak`] for why there is no
-            // floor under it.
+            // is the head.
             let level = t0 + (t1 - t0) * s;
-            // Clipping put both ends on the canvas. The clamps are for the
-            // last of the floating-point slack: an interpolated point can land
-            // a hair outside the box its endpoints were clipped to.
+            // Clipping put both ends on the canvas.
             let x = (from.0 + dx * s).clamp(0.0, max_x);
             let y = (from.1 + dy * s).clamp(0.0, max_y);
             self.splat_inside(x, y, ramp.color, per_sample * level);
@@ -689,16 +430,6 @@ impl Canvas {
     /// Draw a streak that has been bent into a curve: the same light a
     /// [`Canvas::draw_streak`] would lay down, following a polyline instead of
     /// a straight segment.
-    ///
-    /// The *ramp* is measured over the whole path rather than per segment.
-    /// Doing it per segment would scallop the streak — every joint would
-    /// restart at the tail brightness — and would dim a finely subdivided curve
-    /// far more than a coarsely subdivided one, so the picture would change
-    /// with the subdivision rather than with the physics.
-    ///
-    /// The *falloff* is per leg, and that is not the same mistake: it is asked
-    /// of each leg's own pace, which subdividing a leg does not change. See
-    /// `spread`.
     pub fn draw_path(&mut self, points: &[Trace], color: [f32; 3], intensity: f32) {
         if intensity.is_nan() || intensity <= 0.0 || points.is_empty() {
             return;
@@ -711,16 +442,6 @@ impl Canvas {
         // it is handed over as the segment it is rather than as the head it
         // collapses to, which is the difference between agreeing with
         // [`Self::draw_streak`] and very nearly agreeing with it.
-        //
-        // Collapsing first threw the tail away before anything had clipped,
-        // and the clip is what decides whether the star is on screen at all.
-        // A sub-subpixel exposure straddling the frame edge has a head just
-        // off it and a tail just on: `draw_streak` clips the real segment,
-        // finds the end that survived and splats there, where this found a
-        // degenerate segment wholly outside the canvas and dropped the star.
-        // Both primitives are entered by the same sky, and a star crossing the
-        // edge crosses between them, so the disagreement was a star winking
-        // out at the boundary rather than sliding off it.
         if !total.is_finite() || total < 0.75 {
             let (tail, head) = (points[0], points[points.len() - 1]);
             self.draw_streak(&Streak {
@@ -739,8 +460,8 @@ impl Canvas {
             color,
         };
         let mut travelled = 0.0f32;
-        // Where the previous segment stopped, so the vertex the next one
-        // starts from is not splatted twice.
+        // Where the previous segment stopped, so the vertex the next one starts
+        // from is not splatted twice.
         let mut resume_at: Option<(f32, f32)> = None;
 
         for pair in points.windows(2) {
@@ -752,50 +473,17 @@ impl Canvas {
     /// Paint a hull: a set of opaque convex faces, covering whatever was under
     /// them, with the outline measured finer than a subpixel.
     ///
-    /// The one thing in this module that does not add light. Everything else
-    /// here accumulates, because everything else is light: a hundred streaks
-    /// crossing a subpixel should pile up. A hull is not light, it is a solid
-    /// object, and a star shining through a starship reads as a fault rather
-    /// than as glass — so this covers, and what was behind it stays behind it.
-    ///
-    /// A subpixel the hull only partly stands on is written in proportion,
-    /// `buf * (1 - cov) + colour * cov`, and that is the one place a hull and
-    /// the sky behind it are ever mixed. It is not a hole in the rule above:
-    /// the coverage is geometry rather than transparency, and it is counted in
-    /// whole samples and divided, so a fully covered subpixel comes out at
-    /// exactly one and exactly none of what was under it survives. It matters
-    /// here more than the arithmetic suggests, because the subject is tiny — at
-    /// the framing the shot opens on, a plate is one or two subpixels thick,
-    /// and a hard edge on one of those does not move when the ship rolls. It
-    /// sits still and then jumps a whole subpixel, which reads as crawling.
-    ///
-    /// **The whole hull arrives at once, and that is the design rather than a
-    /// convenience.** Coverage composes only once per sample. Blend the faces
-    /// in turn instead and every edge two of them share *inside* the hull is
-    /// blended twice: two plates each covering half of the subpixel their
-    /// shared edge runs down leave `(1 - ½)(1 - ½)` of the sky, in a line,
-    /// through the middle of the ship. There is no per-face fix — the
-    /// composition is what is wrong. Taken together, the far-to-near order the
-    /// caller has already sorted them into can be applied *between the samples*
-    /// of a subpixel, where it settles a seam the way it settles everything
-    /// else. The runner-up was a coverage mask walked near to far, paying for
-    /// each sample once; it costs less memory and inverts the painting order
-    /// this module's whole hidden-surface story is told in.
-    ///
-    /// Convex is the caller's promise, and it is what lets a row of a face be
-    /// filled between the outermost two edge crossings without sorting them.
-    /// The order is the caller's promise too, and it is far to near.
+    /// The whole hull has to arrive in one call. Coverage composes once per
+    /// sample, so blending face by face blends every shared edge twice and
+    /// leaves a line of sky down the middle of the ship. Convexity and
+    /// far-to-near order are the caller's promises.
     pub fn fill_hull(&mut self, faces: &[Facet<'_>]) {
         let n = self.hull_samples;
         let grid_w = self.width * n;
         let (max_u, max_v) = ((grid_w - 1) as f32, (self.height * n - 1) as f32);
         // `(x + 0.5) * n - 0.5`, spelled as a multiply and an add so that at
         // one sample a subpixel it is a multiply by one and an add of zero —
-        // the identity for every finite float. That is what makes this *be* the
-        // rasteriser it replaced at `--aa 1` rather than merely agree with it,
-        // and `one_sample_a_subpixel_is_the_rasteriser_this_replaced` is what
-        // holds it. Everything below then runs the old span arithmetic against
-        // a grid `n` times finer, unchanged.
+        // the identity for every finite float.
         let shift = (n - 1) as f32 * 0.5;
 
         self.hull_points.clear();
@@ -804,8 +492,7 @@ impl Canvas {
         let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
         for face in faces {
             // A face that cannot be measured is dropped and the rest of the
-            // hull still drawn. Giving up on the whole ship because one plate
-            // came out NaN turns a wrong subpixel into a missing starship.
+            // hull still drawn.
             if face.points.len() < 3
                 || !face.color.iter().all(|c| c.is_finite())
                 || face
@@ -838,26 +525,14 @@ impl Canvas {
             return;
         }
 
-        // The sample columns anything below may write to. `round` is monotone,
-        // so one row's span can never reach outside the hull's own bound;
-        // clamping into it states that rather than changes it.
+        // The sample columns anything below may write to.
         let u_lo = left.round().max(0.0) as usize;
         let u_hi = (right.round().min(max_u)).max(0.0) as usize;
         if u_lo > u_hi {
             return;
         }
         // And the wider span that has to be *cleared*, which is not the same
-        // pair of numbers however much it looks like it should be. The resolve
-        // loop below reads whole subpixels — every sample of the column a
-        // written sample falls in — so it reaches `u_lo % n` samples below
-        // `u_lo` and `n - 1 - u_hi % n` above `u_hi`. Clearing only the written
-        // span left those holding whatever the previous call put there, and a
-        // stale sample still flagged `covered` hands its old colour and its
-        // whole share of the coverage to the hull's outermost subpixel column:
-        // at the default three samples, up to six ninths of one column taken
-        // from the band row above it, or on a frame's first row from the frame
-        // before. In range by construction — `u_hi <= grid_w - 1` gives
-        // `u_hi / n <= width - 1`, so this comes to at most `grid_w - 1`.
+        // pair of numbers however much it looks like it should be.
         let clear_lo = (u_lo / n) * n;
         let clear_hi = (u_hi / n) * n + n - 1;
         let first = top.round().max(0.0) as usize;
@@ -887,9 +562,7 @@ impl Canvas {
                     // Rounded rather than floored and ceiled, so a plate seen
                     // almost edge-on still covers the one subcolumn it is
                     // standing in instead of falling through the gap between
-                    // two of them. The old rule on a finer grid, and it is what
-                    // keeps honest coverage from being a new way to vanish: a
-                    // plate thinner than a sample comes out dim, never absent.
+                    // two of them.
                     let start = (lo.round().max(0.0) as usize).max(u_lo);
                     let end = ((hi.round().min(max_u)).max(0.0) as usize).min(u_hi);
                     if start > end {
@@ -946,27 +619,6 @@ impl Canvas {
         // A segment with both ends already on the canvas is the overwhelming
         // case — every leg of every exposure the frame keeps — and the loop
         // below spends four divisions discovering that it has nothing to do.
-        // Taking it here is worth about a twentieth of a turning frame, where
-        // there are twenty-odd legs a star rather than one.
-        //
-        // It is an exact shortcut rather than a near one, which is the whole of
-        // why it may stand on a path the reference frames are pinned through.
-        // Both ends inside means, for each edge, either `p == 0` with `q >= 0`,
-        // which changes nothing, or a quotient whose *real* value is already
-        // past the end it would clamp: at the near edge `r <= 0` against a `t0`
-        // of zero, at the far edge `r >= 1` against a `t1` of one, because
-        // `max - a` is a rounding of a real no smaller than the one `b - a` is
-        // a rounding of. Rounding to nearest is monotone and both 0.0 and 1.0
-        // are exactly representable, so a real that is no less than one cannot
-        // round to less than one — the loop provably leaves `t0` and `t1`
-        // where they started. The two points are then spelled with the same
-        // multiply-add the loop would have spelled them with rather than
-        // handed back as `a` and `b`, since `a.0 + dx * 0.0` and `a.0` differ
-        // in the sign of a zero, and `a.0 + dx * 1.0` is not `b.0` at all once
-        // the two are far enough apart for the subtraction to have rounded.
-        // Wholly past one edge: the loop reaches the same `None` and spends
-        // divides getting there. Both ends on the far side of one side is the
-        // whole of the test.
         if (a.0 < 0.0 && b.0 < 0.0)
             || (a.0 > max_x && b.0 > max_x)
             || (a.1 < 0.0 && b.1 < 0.0)
@@ -1026,8 +678,7 @@ impl Canvas {
                     continue;
                 }
                 // A quartic falloff concentrates the light in the middle and
-                // trails off to nothing at the rim. Anything flatter reads as
-                // a solid sphere hanging in space rather than as glare.
+                // trails off to nothing at the rim.
                 let fade = (1.0 - d).powi(4);
                 let px = &mut self.buf[y * self.width + x];
                 for i in 0..3 {
@@ -1039,20 +690,6 @@ impl Canvas {
 
     /// The same pool of light, drawn as an ellipse — the wash inside the warp
     /// bubble, which is neither round nor necessarily square to the frame.
-    ///
-    /// A separate function rather than the one above generalised, and
-    /// deliberately so. `add_glow` draws the cockpit's tunnel glare, whose
-    /// bytes are pinned by three of the five reference frames; rewriting it as
-    /// `add_glow_oval(.., r, r, ..)` is exactly the obviously-equivalent edit
-    /// that moves a float by an ulp and repaints a sky it was never meant to
-    /// touch. The duplication is four lines and it is cheaper than that.
-    ///
-    /// `turn` is which way the long axis lies, as `(cos, sin)`, because the
-    /// camera outside can be swung round until the ship's track no longer runs
-    /// across the frame. It is `(1.0, 0.0)` broadside and the rotation is then
-    /// a multiply by one and an addition of zero. The arguments are grouped
-    /// into pairs rather than listed flat only because clippy — which CI runs
-    /// as an error — stops at seven of them.
     pub fn add_glow_oval(
         &mut self,
         center: (f32, f32),
@@ -1067,9 +704,7 @@ impl Canvas {
         }
         // The turned ellipse's own bounding box, which is what a support
         // function gives back: `√((rx·cos)² + (ry·sin)²)` across and the same
-        // with the two swapped down. Squaring up to the long axis on both sides
-        // would draw the same pixels — everything past the rim is skipped
-        // below — and scan twice as many of them at this elongation.
+        // with the two swapped down.
         let hx = ((rx * turn.0).powi(2) + (ry * turn.1).powi(2)).sqrt();
         let hy = ((rx * turn.1).powi(2) + (ry * turn.0).powi(2)).sqrt();
         let x0 = ((cx - hx).floor().max(0.0)) as usize;
@@ -1141,8 +776,8 @@ impl Canvas {
     }
 
     /// The three channels at one subpixel, for the tests that do care what
-    /// colour it came out — the drive's, which is the one thing here whose
-    /// hue carries information rather than decoration.
+    /// colour it came out — the drive's, which is the one thing here whose hue
+    /// carries information rather than decoration.
     #[cfg(test)]
     pub fn color_at(&self, x: usize, y: usize) -> [f32; 3] {
         self.buf[y * self.width + x]
@@ -1151,29 +786,6 @@ impl Canvas {
     /// Collapse the HDR buffer to 8-bit sRGB-ish pixels, row-major, into a
     /// caller-owned buffer. Taking one rather than returning a fresh `Vec`
     /// keeps a 98 KB allocation out of every single frame.
-    ///
-    /// `gain` is the shutter — the whole frame's light multiplied by one number
-    /// fixed for that frame, which is what a shot opening out of black and a
-    /// cut between cameras are both made of. It rides this loop rather than a
-    /// pass of its own because this is the one pass that already visits every
-    /// subpixel: `clear` fills, `add_flash` adds, and `apply_vignette`
-    /// multiplies by a radius, so none of them is a place to put a number that
-    /// does not vary over the canvas.
-    ///
-    /// Scaling the *linear* light rather than the eight bits at the other end
-    /// is what makes it a stop of exposure rather than a dissolve. The tonemap
-    /// is `1 - exp(-v * exposure)`, so a gain on `v` is algebraically a gain on
-    /// the exposure: the faint stars go out first and the bright ones hold on,
-    /// which is the same order the catalogue's own fade brings them back in.
-    /// The same multiply applied to the eight bits `tone` hands back would be
-    /// perceptually even and would posterise, because what it scaled would
-    /// already have been quantised into two hundred and fifty six levels.
-    ///
-    /// There is deliberately no `gain == 1.0` fast path. `v * 1.0` is the
-    /// identity in IEEE for every finite value, for both zeroes and for a NaN,
-    /// so this body already *is* the body it replaced on every frame that is
-    /// not mid-fade — and a branch would be a second spelling of arithmetic the
-    /// reference frames are pinned to, which is the edit they exist to catch.
     pub fn resolve_into(&self, tone: &Tonemap, gain: f32, out: &mut Vec<[u8; 3]>) {
         out.clear();
         out.extend(self.buf.iter().map(|px| {
@@ -1213,23 +825,6 @@ mod tests {
     /// Liang–Barsky solve they stand in front of, bit for bit, and this is what
     /// says so — over the segments a frame actually hands it and over the ones
     /// it never would.
-    ///
-    /// The accept arm is provable and the reject arm is not, which is the whole
-    /// reason this is here. Both ends inside means every edge either has
-    /// `p == 0` with `q >= 0`, or a quotient whose real value is already past
-    /// the end it would clamp; rounding to nearest is monotone and 0.0 and 1.0
-    /// are exactly representable, so the parameters provably finish where they
-    /// started. Both ends *outside* one edge only reaches `None` through a
-    /// strict comparison — `r > t1` — and a real quotient strictly greater
-    /// than one can in principle round down onto it, which would leave the
-    /// solve returning a degenerate segment where the shortcut returns nothing.
-    /// So the reject arm is checked rather than argued, against the body it
-    /// replaced, kept here as its oracle. Do not delete that oracle to tidy up:
-    /// it is the only thing the shortcut is measured against.
-    ///
-    /// The sweep is deliberately weighted onto the boundary. Uniform random
-    /// coordinates almost never land on an edge, and an edge is the only place
-    /// the two spellings could part company.
     #[test]
     fn the_clip_shortcuts_answer_for_the_solve_they_stand_in_front_of() {
         fn oracle(c: &Canvas, a: (f32, f32), b: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
@@ -1268,23 +863,7 @@ mod tests {
         // Bitwise, with one carve-out that is a fact about the *solve* rather
         // than about the shortcut: the two may disagree about the sign of a
         // zero, and the solve does not agree with itself about it across
-        // platforms. `t0` is accumulated with `f32::max`, and `max(0.0, -0.0)`
-        // is precisely the case IEEE-754's `maxNum` declines to pin down — a
-        // Linux box hands back `+0.0` and a Windows runner hands back `-0.0`,
-        // which is what turned this test red there and nowhere else. At
-        // `(-0.0, 59.0) -> (99.5, 0.0)` the last edge contributes an `r` of
-        // `-0.0`, so the solve's near end comes out `-0.0 + 99.5 * -0.0` on
-        // one and `+0.0` on the other, and the shortcut — which spells `t0` as
-        // the literal it provably still holds — says `+0.0` on both.
-        //
-        // Nothing downstream can see it. `draw_leg` compares the clipped ends
-        // with `==`, where the two zeros are equal; a sample is clamped and
-        // then truncated to a subpixel index, where both are index zero; the
-        // fraction they leave differs only in its own sign, so the tap weight
-        // does too, and the canvas is cleared to `+0.0`, where adding either
-        // zero leaves `+0.0`. So this asks equality of *value* on the zeros
-        // and identity of bits everywhere else, which is the strongest
-        // statement the arithmetic underneath actually supports.
+        // platforms.
         let agree = |x: f32, y: f32| x.to_bits() == y.to_bits() || (x == 0.0 && y == 0.0);
         let same =
             |x: Option<((f32, f32), (f32, f32))>, y: Option<((f32, f32), (f32, f32))>| match (x, y)
@@ -1315,8 +894,7 @@ mod tests {
         let mut cut = 0usize;
         for i in 0..400_000 {
             // Three regimes: comfortably inside, hugging an edge to the last
-            // representable step, and wildly outside. The middle one is the
-            // only place the two spellings could disagree, so it gets half.
+            // representable step, and wildly outside.
             let coord = |t: f32, hi: f32| match i % 5 {
                 0 => t * hi,
                 1 | 2 => {
@@ -1324,11 +902,7 @@ mod tests {
                     let step = (t - 0.5) * 4.0;
                     edge + step * f32::EPSILON * hi.max(1.0)
                 }
-                // Exactly on a boundary, signed zero included. Snapping matters
-                // rather than merely hugging: widening the reject from `<` to
-                // `<=` is a segment lying *along* the edge dropped instead of
-                // drawn, and a sweep that only ever comes within an epsilon of
-                // zero goes on passing with that mutation in place.
+                // Exactly on a boundary, signed zero included.
                 3 => [0.0f32, -0.0, hi, hi * 0.5][(t * 4.0) as usize & 3],
                 _ => (t - 0.5) * 6.0 * hi,
             };
@@ -1346,8 +920,7 @@ mod tests {
                 Some(_) => cut += 1,
             }
         }
-        // Two blank answers agree beautifully. This says the sweep really did
-        // reach all three arms rather than spending itself on one.
+        // Two blank answers agree beautifully.
         assert!(
             accepted > 1_000 && rejected > 1_000 && cut > 1_000,
             "the sweep should exercise every arm: {accepted} whole, {rejected} \
@@ -1439,8 +1012,6 @@ mod tests {
             );
         }
 
-        // And the guards at the top of it, which the fast path never reaches
-        // because `draw_streak` has already dropped these.
         let mut canvas = Canvas::new(8, 8);
         for (x, y, weight) in [
             (f32::NAN, 4.0, 1.0),
@@ -1461,9 +1032,7 @@ mod tests {
     #[test]
     fn the_last_row_and_column_have_no_neighbours_to_spill_into() {
         // The fast path folds the `+1` taps back onto the pixel itself rather
-        // than testing for them. That is only sound because a point can sit on
-        // the last column or row solely when its fraction is zero — so nothing
-        // is folded in, and the weight neither leaks nor doubles.
+        // than testing for them.
         for (x, y) in [(7.0, 7.0), (7.0, 3.5), (3.5, 7.0), (0.0, 7.0), (7.0, 0.0)] {
             let mut canvas = Canvas::new(8, 8);
             canvas.splat(x, y, [1.0, 1.0, 1.0], 3.0);
@@ -1473,7 +1042,6 @@ mod tests {
                 total_light(&canvas) / 3.0
             );
         }
-        // And the corner really is the corner, not the pixel before it.
         let mut canvas = Canvas::new(8, 8);
         canvas.splat(7.0, 7.0, [1.0, 1.0, 1.0], 3.0);
         assert_eq!(canvas.buf[7 * 8 + 7][0], 3.0);
@@ -1497,24 +1065,12 @@ mod tests {
 
     #[test]
     fn a_streak_runs_out_at_the_end_the_light_ran_out_at() {
-        // There is one ramp and it ends at nothing. It used to end at a third
-        // of the head for a star, on the argument that a tail is where the star
-        // was a frame ago — true then, and false since a streak became an
-        // exposure seconds long. What leaves through that edge now is light
-        // ageing out of the shutter, and a third of full brightness is a bright
-        // edge dragged across the frame rather than a trail thinning away.
-        //
-        // It is also what lets the engine lance be aimed exactly at the point
-        // its own exhaust vanishes toward: every bell shares that point, so a
-        // floor would put a third of full brightness from every lane of every
-        // one of them on the single subpixel they all end on.
+        // There is one ramp and it ends at nothing.
         let mut canvas = Canvas::new(64, 64);
         canvas.draw_streak(&streak((8.0, 32.0), (56.0, 32.0)));
         let (tail, head) = (canvas.light_at(8, 32), canvas.light_at(56, 32));
         assert_eq!(tail, 0.0, "the streak left {tail} where its light ran out");
         assert!(head > 0.0, "the streak drew no head at all");
-        // And it climbs the whole way rather than stepping: a quarter along is
-        // dimmer than half, which is dimmer than the head.
         let quarter = canvas.light_at(20, 32);
         let half = canvas.light_at(32, 32);
         assert!(
@@ -1525,17 +1081,7 @@ mod tests {
 
     #[test]
     fn a_lance_is_ramped_by_its_own_length_and_not_by_the_window() {
-        // The bug this is here for. A lit warp drive's lance is stretched to
-        // the frame's diagonal and leaves by the edge, so from the beam its
-        // tail is off-screen. Ramped over what survived clipping it faded to
-        // nothing at the edge of the picture instead of at the end of the
-        // plume, and the drive stopped short of the frame on every terminal —
-        // which is what `a_lit_warp_drive_trails_off_the_edge_of_the_frame`
-        // caught. Where the window cuts a plume is not a fact about the plume.
-        //
-        // Drawn the way `draw_trail` draws it, `Canvas::streak_spread` divided
-        // back out, so what is being compared is the ramp and not the length
-        // falloff.
+        // The bug this is here for.
         let lance = |canvas: &mut Canvas, from, to| {
             let held = canvas.streak_spread(from, to);
             canvas.draw_streak(&Streak {
@@ -1580,11 +1126,6 @@ mod tests {
         // by it and the head comes out the same however long the streak is, so
         // a caller whose length is chosen by the frame rather than by the
         // physics can state a brightness and get it.
-        //
-        // Pinned against `draw_streak`'s real arithmetic rather than against
-        // the formula, because agreeing with the formula is not the property —
-        // agreeing with the division that is actually applied is, and the two
-        // measure their lengths differently either side of the clip.
         let head_of = |from: (f32, f32), to: (f32, f32)| {
             let mut canvas = Canvas::new(128, 8);
             let held = canvas.streak_spread(from, to);
@@ -1598,9 +1139,6 @@ mod tests {
         };
         let short = head_of((60.0, 4.0), (66.0, 4.0));
         let long = head_of((10.0, 4.0), (110.0, 4.0));
-        // And one running well off the canvas, which is the trail's own case:
-        // the spread has to answer for the part that lands, not the part asked
-        // for, or the compensation overshoots by whatever was clipped away.
         let clipped = head_of((-400.0, 4.0), (110.0, 4.0));
         assert!(
             (long - short).abs() < short * 0.05,
@@ -1623,9 +1161,7 @@ mod tests {
 
     #[test]
     fn a_fill_covers_what_was_under_it_rather_than_adding_to_it() {
-        // The only thing here that is not light. A hull painted additively over
-        // a starfield is a hologram of a hull: the bright streak behind it goes
-        // on shining through, and the eye reads glass.
+        // The only thing here that is not light.
         let mut canvas = Canvas::new(32, 32);
         for y in 0..32 {
             for x in 0..32 {
@@ -1639,12 +1175,7 @@ mod tests {
         }]);
 
         // Exact, and not by luck, now that a covered subpixel is the mean of
-        // `n²` samples rather than a value written straight in. The coverage is
-        // counted in whole samples and divided, so a full subpixel is at
-        // *exactly* one and takes exactly all of what was under it; and `n²`
-        // copies of a power of two sum and divide back exactly whatever `n` is.
-        // Which is worth saying out loud, so that the next person to move
-        // `HULL_SAMPLES` knows this assertion is holding for a reason.
+        // `n²` samples rather than a value written straight in.
         assert_eq!(
             canvas.buf[14 * 32 + 14],
             [0.25; 3],
@@ -1660,10 +1191,6 @@ mod tests {
             "an opaque fill has to be able to take light away"
         );
 
-        // And the honest general statement of the same thing: a colour that is
-        // not a power of two comes back within a rounding of itself. What is
-        // lost is an ulp, downstream of which sits a 1024-entry tonemap and a
-        // terminal with eight bits to say it in.
         let mut canvas = Canvas::new(32, 32);
         canvas.fill_hull(&[Facet {
             points: &square,
@@ -1680,12 +1207,7 @@ mod tests {
     #[test]
     fn a_partly_covered_subpixel_lands_between_the_hull_and_the_sky() {
         // What has actually changed, and the one place a hull and the sky
-        // behind it are ever mixed. The edge used to fall on one side or the
-        // other of a subpixel and jump between them.
-        //
-        // Swept across the whole of subpixel 20 — which spans 19.5 to 20.5 —
-        // rather than parked at one position, so this says nothing about where
-        // the sample grid happens to sit.
+        // behind it are ever mixed.
         let mut seen = Vec::new();
         for step in 0..=12 {
             let mut canvas = Canvas::new(32, 32);
@@ -1721,9 +1243,7 @@ mod tests {
             points: &triangle,
             color: [1.0, 0.0, 0.0],
         }]);
-        // Inside, and outside on each side of it. The outside probes are all
-        // fifteen subpixels or more clear of the nearest edge, so a fringe a
-        // subpixel wide has no bearing on them.
+        // Inside, and outside on each side of it.
         assert_eq!(canvas.buf[20 * 64 + 30][0], 1.0);
         for (x, y) in [(2usize, 2usize), (60, 60), (12, 40), (50, 40), (30, 60)] {
             assert_eq!(canvas.buf[y * 64 + x][0], 0.0, "it leaked to ({x}, {y})");
@@ -1767,8 +1287,7 @@ mod tests {
     #[test]
     fn a_face_of_nonsense_does_not_take_the_rest_of_the_hull_with_it() {
         // The whole hull arrives in one call now, so a face that cannot be
-        // measured has to be dropped on its own. Giving up on the call would
-        // turn one wrong subpixel into a missing starship.
+        // measured has to be dropped on its own.
         let mut canvas = Canvas::new(32, 16);
         let bad = [(f32::NAN, 1.0), (9.0, 1.0), (5.0, 9.0)];
         let good = [(12.0, 2.0), (24.0, 2.0), (24.0, 12.0), (12.0, 12.0)];
@@ -1797,10 +1316,9 @@ mod tests {
         // offsetting them: at one sample the transform is a multiply by one and
         // an add of zero, which is the identity for every finite float.
         //
-        // The oracle below is the body of the `fill_convex` this replaced,
-        // copied out before it was deleted. It is kept here deliberately —
-        // removing a rasteriser must not also remove the thing it was being
-        // checked against.
+        // The body below is the `fill_convex` this replaced, kept as its oracle.
+        // Do not delete it to tidy up: it is the only thing the reduction is
+        // measured against.
         fn fill_convex(canvas: &mut Canvas, points: &[(f32, f32)], color: [f32; 3]) {
             if points.len() < 3
                 || !color.iter().all(|c| c.is_finite())
@@ -1844,14 +1362,12 @@ mod tests {
         }
 
         let cases: [Vec<(f32, f32)>; 6] = [
-            // Axis-aligned, on the grid.
             vec![(8.0, 8.0), (24.0, 8.0), (24.0, 20.0), (8.0, 20.0)],
             // Slanted, and off it by fractions.
             vec![(9.3, 6.7), (27.8, 11.2), (22.4, 21.9), (6.1, 17.5)],
             // A plate one subpixel thick, seen almost edge-on: the case the
             // round-to-nearest span rule exists for.
             vec![(5.0, 4.2), (28.0, 5.9), (28.0, 6.3), (5.0, 4.6)],
-            // Hanging off two edges.
             vec![(-6.0, -3.0), (14.0, -3.0), (14.0, 9.0), (-6.0, 9.0)],
             // Hanging off the far corner.
             vec![(20.0, 14.0), (40.0, 14.0), (40.0, 30.0), (20.0, 30.0)],
@@ -1877,12 +1393,6 @@ mod tests {
 
     #[test]
     fn two_plates_that_share_an_edge_paint_the_rectangle_they_make() {
-        // The seam. Blended one at a time, two plates each covering half of the
-        // subpixel their shared edge runs down leave a quarter of the sky in a
-        // line through the middle of the ship; composed together at sample
-        // resolution they are indistinguishable from the single shape they add
-        // up to. Bit for bit, because there is nothing here to be approximate
-        // about — the same samples are covered either way.
         let sky = |canvas: &mut Canvas| {
             for y in 0..32 {
                 for x in 0..48 {
@@ -1892,9 +1402,7 @@ mod tests {
         };
         // A seam down the frame, one across it, and a slanted one — the last
         // given to the two faces in opposite winding order, which is how a
-        // closed hull actually presents a shared edge. The split points sit
-        // exactly on the whole shape's own edges in every case, so the two
-        // sides really do add up to it rather than nearly.
+        // closed hull actually presents a shared edge.
         /// The two halves and the shape they add up to.
         type Split = ([(f32, f32); 4], [(f32, f32); 4], [(f32, f32); 4]);
         let cases: [Split; 4] = [
@@ -1953,11 +1461,7 @@ mod tests {
         // Regression: the band was cleared over the span an outline is
         // *written* to and read over the wider one a whole subpixel spans, so
         // the samples between the two arrived in the sum still carrying the
-        // previous call's coverage. A hull drawn after another one wore a
-        // fringe of it down both sides of its own bounding box — and on the
-        // first band row of a frame, that previous call was the frame before,
-        // which is the whole of why this is worth a test rather than an
-        // inspection.
+        // previous call's coverage.
         let sky = |canvas: &mut Canvas| {
             for y in 0..32 {
                 for x in 0..48 {
@@ -1967,8 +1471,6 @@ mod tests {
         };
         // Neither edge of the second hull lands on a subpixel boundary, which
         // is what leaves it a fringe for the first one's samples to survive in.
-        // A hull whose box happens to be aligned on both sides is the one case
-        // that was never wrong, so it is the wrong one to test with.
         let first = [(1.0, 1.0), (46.0, 1.0), (46.0, 30.0), (1.0, 30.0)];
         let second = [(8.0, 6.0), (20.0, 6.0), (20.0, 24.0), (8.0, 24.0)];
         let color = [0.2, 0.24, 0.31];
@@ -2002,10 +1504,7 @@ mod tests {
 
     #[test]
     fn an_outline_that_moves_by_a_third_of_a_subpixel_moves_on_screen() {
-        // What anti-aliasing is *for*, stated as a property. Under the old
-        // rasteriser this sweep took two values and the step between them was
-        // the flicker: a plate one or two subpixels thick does not move when
-        // the ship rolls, it sits still and then jumps a whole subpixel.
+        // What anti-aliasing is *for*, stated as a property.
         let mut seen: Vec<f32> = Vec::new();
         for step in 0..=12 {
             // Across the whole of subpixel 10, which spans 9.5 to 10.5.
@@ -2054,7 +1553,6 @@ mod tests {
         assert_eq!(canvas.buf.len(), 20 * 12);
         assert!(canvas.buf.iter().all(|p| p.iter().all(|v| v.is_finite())));
 
-        // And the other way, with the sample count moved under it as well.
         canvas.set_hull_samples(MAX_HULL_SAMPLES);
         canvas.resize(200, 60);
         canvas.fill_hull(&[Facet {
@@ -2070,25 +1568,6 @@ mod tests {
         // off, so the bent and unbent code paths have to agree pixel for pixel
         // — not merely look alike — or engaging warp would visibly re-render
         // the whole field rather than bending it.
-        //
-        // The second pair is the one that used to fail, and it is the reason
-        // the two now share `draw_leg` rather than each spelling the walk out.
-        // A streak running off the canvas was measured by the two of them
-        // differently — the falloff over what survived the window here, over
-        // the whole segment there — so the same star was up to three times
-        // brighter per subpixel depending on which primitive drew it. A sky
-        // that swaps between them mid-flight, which is what it does the moment
-        // a hand touches the stick, would have stepped in brightness as it
-        // happened.
-        // The last three are sub-subpixel, which is the branch that collapses a
-        // path to a point — and the third of them is the one that used to
-        // disagree. `draw_path` took the head *before* anything had clipped,
-        // so a short exposure straddling the edge became a degenerate segment
-        // wholly off the canvas and was dropped, where `draw_streak` clipped
-        // the real thing, found the end that survived and drew there. The star
-        // winked out at the boundary instead of sliding off it, and which
-        // primitive it winked out in depended on how many poses the exposure
-        // happened to have.
         for (a, b) in [
             ((12.0, 20.0), (96.0, 51.0)),
             ((-260.0, -90.0), (70.0, 44.0)),
@@ -2120,23 +1599,7 @@ mod tests {
     #[test]
     fn a_streak_is_sampled_per_subpixel_on_a_canvas_of_any_shape() {
         // `MAX_SAMPLES` was described as a backstop on the grounds that
-        // clipping already bounded the count in practice. Clipping bounds it to
-        // the *canvas*, and a canvas is not a fixed size: `--size` admits
-        // `MAX_CELLS` in any arrangement, so `200x10000` is a diagonal of
-        // twenty thousand subpixels against a cap of four thousand. Past the
-        // cap a leg takes one sample every fifth subpixel — a dashed line — and
-        // deposits a fifth of the light with it, since a sample is laid down
-        // per step rather than per unit length. Two terminals, two pictures.
-        //
-        // Asked as how much of the streak was lit at all, which is the
-        // statement that survives the ramp: a streak fades to nothing at its
-        // tail, so the dark subpixels down there are the picture working. What
-        // cannot happen is most of the *bright* end being skipped.
-        //
-        // The canvas has to be tall enough for the old cap to leave a real gap
-        // rather than a fractional one — a splat spreads over four subpixels,
-        // so a stride under two lands on every row anyway. Twelve thousand
-        // against four thousand is a stride of three, and that shows.
+        // clipping already bounded the count in practice.
         let tall = 12_000;
         let mut canvas = Canvas::new(4, tall);
         canvas.draw_streak(&Streak {
@@ -2161,18 +1624,8 @@ mod tests {
 
     #[test]
     fn a_streak_is_ramped_by_its_own_length_and_not_by_the_window() {
-        // The star's half of what the lance has always claimed, and the
-        // sibling of the test that claims it. A streak's light is spread along
-        // the track it flew, and the track is a fact about the star — so the
-        // visible part of it has to carry the light that fell on it and no
-        // more. Measured on the clipped remainder instead, the whole star's
-        // brightness was poured into whatever fragment the frame happened to
-        // keep, and the same flight came out brighter at the edges on a
-        // narrower terminal.
-        //
-        // Asked as the two windows a real pair of terminals would give: draw
-        // the same streak on a wide canvas and on a narrow one, and compare
-        // the subpixels they both hold.
+        // The star's half of what the lance has always claimed, and the sibling
+        // of the test that claims it.
         let (a, b) = ((10.0, 20.0), (300.0, 20.0));
         let mut wide = Canvas::new(320, 64);
         let mut narrow = Canvas::new(96, 64);
@@ -2202,11 +1655,7 @@ mod tests {
 
     #[test]
     fn a_path_ramps_over_its_whole_length_rather_than_every_joint() {
-        // Subdividing a streak more finely must not change how it looks. If the
-        // ramp restarted at every joint the curve would come out scalloped, and
-        // the picture would depend on the subdivision instead of the physics.
-        // One pace throughout, which is what a subdivision must not disturb:
-        // the star did not speed up, it was merely asked about more often.
+        // Subdividing a streak more finely must not change how it looks.
         let pace = 112.0;
         let ends = [(8.0, 32.0, pace), (120.0, 32.0, pace)];
         let mut coarse = Canvas::new(128, 64);
@@ -2229,7 +1678,6 @@ mod tests {
                 b[0]
             );
         }
-        // And it is still a streak: brighter at the head than at the tail.
         let row = 32 * 128;
         assert!(coarse.buf[row + 110][0] > coarse.buf[row + 12][0]);
     }
@@ -2238,8 +1686,7 @@ mod tests {
     fn a_path_flown_at_one_pace_is_the_streak_it_always_was() {
         // The reduction the whole change rests on, and what every reference
         // frame rests on through it: a track crossed at an even pace is the
-        // streak this replaced, bit for bit, however finely it is cut up. Only
-        // a track whose pace *varies* may come out differently.
+        // streak this replaced, bit for bit, however finely it is cut up.
         let (a, b) = ((9.0, 17.0), (103.0, 44.0));
         let pace = length_of(b.0 - a.0, b.1 - a.1);
         let mut straight = Canvas::new(128, 64);
@@ -2266,14 +1713,9 @@ mod tests {
                 assert_eq!(straight.buf, cut.buf, "one leg was not the streak");
                 continue;
             }
-            // Past one leg the sampling is per leg — `ceil` of each piece's
-            // own length — and the ramp is measured against a total summed
-            // piece by piece rather than taken in one. Neither is something
-            // this change introduced or touches, and they are why the joint
-            // test beside this one carries the same tolerance. What has to
-            // hold exactly is the falloff, and it does: the pace is one number
-            // on every piece, so `spread` is asked the same question whatever
-            // the subdivision.
+            // Past one leg the sampling is per leg — `ceil` of each piece's own
+            // length — and the ramp is measured against a total summed piece by
+            // piece rather than taken in one.
             for (i, (want, got)) in straight.buf.iter().zip(&cut.buf).enumerate() {
                 assert!(
                     (want[0] - got[0]).abs() < 0.02,
@@ -2290,9 +1732,6 @@ mod tests {
     #[test]
     fn a_leg_is_lit_by_how_fast_the_star_crossed_it() {
         // The falloff asks how fast the image was moving, not how far it went.
-        // Two legs of the same length, one crossed ten times as fast as the
-        // other, must not come out equally bright — which is exactly what
-        // measuring the whole track instead would give.
         let mut canvas = Canvas::new(160, 32);
         let slow = 40.0;
         canvas.draw_path(
@@ -2316,11 +1755,7 @@ mod tests {
 
     #[test]
     fn an_excursion_off_the_frame_leaves_what_is_on_it_alone() {
-        // The regression this fixes, as the property that rules it out. A star
-        // whose exposure swings far off the canvas spends almost no time out
-        // there — the projection accelerates as the track nears the eye — so
-        // what it leaves on the visible stretch must not depend on how far the
-        // invisible one ran.
+        // The regression this fixes, as the property that rules it out.
         let visible = [(20.0, 16.0, 40.0), (60.0, 16.0, 40.0)];
         let mut alone = Canvas::new(80, 32);
         alone.draw_path(&visible, [1.0; 3], 2.0);
@@ -2340,8 +1775,7 @@ mod tests {
             let (a, b) = (alone.buf[16 * 80 + x][0], trailed.buf[16 * 80 + x][0]);
             assert!(a > 0.0, "nothing was drawn at {x}");
             // Not equality: the ramp is still measured over the whole track, so
-            // the visible stretch sits further up it. What must not happen is
-            // the twenty-three-fold collapse measuring the whole length gave.
+            // the visible stretch sits further up it.
             assert!(
                 b > a * 0.25,
                 "the excursion dimmed subpixel {x} from {a} to {b}"
@@ -2428,9 +1862,7 @@ mod tests {
     #[test]
     fn the_tonemap_table_matches_the_curve_it_replaces() {
         // The table stands in for an `exp` and a `powf` per channel per
-        // subpixel. It is allowed to be a shade off, but never by more than one
-        // 8-bit level, and never out of order — the bloom is the tonemap's
-        // monotonicity showing through, so a kink in it would be visible.
+        // subpixel.
         for step in 1..=40 {
             let exposure = step as f32 * 0.075;
             let tone = Tonemap::new(exposure, 2.2);
@@ -2513,9 +1945,7 @@ mod tests {
     fn a_full_shutter_resolves_to_the_pass_it_replaced() {
         // The whole of why the fade could land in this loop rather than in a
         // pass of its own: `v * 1.0` is the identity, so the shutter costs a
-        // multiply and changes nothing while it is open. Checked bit for bit
-        // rather than within a level, because ten reference hashes are what
-        // would say otherwise, and they say it minutes later and in CI.
+        // multiply and changes nothing while it is open.
         let mut canvas = Canvas::new(32, 16);
         for i in 0..8 {
             canvas.draw_streak(&streak((1.0, 1.0 + i as f32), (28.0, 12.0 - i as f32)));
@@ -2542,8 +1972,6 @@ mod tests {
 
     #[test]
     fn a_shutter_only_ever_takes_light_away() {
-        // And it reaches nothing at all: the fade is a stop of exposure, so a
-        // closed shutter is a black frame rather than a dim one.
         let mut canvas = Canvas::new(32, 16);
         for i in 0..8 {
             canvas.draw_streak(&streak((1.0, 1.0 + i as f32), (28.0, 12.0 - i as f32)));
@@ -2577,7 +2005,7 @@ mod tests {
     #[test]
     fn resizing_does_not_smear_old_light_into_the_new_layout() {
         // A pixel's index is `y * width + x`, so changing the width moves every
-        // row. Anything left behind would surface somewhere it was never drawn.
+        // row.
         let mut canvas = Canvas::new(16, 16);
         for y in 0..16 {
             for x in 0..16 {

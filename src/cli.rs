@@ -1,10 +1,4 @@
 //! The command line, and the sizes it is allowed to ask for.
-//!
-//! Every number here is bounded. A canvas is four buffers wide and a failed
-//! allocation aborts the process outright — no unwind, no `Drop`, no panic
-//! hook — which interactively means being dumped back into a shell still in
-//! raw mode on the alternate screen. So the limits are enforced at parse time,
-//! where the answer is an error message instead.
 
 use crate::canvas;
 use crate::models;
@@ -25,35 +19,6 @@ pub(crate) const MAX_CELLS: usize = 2_000_000;
 /// rather than quoting a product.
 const MAX_DIM: u16 = 10_000;
 /// The faintest star a sky holds, and the two ends the flag is held to.
-///
-/// This replaced a literal count, and the change is not a rename. `--stars N`
-/// asked for a number of objects, which is not a thing anybody can look up or
-/// check against a sky; a limiting magnitude is how star counts have always
-/// been quoted, it is a property of the observer rather than of the window, and
-/// the number of stars on screen falls out of it and the field of view instead
-/// of being capped by anybody.
-///
-/// 6.0 rather than the 6.5 a dark sky really reaches, and the half magnitude is
-/// paid to the grid rather than to taste. The cockpit's window is 89 degrees
-/// across, so a true naked-eye sky puts about a thousand stars in it — which is
-/// honest, and which a terminal cannot resolve: at 120x36 that is a canvas of
-/// 8 640 subpixels, the faint end of the count law is most of the thousand, and
-/// the picture comes out an even wash rather than a sky. What makes a sky read
-/// as one is the contrast between a handful of standouts and a dust behind
-/// them, and half a magnitude of headroom is what leaves room for it. This is
-/// about 4 600 stars over the sphere and 550 in the window, against the 256 the
-/// old fixed count drew on every terminal alike. Both ends were shot and looked
-/// at before this was settled.
-///
-/// The bounds are the allocation guard this file applies to every other number,
-/// moved one step back: the pool grows as `10^(0.6 m)`, so bounding the
-/// observer bounds the count. At 9.5 that is 574 000 stars of 24 bytes, which
-/// is under the 40 MB the old `MAX_STARS` of a million allowed and is already
-/// far past what a terminal can usefully draw. At the bottom end the whole
-/// sphere holds under one star, which is how an empty sky is asked for now that
-/// `--stars 0` is gone — and an empty sky is worth asking for, being the only
-/// way to see the tunnel, the bubble and the hull with nothing streaming past
-/// them.
 pub const DEFAULT_MAGNITUDE: f32 = 6.0;
 pub const MIN_MAGNITUDE: f32 = -2.0;
 pub const MAX_MAGNITUDE: f32 = 9.5;
@@ -67,17 +32,9 @@ const _: () = assert!(
     DEFAULT_MAGNITUDE >= MIN_MAGNITUDE && DEFAULT_MAGNITUDE <= MAX_MAGNITUDE,
     "the default limiting magnitude is outside its own bounds"
 );
-/// How long a camera change takes, in seconds, dipping through black and
-/// coming back — and, because the program opens at the bottom of a cut it was
-/// never on the other side of, how long the sky takes to arrive at the start of
-/// a run.
-///
-/// Pulled both ways by the same thing. Shorter and a cut stops reading as a cut
-/// at all: the eye needs long enough to register that the picture went away
-/// before the next one arrives, or the dip is a flicker on a hard switch.
-/// Longer and the shot sags — a change of camera nobody can watch happen turns
-/// into one they have to wait out, and `--demo` takes any positive float, so a
-/// second of fade is most of a `--demo 2`.
+/// How long a camera change takes, in seconds, dipping through black and coming
+/// back — and, because the program opens at the bottom of a cut it was never on
+/// the other side of, how long the sky takes to arrive at the start of a run.
 pub const DEFAULT_FADE: f32 = 0.6;
 /// The ceiling on `--fade`, for the reason every other number in this file has
 /// one: a flag that answers "how long" with nothing holding it is how `--stars`
@@ -101,32 +58,14 @@ const _: () = assert!(
 /// went wrong.
 const MAX_COUNT: u32 = 1_000_000;
 /// Ceiling on `--scale`. This one *is* an allocation, and it enters squared:
-/// the image is the canvas magnified on both axes, so at the snapshot's
-/// default 240x68 — 240 by 136 subpixels — sixteen comes to 3840 by 2176, or
-/// 25 MB of RGB. Past that the useful range has long since been left behind;
-/// the README's two snapshots, which are the whole of `docs/`, are both taken
-/// at 2.
+/// the image is the canvas magnified on both axes, so at the snapshot's default
+/// 240x68 — 240 by 136 subpixels — sixteen comes to 3840 by 2176, or 25 MB of
+/// RGB. Past that the useful range has long since been left behind; the
+/// README's two snapshots, which are the whole of `docs/`, are both taken at 2.
 #[cfg(feature = "snapshot")]
 const MAX_SCALE: usize = 16;
 
 // The keys, printed under the flags rather than squeezed into the frame.
-//
-// The hint line along the bottom of the panel is the only place a running
-// program says what the keys are, and it is chosen by width: the widest tier is
-// 89 characters, so it wants 91 columns, and on the eighty-column terminal most
-// people have it falls to the next one — which names four keys of a dozen and
-// mentions neither camera nor picker nor sky. Under `MIN_COLS` the panel goes
-// compact and there is no printed way to quit at all.
-//
-// Widening the tiers is the obvious answer and the wrong one twice over. It
-// costs terminal columns the narrow tiers do not have — appending eight
-// characters to the widest cockpit tier takes it from 89 to 97, so terminals
-// between about 91 and 98 columns would shed it and lose the *throttle* to gain
-// the sky — and five of the ten reference flights are rendered at 120 columns
-// with a panel on them, so their hashes would move to say it. It was all ten
-// until the flights that fly themselves stopped drawing one. Help text costs
-// no columns at all and moves nothing, and `--help` is where somebody who
-// cannot see a control reflexively looks.
 const CONTROLS: &str = "\
 Controls:
   SPACE          engage or drop out of warp
@@ -147,23 +86,6 @@ Controls:
   [ ] or wheel   push it in or out";
 
 /// Every flag the command line takes, and the bounds each one is held to.
-///
-/// One thing about the comments in here is not a matter of taste. Clap's derive
-/// publishes a `///` block as help text — a field's as that flag's entry, and
-/// this struct's as the whole program's `--long_about` — so a doc comment in
-/// this file is addressed to whoever is *running* the program, where the house
-/// style everywhere else in the tree is an essay addressed to whoever is
-/// editing it next. The two collided on three flags and the user won the
-/// argument: `--color` was explaining to the world at large why an `auto` mode
-/// it can no longer ask for went away, and closing with a comparison to
-/// `--stars`, which is a flag it cannot ask for either. Notes to the next
-/// editor go in `//` blocks between the doc comment and the `#[arg(…)]`, where
-/// clap does not read them and the next editor still cannot miss them.
-///
-/// `long_about = None` below is that rule applied to this very comment, which
-/// otherwise prints in full above the usage line. It is what lets the struct
-/// keep a doc comment for `cargo doc` without addressing it to the wrong
-/// reader; clap falls back to `about` for both lengths of help.
 #[derive(Parser, Debug)]
 #[command(
     name = "warp",
@@ -174,15 +96,9 @@ Controls:
 )]
 pub struct Args {
     /// How faint a star the sky holds, as a limiting visual magnitude.
-    ///
-    /// Higher is more stars: each magnitude is about four times as many, the
-    /// way a darker site shows more of them. How many land on screen is then
-    /// the field of view's business and nothing caps it.
-    ///
     // `allow_hyphen_values` because the bottom of the range is negative and
     // without it clap reads `--magnitude -2` as a flag it does not know rather
-    // than as an empty sky. `--orbit` needs it for the same reason and says
-    // so; this is the second place that has come up.
+    // than as an empty sky.
     #[arg(
         long,
         value_name = "MAG",
@@ -193,27 +109,15 @@ pub struct Args {
     pub magnitude: f32,
 
     /// Gone, and refused by name rather than by silence.
-    ///
-    /// A shell history or a script carrying `--stars 600` deserves to be told
-    /// what replaced it, where clap's own answer to a flag it does not know is
-    /// "unexpected argument" and a shrug. This is the shape `--color auto` is
-    /// turned away with, for the same reason: the value that used to work is
-    /// the one worth naming.
     #[arg(long, value_name = "N", hide = true, value_parser = no_star_count)]
     pub stars: Option<String>,
 
     /// Frame rate cap — and, in `--headless` and `--snapshot`, the simulation
     /// timestep, so it changes the flight rather than only how often it is
     /// drawn.
-    ///
-    /// Interactively it is a cap and nothing else, and only while nothing is
-    /// being typed: a keypress is answered the moment it arrives rather than
-    /// when the budget runs out.
     // Two meanings, and the help says both because leaving the second one out
     // is how somebody sets `--fps 10` on a headless run to save time and gets a
     // twelve-second flight instead of a two-second one, with every hash moved.
-    // The maintainer's half of this is in CLAUDE.md; what is here is the half a
-    // person running the program needs.
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
     pub fps: u32,
 
@@ -252,19 +156,11 @@ pub struct Args {
     pub frames: u32,
 
     /// Colour depth. 24-bit unless one of the narrower modes is named.
-    ///
-    /// The environment is not consulted: the narrower modes are asked for
-    /// rather than fallen into, so a terminal that cannot read a 24-bit
-    /// sequence needs telling here.
     // There was an `auto` here that read `COLORTERM` and then `TERM`, and it
     // guessed against the renderer: a terminal exporting no `COLORTERM` got the
     // 256-colour palette whatever it could really do, which is most terminals,
     // so the mode the canvas is designed for was the one it least often opened
-    // in. With the default at 24-bit an `auto` would be a second answer to a
-    // question already answered, and it is the answer that guesses — so it went
-    // rather than being demoted. A terminal that cannot read the sequences is
-    // the user's own call now, the way `--stars` is a count no window may
-    // overrule.
+    // in.
     #[arg(long, value_enum, default_value_t = ColorArg::Truecolor)]
     pub color: ColorArg,
 
@@ -294,11 +190,9 @@ pub struct Args {
 
     /// Where to park the outside camera, in degrees: round the ship, then over
     /// it, then its own roll. `WASD` and `QE` fly it from there.
-    ///
     // `allow_hyphen_values` because half the range starts with a minus sign,
     // and without it clap reads `--orbit -75,10` as a flag it does not know
-    // rather than as a camera behind the ship. The equals form works either
-    // way; nobody should have to find that out.
+    // rather than as a camera behind the ship.
     #[arg(
         long,
         value_name = "AZ,EL[,ROLL]",
@@ -317,12 +211,9 @@ pub struct Args {
     /// instantly and opens on a lit sky, which is also what `--snapshot
     /// --warmup 0` wants, since without it the shot is taken at the bottom of
     /// the dip and comes out black.
-    ///
-    // `allow_hyphen_values` for the reason `--magnitude` carries it: without
-    // it clap answers `--fade -1` with "unexpected argument", where the parser
-    // below answers with the range. And a `//` block rather than a `///` one
-    // because clap publishes the second as this flag's help entry, which is
-    // addressed to whoever is running the program rather than editing it.
+    // `allow_hyphen_values` for the reason `--magnitude` carries it: without it
+    // clap answers `--fade -1` with "unexpected argument", where the parser
+    // below answers with the range.
     #[arg(
         long,
         value_name = "SECS",
@@ -333,15 +224,7 @@ pub struct Args {
     pub fade: f32,
 
     /// How finely a hull's outline is measured, in samples per subpixel on each
-    /// axis. `1` is the hard-edged rasteriser this replaced.
-    ///
-    /// Only the hull is affected, and only from outside. Everything else on the
-    /// canvas is laid down by a splat that already spreads its light over four
-    /// subpixels, so there is nothing here for it to do.
-    ///
-    /// A number rather than an on and an off, because the number is what
-    /// actually varies and because `1` is worth being able to ask for: it is
-    /// not an approximation of the old picture, it is the old picture.
+    /// axis. `1` is a hard-edged outline, with no anti-aliasing at all.
     #[arg(
         long,
         default_value_t = canvas::HULL_SAMPLES,
@@ -382,34 +265,15 @@ pub struct Args {
 // A `///` here rather than the `//` this file otherwise insists on, and the
 // exception is real rather than an oversight: clap's derive publishes doc
 // comments on the struct and on its *fields*, which is why a note to the next
-// editor cannot be one there. It does not read an inherent `impl`, so this is
-// documentation in the ordinary sense and `cargo doc` is the only thing that
-// prints it.
+// editor cannot be one there.
 impl Args {
     /// Whether there is nobody at the controls: `--demo` and `--screensaver`.
-    ///
-    /// One predicate rather than the four spellings that grew up around this
-    /// question, because the ones that have to agree about a flight had already
-    /// come apart. `--snapshot` conflicts only with `--headless`, so
-    /// `--snapshot shot.png --screensaver` parses — and `run_snapshot` asked
-    /// `demo.is_some()`, so it warmed up a flight nobody was flying without the
-    /// autopilot flying it.
-    ///
-    /// It gates two things: whether the autopilot works the throttle and the
-    /// camera, and whether the frame gets an instrument panel over it.
     pub fn unattended(&self) -> bool {
         self.demo.is_some() || self.screensaver
     }
 }
 
 /// How much colour to spell a cell in, as the command line names it.
-///
-/// A bare rename of [`ColorMode`] since `Auto` went, and kept anyway for the
-/// two reasons [`ViewArg`] below is kept: `256` is not a Rust identifier, so
-/// the wire name has to hang off a variant somewhere, and the alternative is
-/// deriving `ValueEnum` on [`ColorMode`] itself, which puts clap inside
-/// `crate::term`. The dependency rule this crate is written to is about the
-/// tree rather than the manifest, and that would widen it for a rename.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ColorArg {
     Truecolor,
@@ -457,15 +321,9 @@ fn parse_ship(text: &str) -> Result<usize, String> {
 /// Two or three angles in degrees, comma-separated: round the ship, over it,
 /// and the camera's own roll.
 ///
-/// Degrees rather than radians because this is the one place a person types the
-/// number, and a right angle is `90` to everyone and `1.5707964` to nobody.
-/// [`Orbit::held`] does the bounding, which is the same bounding a keypress
-/// gets — the clamp lives with the geometry rather than with each of the two
-/// ways of reaching it.
-///
-/// Not bounded here beyond that, and it does not need to be: an angle has no
-/// end to run away past, so unlike every other number on this command line the
-/// failure mode of a preposterous one is a picture, not an allocation.
+/// The one number on this command line with no bound on it: an angle has no
+/// end to run away past, so a preposterous one costs a picture rather than an
+/// allocation. [`Orbit::held`] folds it with exactly the fold a keypress gets.
 fn parse_orbit(text: &str) -> Result<Orbit, String> {
     let mut angles = [0.0f32; 3];
     let given: Vec<&str> = text.split(',').collect();
@@ -632,8 +490,7 @@ mod tests {
         assert_eq!(args.magnitude, DEFAULT_MAGNITUDE);
         assert!(args.demo.is_none() && !args.headless && !args.engage);
         // Pinned here as the flag's own default, beside the frame rate and the
-        // star count. That it survives to the writer is a separate question and
-        // has its own test below.
+        // star count.
         assert_eq!(args.color, ColorArg::Truecolor);
         assert_eq!(args.fade, DEFAULT_FADE);
     }
@@ -646,10 +503,7 @@ mod tests {
 
     #[test]
     fn a_demo_has_to_last_a_positive_length_of_time() {
-        // Regression: `--demo` was the one number that went unchecked. A
-        // negative deadline is already past on the first frame, so the flight
-        // ended before it drew anything; a NaN one is never reached, so the
-        // flag silently became an indefinite autopilot instead.
+        // Regression: `--demo` was the one number that went unchecked.
         for bad in ["-5", "0", "nan", "inf", "-inf", "banana"] {
             assert!(
                 Args::try_parse_from(["warp", &format!("--demo={bad}")]).is_err(),
@@ -663,9 +517,7 @@ mod tests {
     fn the_modes_that_fly_themselves_are_the_ones_that_say_so() {
         // One predicate answers this in four places now — two autopilot gates
         // and two panel gates — so it is worth pinning that it means what its
-        // name says. The spelling it replaced was `demo.is_some()`, which is
-        // right in the headless loop, where `--screensaver` cannot be set, and
-        // wrong in the snapshot one, where it can.
+        // name says.
         for flying_itself in [
             vec!["--demo"],
             vec!["--demo", "12"],
@@ -712,13 +564,7 @@ mod tests {
     #[test]
     fn the_counts_and_the_magnification_are_bounded_too() {
         // Regression: these three were the numbers this module's own header
-        // said could not exist. `--frames` and `--warmup` took a whole `u32`,
-        // which is a run that never ends; `--scale` took a whole `usize` and
-        // is worse than slow, because the image is the canvas magnified on
-        // both axes and the buffer for it grows as the square. `--scale 0` was
-        // legal too, and was patched over three separate times at the far end
-        // by a `.max(1)` rather than refused here where the answer can be a
-        // message.
+        // said could not exist.
         let frames = |n: &str| Args::try_parse_from(["warp", "--headless", "--frames", n]);
         assert!(frames("1000001").is_err());
         assert!(frames("1000000").is_ok());
@@ -761,8 +607,7 @@ mod tests {
         assert!(Args::try_parse_from(["warp", "--throttle", "0.5"]).is_ok());
 
         // `--aa` is a sample grid entered squared, so it is bounded like the
-        // rest. Zero is the interesting end: it is not "no anti-aliasing", it
-        // is a hull measured on no samples at all, and one is what means that.
+        // rest.
         assert!(Args::try_parse_from(["warp", "--aa", "0"]).is_err());
         let past = (canvas::MAX_HULL_SAMPLES + 1).to_string();
         assert!(Args::try_parse_from(["warp", "--aa", &past]).is_err());
@@ -776,16 +621,6 @@ mod tests {
 
     #[test]
     fn size_and_sky_are_bounded() {
-        // Regression: neither was bounded. `--stars 500000000` asked for 20 GB
-        // and `--size 60000x60000` for 86 GB, and a failed allocation aborts
-        // the process — no unwind, no `Drop`, no panic hook — so interactively
-        // it left the terminal in raw mode on the alternate screen.
-        //
-        // The star half is now bounded one door further back: the count is
-        // derived from the limiting magnitude, which grows as `10^(0.6 m)`, so
-        // holding the observer holds the allocation. Both ends are checked
-        // because both are reachable — the top by a hand on `+` and the bottom
-        // by a hand on `-`.
         assert!(Args::try_parse_from(["warp", "--magnitude", "12"]).is_err());
         assert!(Args::try_parse_from(["warp", "--magnitude", "-8"]).is_err());
         assert!(Args::try_parse_from(["warp", "--magnitude", "nan"]).is_err());
@@ -810,7 +645,7 @@ mod tests {
     fn the_star_count_flag_says_what_replaced_it() {
         // `--stars` is gone and clap's own answer to a flag it does not know is
         // "unexpected argument", which is no use to a shell history or a script
-        // carrying one. The same courtesy `--color auto` is turned away with.
+        // carrying one.
         let err = Args::try_parse_from(["warp", "--stars", "600"])
             .expect_err("a sky is not asked for by the number any more")
             .to_string();
@@ -823,9 +658,9 @@ mod tests {
     #[test]
     fn the_fade_is_bounded_rather_than_believed() {
         // The bound is not about memory — nothing here allocates — but a fade
-        // is a number a person types and a NaN one would read as no fade at
-        // all further down, which is the kind of silent success this file
-        // refuses everything else by name to avoid.
+        // is a number a person types and a NaN one would read as no fade at all
+        // further down, which is the kind of silent success this file refuses
+        // everything else by name to avoid.
         let fade = |v: &str| Args::try_parse_from(["warp", "--fade", v]);
         for refused in ["-1", "nan", "inf", "abc", "1e9"] {
             let err = fade(refused)
@@ -837,9 +672,9 @@ mod tests {
                 "`--fade {refused}` was refused without saying what the range is: {err}"
             );
         }
-        // Both ends are reached rather than approached, and the near one is
-        // the whole of the escape hatch: `--fade 0` is the renderer this
-        // arrived on, to the bit.
+        // Both ends are reached rather than approached, and the near one is the
+        // whole of the escape hatch: `--fade 0` is the renderer this arrived
+        // on, to the bit.
         for taken in ["0", "0.25"] {
             assert!(fade(taken).is_ok(), "`--fade {taken}` is a legal ask");
         }
@@ -855,17 +690,7 @@ mod tests {
     fn the_help_text_is_addressed_to_whoever_is_running_the_program() {
         // Clap's derive publishes `///` blocks as help, and the house style
         // writes `///` as an essay to the next editor, so the two collide every
-        // time a flag grows a note. They had, on three: `--magnitude` and
-        // `--orbit` each explained `allow_hyphen_values` to the world, and
-        // `--color` published a paragraph about an `auto` mode that no longer
-        // exists, ending on a comparison to `--stars`, which does not exist
-        // either — so the help advertised two things it would refuse to do.
-        //
-        // Asked of the rendered help rather than of the source, because what
-        // went wrong was not where the words were written but where they came
-        // out. The struct's own doc comment is in this net too: it renders
-        // above the usage line unless `long_about` turns it off, and it said
-        // all of the above at once for one commit.
+        // time a flag grows a note.
         use clap::CommandFactory;
         let long = Args::command().render_long_help().to_string();
         let short = Args::command().render_help().to_string();
@@ -887,9 +712,6 @@ mod tests {
                 );
             }
         }
-        // And the flags a person does need are still described. A help text
-        // that leaked nothing because it said nothing would pass the loop
-        // above.
         assert!(
             long.contains("limiting visual magnitude") && long.contains("Tonemap exposure"),
             "the help stopped describing the flags:\n{long}"
@@ -950,9 +772,9 @@ mod tests {
 
     /// `ViewArg` and `ViewMode` are two enums for one idea, and the names on
     /// the command line come from clap's derive over the first while
-    /// [`ViewMode::label`] spells the second. Nothing makes them agree, so
-    /// this does. Walks `ViewMode::ALL`, so a third camera is covered the day
-    /// it is added rather than the day somebody notices.
+    /// [`ViewMode::label`] spells the second. Nothing makes them agree, so this
+    /// does. Walks `ViewMode::ALL`, so a third camera is covered the day it is
+    /// added rather than the day somebody notices.
     #[test]
     fn the_camera_can_be_parked_at_the_command_line() {
         // Degrees in, radians out, and held to the same range a keypress is
@@ -969,8 +791,8 @@ mod tests {
         // Three angles, and the third is the camera's own roll.
         assert!(!args_for(&["--orbit", "0,0,30"]).orbit.is_level());
         // Wound round several times on every axis, it is folded rather than
-        // refused: all three angles go all the way round, so there is no
-        // number here to reject, only one to fold.
+        // refused: all three angles go all the way round, so there is no number
+        // here to reject, only one to fold.
         let over = args_for(&["--orbit", "720,400,-900"]).orbit;
         for angle in [over.azimuth, over.elevation, over.roll] {
             assert!(
@@ -978,15 +800,11 @@ mod tests {
                 "an angle got away: {over:?}"
             );
         }
-        // And 400 degrees of elevation is 40, not a quarter turn: the fold has
-        // to keep the angle it was given rather than stop at the top.
         assert!(
             (over.elevation - 40.0f32.to_radians()).abs() < 1e-5,
             "the elevation was clipped rather than folded: {over:?}"
         );
 
-        // And behind the ship, which is where half the range is and where a
-        // leading minus sign would otherwise be read as a flag.
         let behind = args_for(&["--orbit", "-75,15"]).orbit;
         assert!(behind.azimuth < 0.0 && behind.elevation > 0.0, "{behind:?}");
 
@@ -1032,9 +850,7 @@ mod tests {
         // `auto` is the value worth naming, because it is the one that used to
         // work: a script or a shell history carrying it from before deserves
         // the modes that are left rather than a silent fall back to one of
-        // them. Asked of the variants rather than of three strings, for the
-        // reason the ship test above walks the hangar — a mode written out in
-        // quotes goes stale the day the list changes under it.
+        // them.
         let err = Args::try_parse_from(["warp", "--color", "auto"])
             .expect_err("the terminal is not asked what it can do any more")
             .to_string();
@@ -1052,17 +868,6 @@ mod tests {
 
     #[test]
     fn the_default_is_24_bit_colour_whatever_the_terminal_says() {
-        // This used to answer a question about the shell that started the test
-        // rather than about the program. `--color` defaulted to `auto`, so a
-        // runner with no `TERM` got ascii, anything with a `TERM` entry and no
-        // `COLORTERM` got 256, and only a terminal announcing itself got
-        // truecolor — three answers depending on where the suite ran, which
-        // the forty-odd tests in `app.rs` that build their `Args` without
-        // `--color` inherited whole. Nothing reads the environment now. Asked
-        // of the resolved mode rather than of the flag, because the flag being
-        // `Truecolor` is a fact about clap and this is the one about the
-        // renderer; the ambient environment is the fixture, and under the old
-        // code it would have been red both here and on CI.
         assert_eq!(args_for(&[]).color.resolve(), ColorMode::Truecolor);
     }
 

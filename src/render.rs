@@ -1,8 +1,4 @@
 //! Assembling a frame: stars, then the tunnel, then the glass.
-//!
-//! Everything above the starfield is deliberately driven by the same 0..=1
-//! warp ramp the streaks use, so the whole image tightens up together as the
-//! drive spools rather than each effect arriving on its own schedule.
 
 use crate::bend::Bend;
 use crate::camera::Camera;
@@ -20,15 +16,11 @@ use std::io::{self, Write};
 const CORE_COLOR: [f32; 3] = [0.62, 0.80, 1.00];
 /// Shake displacement at full intensity, as a fraction of canvas height.
 const SHAKE_AMPLITUDE: f32 = 0.045;
-/// Display gamma the tonemap decodes for. Fixed: it describes the terminal,
-/// not a taste setting, and `--exposure` is the knob for brightness.
+/// Display gamma the tonemap decodes for. Fixed: it describes the terminal, not
+/// a taste setting, and `--exposure` is the knob for brightness.
 const GAMMA: f32 = 2.2;
 
 /// Everything the view from outside draws, beyond the camera and the panel.
-///
-/// A bundle rather than four more arguments: `render_exterior` would otherwise
-/// be one past the point where clippy — which CI runs as an error — starts
-/// asking what all of them are for.
 pub struct Exterior<'a> {
     pub sky: &'a Universe,
     pub ship: &'a Ship,
@@ -38,17 +30,17 @@ pub struct Exterior<'a> {
     /// default framing. It rides in here rather than on the [`Camera`] because
     /// the camera has not moved: the zoom is a dolly on the *ship*, and the sky
     /// is meant to sit perfectly still while it happens. That used to be
-    /// enforced by a cache — the star band was laid out against
-    /// `Camera::focal` — and is now a choice the sky would survive either way,
-    /// since a lens change is a different shot rather than a closer one. See
+    /// enforced by a cache — the star band was laid out against `Camera::focal`
+    /// — and is now a choice the sky would survive either way, since a lens
+    /// change is a different shot rather than a closer one. See
     /// `the_zoom_moves_the_ship_and_leaves_the_sky_alone`, which fails the
     /// moment anything makes `exterior_camera` read this.
     pub zoom: f32,
-    /// Which way round the ship the camera has been swung. It rides in here
-    /// for the same reason the zoom does and with the opposite consequence:
-    /// the [`Camera`] still has no pose, so this is the only thing that knows
-    /// the eye has moved — and unlike the dolly, an orbit is *meant* to take
-    /// the sky with it. It does that by re-projecting rather than by moving
+    /// Which way round the ship the camera has been swung. It rides in here for
+    /// the same reason the zoom does and with the opposite consequence: the
+    /// [`Camera`] still has no pose, so this is the only thing that knows the
+    /// eye has moved — and unlike the dolly, an orbit is *meant* to take the
+    /// sky with it. It does that by re-projecting rather than by moving
     /// anything: the sky is in the world, so a swing turns the eye and the
     /// stars stay where they are.
     pub orbit: Orbit,
@@ -69,11 +61,7 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(cols: usize, rows: usize, mode: ColorMode, exposure: f32) -> Self {
-        // Clamp *before* doubling. `Canvas` and `Screen` each clamp a zero
-        // dimension up to one on their own, and handed a zero the two
-        // disagree about how big the pixel buffer is: the canvas becomes one
-        // row, the screen wants two. A terminal that reports zero rows — which
-        // is what tmux hands a `lock-command` — then crashes `compose`.
+        // Clamp *before* doubling.
         let (cols, rows) = (cols.max(1), rows.max(1));
         Self {
             // Two subpixel rows per terminal row: that is the half-block trick.
@@ -86,11 +74,6 @@ impl Renderer {
     }
 
     /// How finely a hull's outline is measured, per axis — `--aa`.
-    ///
-    /// A builder rather than a fifth argument to [`Self::new`]. There are
-    /// seventeen renderers in this tree and sixteen of them are tests, which
-    /// want the default and would otherwise all have to say so; the one caller
-    /// that has an opinion is the one holding the command line.
     pub fn with_hull_samples(mut self, samples: usize) -> Self {
         self.canvas.set_hull_samples(samples);
         self
@@ -112,20 +95,12 @@ impl Renderer {
     }
 
     /// Build the camera for this instant, shake included.
-    ///
-    /// The lean into a turn is deliberately *not* here, and neither is it in
-    /// the view from outside — see `crate::ship::Ship::steer`, which is that
-    /// rotation moved off the sky and onto the hull and carries the argument.
-    /// It leans the hull instead, by way of `crate::models::attitude`, which is
-    /// the one place it can be seen without also being flown.
     pub fn camera(&self, ship: &Ship, time: f64) -> Camera {
         let (w, h) = self.canvas.dims();
         let mut cam = Camera::new(w, h);
         if ship.shake > 0.0 {
             // Two incommensurate frequencies so the wobble never looks like a
-            // clean sine, without needing a noise table. Evaluated in `f64`:
-            // there are only four of them per frame, and it means the argument
-            // reduction stays exact however long the process has been up.
+            // clean sine, without needing a noise table.
             let amp = h as f32 * SHAKE_AMPLITUDE * ship.shake;
             cam.cx += amp * ((time * 31.0).sin() + (time * 17.3).sin() * 0.6) as f32;
             cam.cy += amp * ((time * 27.7).cos() + (time * 13.1).sin() * 0.6) as f32;
@@ -136,17 +111,14 @@ impl Renderer {
     /// Build the camera for the view from outside: parked off the ship's
     /// starboard beam, looking across its track.
     ///
-    /// The shake is spelled out again rather than shared with [`Self::camera`].
-    /// That function's arithmetic is pinned byte for byte by the reference
-    /// frames, and a helper extracted out of it is exactly the sort of
-    /// "obviously equivalent" edit that moves a float by an ulp and repaints
-    /// the whole sky.
+    /// The shake is spelled out again rather than shared with
+    /// [`Renderer::camera`]. Extracting a helper is the sort of obviously
+    /// equivalent edit that moves a float by an ulp and repaints every
+    /// reference frame.
     pub fn exterior_camera(&self, ship: &Ship, time: f64) -> Camera {
         let (w, h) = self.canvas.dims();
         let mut cam = Camera::new(w, h);
-        // A longer lens than the cockpit's. It flattens the hull into a
-        // profile, which is the shot; a wide one splays it into a
-        // three-quarter view of a ship that is meant to be seen side-on.
+        // A longer lens than the cockpit's.
         cam.focal = (h as f32).max(1.0) * SIDE_FOCAL;
         if ship.shake > 0.0 {
             let amp = h as f32 * SHAKE_AMPLITUDE * ship.shake;
@@ -157,18 +129,6 @@ impl Renderer {
     }
 
     /// Draw one frame into the cell grid. Nothing reaches the terminal yet.
-    ///
-    /// `gain` is the shutter the frame is resolved through — 1.0 for an
-    /// ordinary frame, and less than that while a shot is opening or a cut is
-    /// dipping through black. A parameter rather than something held on the
-    /// renderer, because the tests below drive this directly and assert what a
-    /// frame has to light up: passing a literal 1.0 at each of them says the
-    /// fade is not what they are measuring, where a field would leave them
-    /// rendering through whatever it last held.
-    ///
-    /// Seven arguments counting `self`, which is exactly as many as clippy
-    /// allows. The next one wants bundling, the way [`Exterior`] bundles the
-    /// side view's.
     pub fn render(
         &mut self,
         sky: &Universe,
@@ -182,51 +142,14 @@ impl Renderer {
         let eye = Observer::cockpit(ship.axes, ship.position, warp);
 
         self.canvas.clear();
-        // Every exposure goes to `draw_path`, two points or twenty-four. The
-        // two primitives share the leg that does the laying and `draw_path`
-        // over two points lays down the bytes `draw_streak` would, so this used
-        // to pick whichever was cheapest to call — and in dropping the path it
-        // dropped the *pace*, which is the third component of a point and the
-        // one thing `Streak` has nowhere to carry.
-        //
-        // That was exact for as long as a two-point exposure's pace was its own
-        // length, which is the straight case and every reference flight. It is
-        // not the cut case: when the walk finds only one station in front of
-        // the eye it hands back two points whose pace is `span / share`, the
-        // share being how much of the exposure that stump stands for. Redrawn
-        // as a bare streak the stump was charged `span`, so a leg standing for
-        // a tenth of the exposure came out about seven times too bright — a
-        // fast path taken for being cheap, quietly answering a different
-        // question.
+        // Every exposure goes to `draw_path`, two points or twenty-four.
         let canvas = &mut self.canvas;
         sky.sweep(cam, &eye, time, |points, color, intensity| {
             canvas.draw_path(points, color, intensity);
         });
 
         // The tunnel: glare down the throat, and a vignette closing in around
-        // it. Two overlaid glows — a tight core inside a wide halo — read as
-        // light; a single blob reads as an object. Both ramp with the cube of
-        // the warp ramp so nothing is hanging in the middle of the view until
-        // the ship is genuinely moving.
-        //
-        // Both are wide and weak rather than narrow and fierce, and that is
-        // the whole of the tuning. The core was a tenth of the height across
-        // at 1.6 and the halo half of it at 0.45, which put a hard white point
-        // at the vanishing point inside a veil that reached the middle third
-        // of the frame — the point too small to read as distance and the veil
-        // wide enough to flatten the streaks carrying it. Spreading each over
-        // two to three times the radius at a quarter of the strength trades
-        // one for the other: the light arrives over a broad falloff instead of
-        // as a blob with a wash round it, and the streaks stay legible through
-        // all of it because no part of the pool is bright enough to bury them.
-        //
-        // The falloff stays quartic, which is what keeps this from reading as
-        // a solid body hanging in the middle of the view. Flattening the curve
-        // instead of widening the radius is the obvious alternative and it was
-        // tried: at a squared falloff the pool acquires a visible rim and the
-        // tunnel becomes a ball. `Canvas::add_glow` says the same thing from
-        // the other end, and it is shared with the drive bells out in the side
-        // view, so the exponent is not this call site's to change anyway.
+        // it.
         if warp > 0.0 {
             let (_, h) = self.canvas.dims();
             let glare = warp * warp * warp;
@@ -253,20 +176,6 @@ impl Renderer {
 
     /// Draw one frame of the view from outside. Nothing reaches the terminal
     /// yet.
-    ///
-    /// The same order as [`Self::render`] — sky, then what is lit, then the
-    /// glass — with the hull between them. There is no depth buffer and none
-    /// is needed: [`crate::universe`] holds its nearest star four light years
-    /// off against a hull measured in units where the ship is about one, so no
-    /// star can be in front of it, and the far side of the
-    /// hull is culled on the winding of each plate. The one thing here that is
-    /// genuinely on both sides of the ship is the drive, and [`models::draw`]
-    /// settles that itself rather than handing the question up. The clearance
-    /// is kept as a
-    /// `const` assertion in that module rather than quoted here as a distance,
-    /// which is what it used to be and what had silently gone wrong: the
-    /// number outlived the constants it was measured from by some margin, and
-    /// a wrong figure guarding an invariant reads exactly like a right one.
     pub fn render_exterior(&mut self, scene: Exterior<'_>, cam: &Camera, gain: f32, hud: &Readout) {
         let Exterior {
             sky,
@@ -279,16 +188,13 @@ impl Renderer {
         let warp = ship.warp_intensity();
         let (_, h) = self.canvas.dims();
         // Where the zoom lands: how far off to put the hull, and how big that
-        // makes it. Two readings of one number, taken here rather than in each
-        // of the two places that wants one, so they cannot disagree.
+        // makes it.
         let eye = view::Eye::new(orbit, zoom);
         let ship_half = view::ship_half_on_screen(h as f32, zoom);
 
         // The ship sits dead on the camera's axis, so its centre projects to
         // the vanishing point — shake included, which keeps the bend locked to
-        // the hull rather than to the frame. Sized in ships rather than in
-        // frames, so pushing the camera in and out carries the bubble with the
-        // hull instead of leaving a fixed collar hanging in the middle.
+        // the hull rather than to the frame.
         let lens = Lens::for_warp((cam.cx, cam.cy), warp, ship_half, orbit.nose_in_camera());
 
         let watcher =
@@ -304,11 +210,7 @@ impl Renderer {
 
         // A wash inside the shadow, so the region the lens has swept clear
         // reads as a bubble the ship is sitting in rather than as a hole
-        // punched in the sky. Drawn to the shadow's own two axes and about the
-        // bubble's own centre, both of which are now astern of the vanishing
-        // point: a round wash sitting in an elongated hole gives the shape away
-        // twice over, once at the ends where the hole runs on past the light
-        // and once at the waist where the light spills out of it.
+        // punched in the sky.
         if lens.is_on() {
             let glare = warp * warp * warp;
             let (rx, ry) = lens.shadow_axes();
@@ -538,28 +440,6 @@ mod tests {
         // The lens, seen from the outside of the renderer: at warp the sky
         // immediately around the hull is swept clear and piles up beyond it,
         // and at impulse the two read much the same.
-        //
-        // The two bands are measured in *rings*, which is the third unit this
-        // has been written in and the last one it needs. Fractions of the canvas
-        // height only worked while the hull was a fixed fraction of it. Ships
-        // survived the zoom but not the shape: the bubble is elongated and
-        // seated astern now, so a circle drawn about the middle of the frame at
-        // 1.1 ship-halves passes through the swept-clear disc ahead of the ship
-        // and straight out through the bright rim above it. `Lens::offset` is
-        // the bubble's own metric, so a band in it means the same thing at any
-        // framing, any zoom and any shape the bubble is ever given.
-        //
-        // And it measures the *starlight* rather than the frame, which is the
-        // change the world-space sky forced and is a sharper question anyway.
-        // The band inside the shadow is where the hull sits, and it also holds
-        // the drive's glow and the wash `render_exterior` deliberately lays
-        // inside the bubble so a swept-clear region reads as a bubble rather
-        // than as a hole punched in the sky. Comparing raw frames only ever
-        // worked while the sky outside was bright enough to beat all three at
-        // once — it wanted 2 500 stars on a 120x36 canvas, well past what any
-        // sky worth flying holds. Flying the same frame twice over an empty sky
-        // and taking the difference leaves the stars and nothing else, since
-        // the ship, the lens and the glass are identical between the two.
         let starlight = |engaged: bool| -> (f32, f32) {
             let lit = bands(engaged, 6.5);
             let bare = bands(engaged, crate::cli::MIN_MAGNITUDE);
@@ -620,9 +500,7 @@ mod tests {
     #[test]
     fn a_zero_sized_terminal_does_not_crash() {
         // Regression: tmux runs a lock-command against a tty whose size is not
-        // established, so `terminal::size()` can hand back zero rows. Clamping
-        // after doubling left the canvas one subpixel row tall while the
-        // screen expected two, and `compose` indexed off the end.
+        // established, so `terminal::size()` can hand back zero rows.
         for (cols, rows) in [(0, 0), (80, 0), (0, 24), (1, 0)] {
             let mut renderer = Renderer::new(cols, rows, ColorMode::Truecolor, 1.9);
             let (w, h) = renderer.canvas_dims();

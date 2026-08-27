@@ -1,9 +1,4 @@
 //! Writing a frame out as a PNG.
-//!
-//! Terminal output is hard to inspect in a diff or a bug report, and it cannot
-//! be looked at at all from a machine without a terminal. This dumps the
-//! resolved pixel buffer straight to an image so the renderer can be checked
-//! on its own terms. Enabled with `--features snapshot`.
 
 use std::fs::File;
 use std::io::{self, BufWriter};
@@ -85,15 +80,7 @@ mod tests {
     fn a_snapshot_is_the_pixels_it_was_handed() {
         // The only check on this module was a CI step asserting the file it
         // wrote was not empty, which a writer that dropped the magnification or
-        // emitted the wrong dimensions would pass comfortably. `--features
-        // snapshot` is how CLAUDE.md says to make the judgement calls no test
-        // can make — shoot a frame and look at it — so the instrument the
-        // renderer is inspected with was itself uninspected.
-        //
-        // A recognisable buffer rather than a flat one: every pixel distinct,
-        // so a transposed row, an off-by-one in the row stride and a magnified
-        // block that samples its neighbour all show up as a wrong value rather
-        // than as the same value in the wrong place.
+        // emitted the wrong dimensions would pass comfortably.
         let (w, h) = (5usize, 3usize);
         let pixels: Vec<[u8; 3]> = (0..w * h)
             .map(|i| [(i * 7) as u8, (i * 13 + 5) as u8, (i * 29 + 11) as u8])
@@ -129,9 +116,7 @@ mod tests {
     #[test]
     fn a_scale_of_nothing_still_writes_a_picture() {
         // `scale.max(1)` exists for callers other than the command line, which
-        // bounds `--scale` when it parses it. The module is `pub`, so there can
-        // be others, and a zero would otherwise write a PNG with no pixels in
-        // it rather than say why. Nothing exercised that line.
+        // bounds `--scale` when it parses it.
         let pixels = vec![[9u8, 8, 7], [6, 5, 4], [3, 2, 1], [0, 1, 2]];
         let path = scratch("zero-scale");
         write_png(&path, &pixels, 2, 2, 0).expect("writing should succeed");

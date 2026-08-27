@@ -1,28 +1,5 @@
 //! The sky, as a volume of space the ship is somewhere inside rather than as a
 //! box in front of the camera.
-//!
-//! Two decisions carry the weight here and everything else follows from them.
-//!
-//! **The stars are in the world, not on the screen.** Both fields this replaces
-//! sampled a position *on the canvas* and back-projected it through a depth,
-//! which keeps apparent density even at every range and is the reason a camera
-//! swung ninety degrees round the ship used to show the same sky it had been
-//! showing: the pool was glued to the eye. A world-space pool laid out
-//! isotropically has no preferred axis to reveal, so no angle can turn up a
-//! thin patch, and a swing moves nothing at all — it re-projects. That deletes
-//! the fold, the rim, the near cap, the entering-surface sampler and the five
-//! fast paths the band needed to hide the seams a swing tore open.
-//!
-//! **The distances are real, so the parallax is too.** A star is placed by its
-//! own photometry: pick what kind of star it is, pick how far into its own
-//! visibility sphere it sits, and its brightness is then the inverse square of
-//! where that put it. The nearest come out about ten light years off and the
-//! brightest giants thousands, which is what makes impulse look like nothing
-//! happening — at 0.9 c the nearest star crawls a hundredth of a subpixel a
-//! second — while warp, at five and a half light years a second, tears the near
-//! sky past a far one that barely moves. That difference *is* the depth cue,
-//! and the old sky, whose whole volume was three hundred ship-lengths deep,
-//! could not have one.
 
 use crate::camera::Camera;
 use crate::track::Track;
@@ -32,215 +9,41 @@ use rand::{RngExt, SeedableRng};
 use std::f32::consts::TAU;
 
 /// How the number of stars brighter than a magnitude grows with it.
-///
-/// `N(<m)` proportional to `10^(0.6 m)` is what a uniform density of stars in
-/// space gives: five magnitudes is ten times the distance, a thousand times the
-/// volume, and `10^(0.6·5)` is a thousand. The measured sky is flatter than
-/// that — about 0.5, because the Galaxy is a disc that thins out rather than an
-/// infinite even scatter — and 0.5 is *not* what belongs here, for the same
-/// reason the exterior band settled on the one profile a flow leaves alone: a
-/// rigid translation through space preserves a uniform density and nothing
-/// else. Sample the flatter law and the sky would relax into this one over the
-/// first minutes of a flight, thickening as it went.
 const COUNT_SLOPE: f32 = 0.6;
 
 /// The magnitude the census below is quoted at, and how many stars are brighter
 /// than it over the whole celestial sphere.
-///
-/// 6.5 is the naked-eye limit under a dark sky and about 9 100 stars beat it —
-/// the figure star atlases are cut at. Everything else scales off the pair:
-/// `--magnitude` moves the limit and [`Universe::population`] moves the count
-/// with it.
 const REFERENCE_LIMIT: f32 = 6.5;
 const REFERENCE_COUNT: f32 = 9_110.0;
 
 /// The apparent magnitude that lands on one unit of canvas light.
-///
-/// Derived, and then deliberately moved a fifth of a magnitude off the
-/// derivation — which is the part to read before restoring it. The derivation
-/// is still the anchor: a typical star under the renderer this replaced laid
-/// down `luminosity·magnitude·depth^1.4`, which averages
-/// `1.05 · 0.355 · 0.417 = 0.155`, and under the count law the mean of
-/// `10^(-0.4 m)` over everything brighter than the limit is
-/// `slope/(slope − 0.4) · 10^(-0.4 · limit)`, or `0.00754` at 6.5. The two
-/// agree at `10^(0.4 z) = 20.6`, which is 3.28, which is what stood here.
-///
-/// The fifth of a magnitude is spent on [`shift_light`]. A lit drive throws the
-/// light forward, and from the pilot's seat every star that can be seen at all
-/// is ahead of the ship — the cockpit's frame reaches only about 49 degrees off
-/// the nose — so the shift has nowhere to push a star except brighter. Left at
-/// 3.28 the whole tunnel would simply climb the tonemap's shoulder together and
-/// lose the gradient it is drawn for. Coming down 0.20 is the headroom the
-/// shift spends: the sky is 0.83 of what it was at every speed, and at full
-/// warp it comes back to 1.28 down the throat, 1.03 at the corner of the frame
-/// and 0.50 dead astern, for a whole sky at 0.78.
-///
-/// It is the only constant here that is *purely* brightness, and
-/// [`Universe::photometry`] had to be respelled to make that true rather than
-/// merely arguable — see the note there. So the catalogue, the census, the
-/// count law and every star's place do not know it moved, and that is measured
-/// rather than reasoned: a build either side of this line puts all 4 565 stars
-/// of a default seeded sky in byte-identical places.
-///
-/// Which is also why it is the knob for this and `--exposure` is not. That one
-/// is the tonemap, so it would take the tunnel glare, the hull, the plume and
-/// the flash down with the sky; this dims the stars and leaves everything else
-/// exactly where it was, which is what lets the shift read as light being
-/// thrown forward rather than as the frame being turned up. Somebody who wants
-/// the old level back can have it exactly — the tonemap is
-/// `1 − exp(−v·exposure)`, so `--exposure 2.28` cancels this precisely — at the
-/// price of brightening everything that is not a star along with it.
-///
-/// What it puts on the canvas now: a star at the 6.5 limit comes out at 0.043,
-/// the median one at 0.068, a fourth-magnitude star at 0.43, and the handful
-/// brighter than second magnitude past 2.7 and into the tonemap's shoulder.
-/// That last group is meant to saturate. There are eighteen of them in the
-/// whole sky.
 const ZERO_POINT: f32 = 3.08;
 
 /// How much of the faint end is spent fading up out of nothing, in magnitudes.
-///
-/// A star leaves the catalogue by crossing its own visibility sphere, and it
-/// crosses at exactly the limiting magnitude — the faintest anything here can
-/// be. Faint is not nothing, though, and a star winking out at 0.05 of a unit
-/// is a star winking out. The ramp is squared so it meets zero with zero slope,
-/// which is the courtesy the old far plane paid with `depth.powf(1.4)` and for
-/// exactly the same reason: stars should fade up out of the dark rather than
-/// blink into it.
 const FADE_MAGNITUDES: f32 = 0.75;
 
 /// How long an exposure a lit warp drive draws the sky with, in seconds of
 /// flight, at full warp.
-///
-/// This is the constant that keeps the tunnel, and it replaces a multiplier
-/// that cannot survive honest distances. The old sky was three hundred
-/// ship-lengths deep and a star crossed a good fraction of it every step, so
-/// stretching one step's motion by six drew a streak across the frame. Out here
-/// the ship covers 5.48 ly a second and the nearest star is ten light years
-/// off, so one step of 1/120 s moves it 0.19 subpixels and six of those is
-/// barely more than a point.
-///
-/// It is the length the exposure *settles* at rather than the length it has:
-/// see [`Universe::trail`], which may only ever grow as fast as the ship
-/// actually flies.
-///
-/// So the streak stops being a stretch and becomes what it always looked like:
-/// the track a star actually flew, over the last three seconds. On an 80x24
-/// terminal at full warp that is 67 subpixels for a star at ten light years,
-/// 9.6 at seventy, 2.1 at three hundred and 0.7 at a thousand — near stars
-/// tearing past, mid ones dashing, far ones holding still as points. The old
-/// sky drew every star the same length because every star was the same distance
-/// away.
-///
-/// Three seconds because that is where the near streaks reach across most of
-/// the frame without the mid-distance ones running together. It is a fixed
-/// fraction of the frame on every terminal, since `Camera::focal` follows the
-/// canvas height and so does the canvas.
 const TRAIL_SECONDS: f32 = 3.0;
 
 /// Nearest any star is, in light years.
-///
-/// Proxima Centauri, rounded down, and it is a fact about space rather than a
-/// safety margin: there is nothing between here and 4.2 light years, so a model
-/// that puts a star closer is drawing something that does not exist.
-///
-/// It is needed because the catalogue is built from photometry rather than from
-/// a volume. A star's distance falls out of how bright it is and how bright it
-/// looks, so the faint end of the spread — an M dwarf four deviations down —
-/// comes out with a visibility sphere under two light years across and is
-/// therefore always very close, whatever the limit. Those are the stars that
-/// tore past at impulse, thirty seconds of it moving one twelve thousand
-/// subpixels, in a sky whose whole point is to hold still down there.
-///
-/// The answer is to leave them out rather than to move them: a star whose
-/// sphere does not reach this far is not visible from anywhere it could
-/// actually be, so `Universe::spawn` draws another. That shifts the census
-/// toward the luminous classes as the limit comes down, which is not a side
-/// effect but the observation — a magnitude-two sky really is all giants, and
-/// the M dwarfs really are all too faint to be in it.
 pub const NEAREST_STAR: f32 = 4.0;
 
 /// Nearest a star is projected from, in light years.
-///
-/// Not the hull's near plane. [`crate::camera::Z_NEAR`] is 0.9 in units where
-/// the ship is about one, and a star that came within nine tenths of a light
-/// year would be clipped by a number that has nothing to do with it — so the
-/// projection is asked for this one instead. A star this close is passing
-/// through the ship in all but name and there is nothing sensible left to draw.
 const STAR_NEAR: f32 = 0.001;
 
 /// Nearest the *tail* of an exposure is cut to, in light years.
-///
-/// A hair in front of [`STAR_NEAR`], and the margin is doing the same job
-/// `models::PLUME_NEAR`'s does: the cut is solved by subtracting two numbers of
-/// about the exposure's own length, so landing exactly on the plane is a
-/// coin-toss at the last bit, and [`Camera::project_beyond`] refuses a point
-/// *at* its near plane as well as behind it. Five percent of a thousandth of a
-/// light year is four orders of magnitude more room than the cancellation can
-/// take.
 const TAIL_NEAR: f32 = STAR_NEAR * 1.05;
 
 /// How far off the camera's axis an exposure is followed before it is cut, as
 /// the cosine of the angle.
-///
-/// About eighty-one degrees, and a *cone* rather than a plane, which is the one
-/// place the curved exposure needs a boundary the straight one never did.
-/// [`TAIL_NEAR`] is a thousandth of a light year, which was ample while a tail
-/// could only ever recede from the nose: from the seat, going back in time
-/// pushed a star away, so nothing ever came near it. A turn takes that away.
-/// The camera swings, so a star that is ahead now can have been square abeam
-/// three seconds ago — and a star square abeam at a thousandth of a light year
-/// of *depth* projects some hundreds of millions of subpixels off the side of
-/// the canvas. It measured a sixth of every exposure drawn during a hard turn,
-/// and what each one laid down was a straight line across the whole frame at
-/// whatever angle the blow-up happened to point: the most conspicuous thing in
-/// the picture, standing for a piece of track that is nowhere near it.
-///
-/// A plane cannot bound that and a cone can, because what has to stay bounded
-/// is `focal · lateral / depth` and a cone is exactly a bound on the ratio.
-/// This one holds it inside about nine frame-heights, which is off the canvas
-/// on any terminal by a wide margin — so what it cuts is never seen, and what
-/// it stops being drawn to is a point that was never anywhere near the picture.
 const TAIL_COS: f32 = 0.15;
 
 /// The most poses one exposure is drawn from.
-///
-/// A ceiling on the subdivision and not on the exposure, for the reason
-/// [`crate::bend`] has one: a hard turn is drawn in full, and what this bounds
-/// is how much work drawing it may become.
-///
-/// Twenty-four points is twenty-three legs, and it used to say here that this
-/// covers the yaw stop's whole sweep at [`SAGITTA`] up to about 200x60. It does
-/// not, and the arithmetic is worth writing out because the two constants work
-/// against each other and this one silently wins. At the stop the *attitude*
-/// turns about 3.1 radians over an exposure, against a per-leg budget of 0.131
-/// on a 200x60 canvas: 24 legs before the near stars' parallax is counted, and
-/// that multiplies it by five. So a buried stick asks for something over a
-/// hundred legs and is given twenty-three.
-///
-/// The consequence is not a fault — a hard turn washes the sky out rather than
-/// drawing it wrong, and the rates decay in under a second — but it is the
-/// reason two plausible optimisations do not pay. Cutting the pose count by a
-/// star's own parallax saves almost nothing, because the count is not set by
-/// parallax at the stop; it is set here. And loosening `SAGITTA` saves nothing
-/// either, for the same reason. What a turn costs is the arc length rasterised,
-/// which is a question for `Canvas::draw_leg` rather than for either of these.
-///
-/// It is also the width of the array a frame walks, on the stack and reused by
-/// every star, so it is a hundred and ninety bytes rather than an allocation.
 const MAX_STATIONS: usize = 24;
 
 /// How far a drawn exposure may fall short of the curve it stands for, in
 /// subpixels, at the corner of the frame.
-///
-/// A quarter of a subpixel, spent on the picture rather than on an angle — see
-/// [`Universe::stations`], which turns it into a spacing that follows the
-/// canvas the way [`Camera::focal`] does.
-///
-/// A quarter rather than a half because two curvatures share it and they are
-/// the same size: the ship flies where it points, so the attitude's turn is
-/// also the track's, and a spacing that answers for the camera swinging has to
-/// answer for the ship's own arc through space as well.
 const SAGITTA: f32 = 0.25;
 
 /// A parsec, in light years, and ten of them — the distance a star's absolute
@@ -249,12 +52,6 @@ const PARSEC_LY: f32 = 3.261_563;
 const TEN_PARSECS_LY: f32 = PARSEC_LY * 10.0;
 
 /// How far either side of its class's absolute magnitude a star may fall.
-///
-/// **Not decoration.** With one magnitude per class a star's brightness would
-/// *determine* its distance, so at warp every equally bright star would move at
-/// exactly the same rate and brightness would read as speed. A magnitude and a
-/// half of scatter is roughly what the real population carries and is enough to
-/// break the correlation.
 const ABSOLUTE_SPREAD: f32 = 1.5;
 
 /// How many times `Universe::spawn` will redraw a star too faint to be as far
@@ -268,17 +65,9 @@ pub struct SpectralClass {
     pub rgb: [f32; 3],
     /// Absolute visual magnitude — brightness at ten parsecs, which together
     /// with how bright a star *looks* is the whole of how far away it is.
-    ///
-    /// These are the *naked-eye sky's* numbers rather than the main sequence's,
-    /// and the difference is the point: what fills a real sky is apparent
-    /// brightness, so its O, B and A stars are mostly giants seen from hundreds
-    /// or thousands of light years rather than dwarfs seen from next door. It
-    /// replaced a plain multiplier on a star's brightness, which could say one
-    /// star was three times another and could say nothing whatever about where
-    /// either of them was.
     pub absolute: f32,
-    /// Relative frequency in the sky. Visible to the crate because
-    /// [`Universe`] draws from this census.
+    /// Relative frequency in the sky. Visible to the crate because [`Universe`]
+    /// draws from this census.
     pub(crate) weight: f32,
 }
 
@@ -338,21 +127,6 @@ const RED_SHIFT: [f32; 3] = [1.00, 0.42, 0.24];
 
 /// How far a star is carried toward blue and how far toward red, as the two
 /// weights the whole Doppler shift is spelled in.
-///
-/// One function with two callers rather than the same pair of expressions in
-/// each, and what it holds together is that [`shift_color`] and [`shift_light`]
-/// change their minds at the *same angle*. A brightness curve that had drifted
-/// off the colour's would put a faintly red star that is nonetheless brighter
-/// than at rest in a ring round the ship, which is not a shift of anything.
-///
-/// The two weights are not symmetric and the asymmetry is the whole of the
-/// shaping. Blue goes as the *cube* of `forward`, so it climbs steeply over the
-/// last few degrees off the nose; red is linear over the whole back half at
-/// three quarters weight. That is what puts the interesting part of the curve
-/// inside the cockpit's own field of view, which reaches 48.8 degrees off the
-/// axis at the corner of the frame — `Camera::focal` is `0.85` of the canvas
-/// height and every terminal this is flown on has about ten cells across for
-/// every three down — and so never sees `forward` below about 0.83.
 fn shift_weights(forward: f32, amount: f32) -> (f32, f32) {
     (amount * forward.powi(3), amount * (1.0 - forward) * 0.75)
 }
@@ -360,11 +134,6 @@ fn shift_weights(forward: f32, amount: f32) -> (f32, f32) {
 /// Blend a star's rest colour toward blue ahead and red at the periphery.
 /// `forward` is cos of the angle off the nose folded onto 0..=1; `amount` is
 /// the 0..=1 strength.
-///
-/// One of two halves; [`shift_light`] is the other. It used to say here that
-/// this is visible to the crate because the exterior view shifts the same way,
-/// which had stopped being true: both views go through [`Universe::sweep`], so
-/// nothing outside this module has called it since the two skies became one.
 fn shift_color(rgb: [f32; 3], forward: f32, amount: f32) -> [f32; 3] {
     if amount <= 0.0 {
         return rgb;
@@ -379,27 +148,6 @@ fn shift_color(rgb: [f32; 3], forward: f32, amount: f32) -> [f32; 3] {
 }
 
 /// What one unit of Doppler shift is worth in light.
-///
-/// A single number rather than a gain and a loss, and the single number is the
-/// point: with one constant on the *difference* of the two weights, a star
-/// brightens exactly while it is being carried toward blue and dims exactly
-/// while it is being carried toward red, so the light turns over at precisely
-/// the angle the colour stops leaning blue — 73.3 degrees off the nose, where
-/// `forward³` meets `0.75·(1 − forward)`. A gain and a loss tuned apart put
-/// those two angles twelve degrees away from each other, which buys a second
-/// knob and sells the only statement worth making about the pair.
-///
-/// What it comes to at full warp, where `amount` is 0.9 — as a multiplier on
-/// the light a star laid down before any of this: dead ahead 1.28, at the
-/// corner of the cockpit's frame 1.03, square abeam 0.72, dead astern 0.50,
-/// with the whole sky averaging 0.78 and the cockpit's own cone 1.15. Through
-/// the tonemap that is an eight-bit median star reading 141 down the throat
-/// against 95 astern, from 128 before.
-///
-/// It is a gain rather than an offset in magnitudes because it is applied per
-/// star per frame across the whole pool. `10f32.powf` at seventy thousand stars
-/// is a libm call, and the twinkle's `sin` was measured worth skipping at warp
-/// for less; a polynomial in a number the frame already has costs four flops.
 const SHIFT_LIGHT: f32 = 0.6;
 
 /// A star astern is dimmed, never put out. The red weight tops out at 0.75 when
@@ -413,19 +161,6 @@ const _: () = assert!(SHIFT_LIGHT * 0.75 < 1.0);
 /// What the same shift does to a star's *light*: brighter ahead, fainter
 /// astern. `forward` and `amount` are exactly [`shift_color`]'s, and by
 /// [`shift_weights`] so is the curve.
-///
-/// A scalar of its own rather than a fourth component on the colour, for two
-/// reasons. A colour here is a chromaticity that `colours_stay_in_gamut` holds
-/// inside the unit cube and this runs past 1.5. And [`crate::bend`] already
-/// multiplies an intensity by the bubble's own magnification, so the two
-/// scalars that scale one star's light belong in one place.
-///
-/// Exactly one at rest, and the exactness is load-bearing rather than tidy:
-/// `intensity · 1.0` is exact for every finite value, so a frame flown below
-/// light speed is the frame this function is not there for, down to the byte.
-/// The early return is *not* what makes that true — the body gives exactly one
-/// at an amount of zero as well — it is what keeps a `powi` and four flops off
-/// every star of every sublight frame.
 fn shift_light(forward: f32, amount: f32) -> f32 {
     if amount <= 0.0 {
         return 1.0;
@@ -452,10 +187,6 @@ struct Star {
 }
 
 /// Where the sky is being watched from, and how fast.
-///
-/// A bundle rather than five arguments threaded side by side, and the honest
-/// unit anyway — the universe has no opinion about orbits or hulls, only about
-/// where an eye is and which way it is going.
 #[derive(Debug, Clone, Copy)]
 pub struct Observer {
     /// Rows are the camera's axes in the world frame, so a world offset becomes
@@ -470,24 +201,10 @@ pub struct Observer {
     /// The camera's own pose in the *hull's* frame — the identity from the
     /// seat, [`Eye::basis`] from outside — kept apart from `to_camera`, which
     /// is the two of them fused so `place` is three dot products.
-    ///
-    /// It is the half of that composition an exposure needs on its own. A
-    /// station on the track carries the attitude the ship was holding *then*,
-    /// and the camera has to be re-mounted on it: `mount · axes(then)`, with
-    /// the camera on the left, which is the order `outside` composes above.
-    /// From the seat it is the identity and the multiply is taken rather than
-    /// branched around — a branch here would be a second spelling of the
-    /// composition, and two spellings of one idea is how the two come apart.
     mount: [[f32; 3]; 3],
     /// 0..=1 across the superluminal range: it sets the Doppler shift — the
-    /// colour in [`shift_color`] and the brightness in [`shift_light`], which are
-    /// effect drawn twice — and how much twinkle is left.
-    ///
-    /// It used to set the exposure as well, multiplied by a velocity carried
-    /// beside it. Both went to [`Universe::trail`], which is where a length
-    /// that has to remember what it drew last frame belongs — an observer is
-    /// where an eye is, and how long the drive has been smearing is not a fact
-    /// about where anybody is standing.
+    /// colour in [`shift_color`] and the brightness in [`shift_light`], which
+    /// are effect drawn twice — and how much twinkle is left.
     warp: f32,
 }
 
@@ -504,14 +221,6 @@ impl Observer {
     }
 
     /// From outside, where the camera is swung round the hull by the orbit.
-    ///
-    /// The eye's *standoff* is deliberately not applied. `Eye::to_camera` adds
-    /// nine to fifteen hull units of it, and a hull is a few hundred metres, so
-    /// against a sky measured in light years that is a translation of about
-    /// 1e-13 of a star's range — no parallax at all, and applying it would be a
-    /// unit error rather than a refinement. The hull still goes through
-    /// `Eye::to_camera` with the standoff in it, because for the hull it is the
-    /// whole of the framing.
     pub fn outside(
         axes: [[f32; 3]; 3],
         origin: [f64; 3],
@@ -553,12 +262,6 @@ impl Observer {
 
 /// One pose the exposure was open at, as what it does to a star the current
 /// camera has already placed.
-///
-/// `turn · p + offset`, and holding it that way round is what makes a curved
-/// exposure affordable: the `f64` subtraction that puts a star in front of the
-/// eye is done once per star, and each further pose costs a three-by-three
-/// product on the answer. Rewinding the ship and re-placing the star from
-/// scratch would be that subtraction again for every pose of every star.
 #[derive(Debug, Clone, Copy)]
 struct Station {
     /// Out of the camera's current frame and into this one.
@@ -591,37 +294,9 @@ pub struct Universe {
     /// years, and it is *state* rather than a number worked out afresh each
     /// frame. That is the whole of the fix for a trail that grew toward the
     /// middle of the screen.
-    ///
-    /// A trail is laid down behind a star as the ship flies, so on screen it
-    /// may only ever extend outward, away from the point the track vanishes at.
-    /// The tail sits at depth `z + trail`; the star closes at the ship's speed,
-    /// so `z` falls by `v·dt` a step, and the tail therefore moves *inward*
-    /// exactly when the trail lengthens faster than that. Computed from
-    /// `TRAIL_SECONDS · warp · velocity` with no memory it did: lighting the
-    /// drive takes the velocity from 3.4 c to 2000 c, a factor of 588, so for
-    /// the whole of the spool-up the exposure reached back into the past faster
-    /// than time was passing — up to twelve times faster in the first half
-    /// second — and every streak grew from its middle outward in both
-    /// directions at once. Nothing was moving inward. The renderer was changing
-    /// its mind about how much history to draw.
-    ///
-    /// Held to the distance actually flown, it cannot. Growing at exactly
-    /// `v·dt` pins the tail's *world* point while the ship flies away from it,
-    /// which is what a trail is, and it makes the length honest as well: three
-    /// seconds after the drive lights there are three seconds of track behind
-    /// the ship and not a retroactive thirty. Shrinking is left alone — the
-    /// tail moving outward is the direction it is allowed to move, and a drive
-    /// shutting down should visibly stop smearing.
     trail: f32,
     /// The flight the exposure is drawn along: where the ship has been, and
     /// which way it was pointed while it was there.
-    ///
-    /// It lives here rather than on [`crate::ship::Ship`] because it is the
-    /// other half of `trail` — an exposure is a length *and* the track that
-    /// length is measured along, and separating the two is how they come apart.
-    /// There is a mechanical reason as well: [`Observer`] is `Copy`, and a
-    /// borrow of the track on it would push a lifetime through both of its
-    /// constructors and every caller in [`crate::render`].
     track: Track,
 }
 
@@ -639,10 +314,6 @@ impl Universe {
     }
 
     /// How many stars beat a limiting magnitude, over the whole sphere.
-    ///
-    /// Saturated rather than allowed to wrap: `--magnitude` is bounded where it
-    /// is parsed, but this is `pub` and a caller with a preposterous limit
-    /// should get a preposterous number rather than a small one.
     pub fn population(limit: f32) -> usize {
         let n = REFERENCE_COUNT * 10f32.powf(COUNT_SLOPE * (limit - REFERENCE_LIMIT));
         if n.is_finite() && n >= 1.0 {
@@ -670,14 +341,6 @@ impl Universe {
 
     /// How far back along the track the exposure currently reaches, in light
     /// years.
-    ///
-    /// State rather than an answer worked out on demand — see `Self::trail`
-    /// — so a caller that wants to know how much history is being drawn has to
-    /// ask the sky that drew it rather than recompute it from the ship, which
-    /// is the whole of the bug that field exists to have fixed. The reference
-    /// flights' own coverage test is what wants it: whether a flight reaches
-    /// the near-plane cut at all is `exposure` against [`NEAREST_STAR`], and
-    /// neither number can be guessed from the flags.
     pub fn exposure(&self) -> f32 {
         self.trail
     }
@@ -685,14 +348,6 @@ impl Universe {
     /// How far back the flight is straight, in light years — see
     /// [`crate::track::Track::straight_run`], which answers with infinity when
     /// nothing has turned at all.
-    ///
-    /// Public for the same reason [`Self::exposure`] is, and it is the same
-    /// caller: the reference flights' coverage test asks whether any of them
-    /// ever draws an exposure that reaches back *past* a turn, which is what
-    /// makes one a curve rather than a segment. Neither number can be guessed
-    /// from the flags — a flight that steers hard at impulse never bends one,
-    /// and a flight that lights the drive after it has stopped steering does
-    /// not either — so the only way to ask is to fly it and look.
     pub fn straight(&self) -> f32 {
         self.track.straight_run()
     }
@@ -706,10 +361,6 @@ impl Universe {
     }
 
     /// Ask for a different limiting magnitude.
-    ///
-    /// Every star's reach scales by the same factor, since a reach is a lumen
-    /// over a limiting intensity and only the second moved, so the pool that is
-    /// already out there stays where it is and only the count changes.
     pub fn set_limit(&mut self, limit: f32) {
         if limit == self.limit {
             return;
@@ -723,14 +374,6 @@ impl Universe {
     }
 
     /// Grow or shrink the pool to what the limit asks for.
-    ///
-    /// The origin is read once and handed down, because a star is placed inside
-    /// its own visibility sphere and that sphere is centred on the *observer*
-    /// rather than on the world's origin. It only ever mattered on the second
-    /// caller: [`Self::new`] runs before the ship has gone anywhere, so the two
-    /// agreed for as long as `set_limit` was the thing nobody pressed
-    /// mid-flight. [`Track::pose_at`] answers `[0.0; 3]` on an empty ring, so
-    /// construction is the arithmetic it always was.
     fn stock(&mut self) {
         let wanted = Self::population(self.limit);
         self.stars.truncate(wanted);
@@ -744,18 +387,6 @@ impl Universe {
     /// Step the sky: remember where the ship is, unroll the exposure a little
     /// further, then take away whatever has fallen past the limit and put the
     /// same number back where the flow is bringing them in from.
-    ///
-    /// The ship does the moving — see `crate::ship::Ship::coast` — so there
-    /// is nothing to translate here and no screen for anything to fall off.
-    /// What is left is one sample and one distance test per star.
-    ///
-    /// It is handed the whole attitude rather than the nose alone, and the
-    /// other two axes are `Self::track`'s: a camera bolted to the hull rolls
-    /// with it, so an exposure drawn from where the ship *was* has to be drawn
-    /// through how it was pointed as well. The recycle reads the nose out of it
-    /// and draws in exactly the place in the sequence it always did — `--seed`
-    /// reproducibility is a property of the RNG's draw order, and a draw moved
-    /// is a different sky.
     pub fn advance(
         &mut self,
         origin: [f64; 3],
@@ -768,9 +399,7 @@ impl Universe {
         self.track.record(origin, axes);
         // The exposure lengthens by the distance the ship actually flew and not
         // one light year more, which is what keeps a trail behind its star
-        // rather than reaching past it. See `Self::trail`; shortening is not
-        // held back, because a shorter trail moves its tail *outward* and that
-        // is the direction a tail is allowed to move.
+        // rather than reaching past it.
         let settled = TRAIL_SECONDS * warp * speed;
         self.trail = if settled > self.trail {
             settled.min(self.trail + speed * dt)
@@ -797,15 +426,6 @@ impl Universe {
 
     /// Hand every star's exposure to `draw`, as the track it swept across the
     /// frame: at least two points, tail first, head last.
-    ///
-    /// A visitor rather than an iterator, and the shape follows the thing. An
-    /// exposure is a *path* now, of a length this frame picks, and an iterator
-    /// would have to hand each one over either in a fixed array wide enough for
-    /// the worst turn — a hundred and ninety bytes copied per star, at seventy
-    /// thousand stars a frame — or in a buffer it cannot lend out while it is
-    /// still borrowing itself. Handing the slice to a closure costs neither.
-    ///
-    /// `time` feeds the sublight twinkle and nothing else.
     pub fn sweep(
         &self,
         cam: &Camera,
@@ -814,12 +434,7 @@ impl Universe {
         mut draw: impl FnMut(&[crate::canvas::Trace], [f32; 3], f32),
     ) {
         // How far back along the track the exposure reaches, as a displacement
-        // in the camera's own space. Exactly zero at sublight, where there is
-        // no drive lit to smear anything and the sky is a fixed backdrop, and
-        // unrolled by [`Self::advance`] rather than worked out here — a length
-        // this frame computed on its own could outrun the flight that earned
-        // it, and a trail that grows faster than the ship flies grows the wrong
-        // way.
+        // in the camera's own space.
         let reach = self.trail;
         let back = [
             eye.nose[0] * reach,
@@ -827,8 +442,7 @@ impl Universe {
             eye.nose[2] * reach,
         ];
         // Where the exposure was open from, when the ship did not simply fly
-        // straight through it. Empty is the fast path: `back` above is then the
-        // whole answer and this frame is the frame it always was, to the bit.
+        // straight through it.
         let mut stations = [Station::HELD; MAX_STATIONS];
         let legs = self.stations(cam, eye, reach, &mut stations);
         // `FADE_MAGNITUDES` expressed as the brightness ratio the arithmetic
@@ -866,9 +480,7 @@ impl Universe {
                 continue;
             }
 
-            // How far off the nose it sits. Dead ahead blue-shifts and
-            // brightens; astern, where it is falling behind, it reddens and
-            // dims.
+            // How far off the nose it sits.
             let along = pos[0] * eye.nose[0] + pos[1] * eye.nose[1] + pos[2] * eye.nose[2];
             let forward = if range_sq > f32::MIN_POSITIVE {
                 (0.5 + 0.5 * along / range_sq.sqrt()).clamp(0.0, 1.0)
@@ -877,23 +489,10 @@ impl Universe {
             };
             let color = shift_color(CLASSES[star.class].rgb, forward, doppler);
             // Multiplied onto the finished intensity and deliberately not into
-            // `lumen`, `reach_sq` or the limit. The fade above is what makes a
-            // recycled star arrive at nothing, and the recycle puts it on the
-            // *entering* hemisphere — dead ahead, where this gain is largest.
-            // After the fade, `0 · gain` is still zero and nothing pops into
-            // view; folded into the catalogue instead it would brighten a star
-            // right across its own visibility sphere and the seam would be
-            // back.
+            // `lumen`, `reach_sq` or the limit.
             let intensity = intensity * shift_light(forward, doppler);
 
-            // Where the star was while the shutter was open. On the fast path
-            // that is one point, cut against the near plane by [`tail_of`] —
-            // which from the seat is an identity and from a camera ahead of the
-            // ship is the whole of whether a streak gets drawn at all. This
-            // arm is the arithmetic every reference frame is pinned through and
-            // is written out here rather than as the one-station case of the
-            // walk below, because the walk composes the same rotation out of a
-            // matrix product and would land an ulp away from it.
+            // Where the star was while the shutter was open.
             let path: &[crate::canvas::Trace] = if legs == 0 {
                 let from = if reach > 0.0 {
                     let Some(tail) = tail_of(pos, back) else {
@@ -908,10 +507,7 @@ impl Universe {
                 };
                 // The whole exposure in one leg, so the pace the falloff is
                 // asked for is the streak's own length and the arithmetic is
-                // what it always was. It is measured here rather than left for
-                // the canvas to work out because [`crate::bend`] may chop this
-                // into pieces before it gets there, and every piece has to keep
-                // the pace of the leg it came from.
+                // what it always was.
                 let pace = crate::canvas::length_of(to.0 - from.0, to.1 - from.1);
                 points[0] = (from.0, from.1, pace);
                 points[1] = (to.0, to.1, pace);
@@ -919,12 +515,9 @@ impl Universe {
             } else {
                 let lo = walk_back(&stations[..legs], pos, to, cam, &mut points);
                 if lo > legs - 1 {
-                    // The walk found nowhere for the exposure to have been:
-                    // the star is so far off the axis that no part of its
-                    // track is in the picture. It is still a star, and it is
-                    // still where it is, so it is drawn as the point it has
-                    // become rather than dropped — a silent total vanish is
-                    // the wrong failure for a guard about a *tail*.
+                    // The walk found nowhere for the exposure to have been: the
+                    // star is so far off the axis that no part of its track is
+                    // in the picture.
                     points[legs - 1] = points[legs];
                     &points[legs - 1..=legs]
                 } else {
@@ -938,14 +531,6 @@ impl Universe {
     /// Where the exposure was open from, as what each pose does to a star this
     /// camera has already placed. Answers how many legs the track was cut into,
     /// and zero when there is nothing to cut.
-    ///
-    /// Zero is the case worth understanding, because it is nearly every frame.
-    /// The ship flies where it points, so an attitude that has not changed is a
-    /// track that is a straight line — and an exposure that does not reach back
-    /// past the last turn is a straight rewind along the nose, which is what
-    /// [`Self::sweep`]'s other arm does and what the reference frames are pinned
-    /// through. [`crate::track::Track::straight_run`] is bitwise for that
-    /// reason.
     fn stations(
         &self,
         cam: &Camera,
@@ -957,24 +542,10 @@ impl Universe {
             return 0;
         }
         // How finely to cut it, from the *picture* rather than from an angle.
-        // A point at screen radius `r` swept through `phi` traces an arc whose
-        // chord falls `r·phi²/8` short of it, so holding that under the budget
-        // out at the frame corner is one square root. It has to follow the
-        // canvas, the way `Camera::focal` does: a fixed angle facets the arc on
-        // a tall terminal and buys nothing on a short one, and the same flight
-        // would not look the same on two machines.
         let corner = crate::canvas::length_of(cam.width * 0.5, cam.height * 0.5);
         let per_leg = (8.0 * SAGITTA / corner.max(1.0)).sqrt();
         // How much further than the camera's own turn a star can be carried by
-        // the ship simply going somewhere. A star at range `R` swings by about
-        // `reach / R` while the shutter is open, so the nearest one there is
-        // swings by `reach / NEAREST_STAR` — four radians at full warp, against
-        // the two and a half a buried stick turns the camera through. Leaving
-        // it out was measured and it showed: the poses came out six where the
-        // curve wanted twenty, half the sky was drawn a subpixel off its own
-        // track and a tenth of it nearly five, with the near stars visibly
-        // cornered. It is the parallax that makes a curved exposure hard to
-        // draw, not the rotation.
+        // the ship simply going somewhere.
         let turned = self.track.turn_over(reach);
         let swing = turned * (1.0 + reach / NEAREST_STAR);
         let legs =
@@ -982,14 +553,7 @@ impl Universe {
 
         let inv = 1.0 / legs as f32;
         for (leg, station) in out.iter_mut().take(legs).enumerate() {
-            // Spaced by equal *turn* rather than by equal track. A turn is
-            // rarely spread evenly over three seconds of flight, and spacing
-            // these along the track put every pose but one in the straight part
-            // of a bank that lasted half a second — which drew a smooth arc as
-            // a hard corner. The poses want to be where the curvature is, and
-            // the curvature is the turn. The last one is pinned to the far end
-            // rather than searched for, so the exposure ends exactly where it
-            // reaches to whatever the search made of the last few radians.
+            // Spaced by equal *turn* rather than by equal track.
             let back = if leg + 1 == legs {
                 reach
             } else {
@@ -1011,10 +575,7 @@ impl Universe {
             }
             // A star already in this camera's space gets there by turning out
             // of it and back into that one — `M · M₀ᵀ` — and then shifting by
-            // how far the ship travelled in between. Written this way round so
-            // the `f64` subtraction happens once per *station* rather than once
-            // per station per star, which is the difference between a matrix
-            // product and seventy thousand of them.
+            // how far the ship travelled in between.
             let mut turn = [[0.0f32; 3]; 3];
             for (row, mine) in turn.iter_mut().zip(then) {
                 for (place, theirs) in row.iter_mut().zip(eye.to_camera) {
@@ -1042,27 +603,11 @@ impl Universe {
     /// Make a star, somewhere uniform in its own visibility sphere, centred on
     /// where the ship is standing.
     ///
-    /// The origin is an argument rather than a field read because it is the
-    /// whole of what a visibility sphere is about: a star is placed at a
-    /// distance that makes it look as bright as it does *from here*, so a
-    /// sphere hung on the world's origin is the right shape in the wrong place
-    /// the moment the ship has flown anywhere. It went unnoticed because the
-    /// two agree exactly at launch, and `set_limit` — the only other caller —
-    /// arrives from a key rather than from a constructor.
-    ///
-    /// The draw order is load-bearing rather than incidental — `--seed`
-    /// reproducibility is a property of the sequence — and it is: class, then
-    /// the three that scatter its absolute magnitude, then how deep into its
-    /// sphere it sits, then the two that point it, then its twinkle. The
-    /// translation below happens after all of them and draws nothing, so a
-    /// seeded sky is the sky it always was.
+    /// `--seed` reproducibility is a property of the draw order below, the
+    /// rejection loop included: hoisting a draw out of a struct literal, or
+    /// changing how many values a star takes, gives a different sky.
     fn spawn(&mut self, origin: [f64; 3]) -> Star {
-        // Bounded rather than a bare loop. Nothing here can reject forever —
-        // the brightest class clears [`NEAREST_STAR`] by three orders of
-        // magnitude at any limit worth flying — but a rejection loop with no
-        // ceiling is a hang waiting for a constant to move under it, and the
-        // frames this would cost are a sky slightly off its census rather than
-        // a program that stops.
+        // Bounded rather than a bare loop.
         let mut class = self.pick_class();
         let mut absolute = CLASSES[class].absolute + ABSOLUTE_SPREAD * self.scatter();
         let (mut lumen, mut reach_sq) = self.photometry(absolute);
@@ -1076,9 +621,7 @@ impl Universe {
         }
         // Uniform by volume, which is the cube root: the only profile a rigid
         // flow through it returns unchanged, and therefore the only one the
-        // recycle below does not slowly walk the sky away from. Over the
-        // *shell* rather than the whole sphere, because the hole in the middle
-        // is [`NEAREST_STAR`] and it is really there.
+        // recycle below does not slowly walk the sky away from.
         let reach = reach_sq.sqrt();
         let depth: f32 = self.rng.random_range(0.0..1.0);
         let hole = (NEAREST_STAR / reach).min(1.0).powi(3);
@@ -1103,27 +646,6 @@ impl Universe {
 
     /// A star's brightness at unit distance, and the square of how far off it
     /// may be and still be worth drawing.
-    ///
-    /// Both fall out of the distance modulus once, at spawn, so nothing at draw
-    /// time has to take a logarithm: apparent magnitude is
-    /// `absolute + 5·log10(d / 10 pc)`, so intensity is
-    /// `10^(-0.4(absolute − ZERO_POINT)) · (10 pc / d)²`, and the reach is
-    /// where that falls to what the limit allows.
-    ///
-    /// The reach carries no zero point, and it is spelled that way on purpose.
-    /// It is a *ratio* of two brightnesses — `lumen / faintest` — so the zero
-    /// point cancels out of it algebraically, and it used to be written as that
-    /// quotient on exactly that reasoning. The cancellation was only on paper.
-    /// Both terms went through their own `powf`, and `10^x` turns an ulp on the
-    /// exponent into a part in a million on the answer, so moving the zero point
-    /// nudged every reach by about 4e-7 — measured, 51% of a default sky —
-    /// and with it every `reach.sqrt()`, every `radius`, and therefore every
-    /// star's place. Worse in principle than in practice: a star landing within
-    /// that of [`NEAREST_STAR`] would flip the rejection loop in [`Self::spawn`],
-    /// take four more draws out of the RNG, and redraw the entire seeded sky
-    /// from that index on — which no hash could tell from the brightness change
-    /// that prompted it. Spelled from the limit directly it cannot happen: a
-    /// dimmer sky is a dimmer switch, and the pool is where it was.
     fn photometry(&self, absolute: f32) -> (f32, f32) {
         let at_ten = 10f32.powf(-0.4 * (absolute - ZERO_POINT));
         let lumen = at_ten * TEN_PARSECS_LY * TEN_PARSECS_LY;
@@ -1132,12 +654,6 @@ impl Universe {
     }
 
     /// A sample from a bell about zero, of unit width and bounded at three.
-    ///
-    /// Three uniforms rather than a Box-Muller pair, and the bound is the
-    /// reason rather than the cost: a Gaussian's tail is unbounded, and an
-    /// absolute magnitude six deviations out would put one star three hundred
-    /// times further away than its class belongs and hand the pool a radius
-    /// nothing else comes near.
     fn scatter(&mut self) -> f32 {
         let a: f32 = self.rng.random_range(0.0..1.0);
         let b: f32 = self.rng.random_range(0.0..1.0);
@@ -1154,23 +670,12 @@ impl Universe {
 
     /// A direction on the hemisphere the flow is entering through, distributed
     /// by how much of it crosses there.
-    ///
-    /// A uniform flow crossing a sphere delivers stars in proportion to the
-    /// cosine of the angle from the direction it is coming from, so the sampler
-    /// is the square root of a uniform rather than a uniform. Get that wrong
-    /// and the sky refills evenly over a hemisphere the flow only grazes at the
-    /// edges, which piles stars up around the rim of the frame.
-    ///
-    /// Nothing arrives in view: a star put back at its own reach is by
-    /// construction at exactly the limiting magnitude, where the fade in
-    /// [`Self::streaks`] has it at nothing at all.
     fn entering(&mut self, nose: [f32; 3]) -> [f32; 3] {
         let u: f32 = self.rng.random_range(0.0..1.0);
         let turn: f32 = self.rng.random_range(0.0..TAU);
         let along = u.sqrt();
         let out = around(along, turn);
-        // Turned onto the nose. Built from the nose rather than from a fixed
-        // axis so there is no pole for the frame to go singular at.
+        // Turned onto the nose.
         let (right, down) = frame(nose);
         [
             right[0] * out[0] + down[0] * out[1] + nose[0] * out[2],
@@ -1201,9 +706,6 @@ fn around(up: f32, turn: f32) -> [f32; 3] {
 
 /// Two directions square to `axis` and to each other, so a hemisphere sampled
 /// about `+z` can be turned onto it.
-///
-/// Built off whichever cardinal `axis` leans on least, which is what keeps the
-/// cross product away from zero however `axis` is pointed.
 fn frame(axis: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     let aside = if axis[0].abs() < 0.9 {
         [1.0, 0.0, 0.0]
@@ -1233,37 +735,6 @@ fn frame(axis: [f32; 3]) -> ([f32; 3], [f32; 3]) {
 }
 
 /// Where an exposure opened, in camera space, cut against the near plane.
-///
-/// `back` is the whole displacement to the tail — the nose, times how far the
-/// ship flew while the shutter was open — and from the pilot's seat adding it
-/// is the entire answer, because there the nose *is* the depth axis and going
-/// back in time can only push a star further off. That is what the code here
-/// used to say, flatly, with an `unwrap_or(head)` behind it that was supposed
-/// to be unreachable.
-///
-/// It is not, and the exception is a whole half of the range of a control.
-/// From outside, the nose is [`crate::view::Orbit::nose_in_camera`], whose
-/// depth component is `-cos(elevation)·sin(azimuth)` — negative across the
-/// entire forward half of the azimuth, where the camera is ahead of the ship
-/// looking back down its own track. There the tail runs *toward* the eye and
-/// through it, the projection refuses it, and the fallback fired for real:
-/// every star inside the exposure's reach, which at full warp is 16.4 light
-/// years and a fifth of the whole pool, lost its trail and was splatted as a
-/// point instead — at full brightness, since `draw_streak`'s short branch
-/// skips the `spread` division, so *brighter* than the streaks it should have
-/// matched. A field of bright dots exactly where the tunnel should be.
-///
-/// The cut is the one `models::draw_flame` already makes against the same
-/// plane, for the same reason and in the same closed form: the track is a
-/// straight segment in camera space, so where it crosses is one division. What
-/// is left is the part of the exposure that happened in front of the lens,
-/// which is the part there was ever anything to see of.
-///
-/// `None` when the head itself is inside the sliver between the two planes —
-/// a star at a thousandth of a light year of *depth*, which is one square
-/// abeam and projects some millions of subpixels off the side of any canvas.
-/// There is no room to cut a tail into and nothing would be drawn of it
-/// anyway; dropping it is cheaper than collapsing it and says the same thing.
 fn tail_of(pos: [f32; 3], back: [f32; 3]) -> Option<[f32; 3]> {
     let depth = pos[2] + back[2];
     if depth > TAIL_NEAR {
@@ -1275,25 +746,12 @@ fn tail_of(pos: [f32; 3], back: [f32; 3]) -> Option<[f32; 3]> {
     // Solved for the crossing rather than stepped toward it, and the depth is
     // *set* rather than recomputed: `pos[2] + back[2] * t` subtracts two
     // numbers of about the exposure's length to leave a thousandth of a light
-    // year, which is the one place in this arithmetic that cancels badly. The
-    // plane it lands on is known exactly; only the lateral offsets need
-    // working out.
+    // year, which is the one place in this arithmetic that cancels badly.
     let t = ((TAIL_NEAR - pos[2]) / back[2]).clamp(0.0, 1.0);
     Some([pos[0] + back[0] * t, pos[1] + back[1] * t, TAIL_NEAR])
 }
 
 /// Where a leg of an exposure leaves the cone [`TAIL_COS`] describes.
-///
-/// A quadratic, because the cone is one: `z = c·|p|` squared is
-/// `z² = c²(x² + y² + z²)`, and a straight segment through it is
-/// `A t² + B t + C` with the coefficients below. The near root is the one
-/// wanted — the exposure is followed from the head backward and stops the first
-/// time it leaves.
-///
-/// `None` when the head is not inside the cone to begin with, which is a star
-/// already so far off the axis that no part of its exposure is in the picture,
-/// and when the segment does not cross at all, which is the caller's signal
-/// that it never had to ask.
 fn leaves_the_cone(from: [f32; 3], to: [f32; 3]) -> Option<[f32; 3]> {
     let c2 = TAIL_COS * TAIL_COS;
     let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -1339,19 +797,6 @@ fn leaves_the_cone(from: [f32; 3], to: [f32; 3]) -> Option<[f32; 3]> {
 /// the head downward so the path comes out tail first — which is the order
 /// [`crate::canvas::Canvas::draw_path`] ramps in. Answers the index the path
 /// begins at.
-///
-/// It walks *back from the head* and stops at the first pose behind the near
-/// plane rather than picking up whatever survives beyond it. A star that went
-/// behind the eye and came back is then one trail with its earlier half missing,
-/// which is the cheaper of the two mistakes: the alternative is two paths for
-/// one star, and each would carry its own ramp from [`crate::canvas`]'s tail
-/// brightness up to full — two beads where there should be one trail.
-///
-/// Nothing inside the loop can fail. A pose that clears [`TAIL_NEAR`] clears
-/// [`STAR_NEAR`] as well, so its projection is infallible; the cut lands
-/// exactly on `TAIL_NEAR`, so that one is too. What the cut needs instead is
-/// the pose *before* it to be in front, which is the same condition
-/// [`tail_of`] states for itself.
 fn walk_back(
     stations: &[Station],
     pos: [f32; 3],
@@ -1362,9 +807,7 @@ fn walk_back(
     let legs = stations.len();
     points[legs] = (head.0, head.1, 1.0);
     // The moment each point sits at, kept beside the path while it is walked
-    // and spent at the end on the pace of every leg. Only the walk knows both
-    // halves: the canvas is handed a pace because a pace is what survives being
-    // bent, and the arithmetic that turns one into the other belongs here.
+    // and spent at the end on the pace of every leg.
     let mut moments = [0.0f32; MAX_STATIONS];
     moments[legs] = 1.0;
     let mut lo = legs;
@@ -1388,20 +831,7 @@ fn walk_back(
             held = station.moment;
             continue;
         }
-        // The leg left the picture. The cone is the boundary that matters and
-        // the plane is what is left when a star is so nearly at the eye that
-        // the cone has nothing to say; falling through from one to the other
-        // costs a quadratic on the few exposures that reach either.
-        //
-        // The fallback is only reached from *inside* the cone, and that guard
-        // is the whole of it rather than a tidiness. `leaves_the_cone` answers
-        // `None` for two quite different reasons — the segment never crosses,
-        // and the near end was never inside to begin with — and the plane below
-        // cannot tell them apart: handed a leg that starts outside, it finds
-        // the depth already clear and hands the station back *uncut*, which is
-        // the unbounded blow-up the cone exists to stop, leaking out through
-        // the cone's own fallback. Measured at thirty-one stars a frame on a
-        // terminal wide enough to see them.
+        // The leg left the picture.
         let square_of = |p: [f32; 3]| p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
         let inside = previous[2] > TAIL_NEAR
             && previous[2] * previous[2] > TAIL_COS * TAIL_COS * square_of(previous);
@@ -1436,8 +866,7 @@ fn walk_back(
         break;
     }
     // What the exposure spent on each leg, as the length the whole of it would
-    // have covered at that leg's pace. A leg that took none of the exposure
-    // caught none of the light, and infinity is how the falloff says so.
+    // have covered at that leg's pace.
     for i in lo..legs {
         let span =
             crate::canvas::length_of(points[i + 1].0 - points[i].0, points[i + 1].1 - points[i].1);
@@ -1505,17 +934,7 @@ mod tests {
 
     #[test]
     fn a_sublight_sky_is_the_one_the_drive_is_not_lit_for() {
-        // Bitwise, and it is the whole of the guard. Every other statement of
-        // "a sublight frame is the frame this code is not there for" in the
-        // tree is backed by a reference flight coming out byte-identical; this
-        // one cannot be, because the baseline dim that arrived with the shift is
-        // not gated on the drive and moved all ten of them.
-        //
-        // Measured against a shift given a small floor rather than an early
-        // return, which it catches at `amount + 0.01` and does not catch at
-        // `amount + 1e-8` — and the second is not a hole. A perturbation four
-        // orders of magnitude under an `f32` ulp of one really is the identity
-        // here, so there is nothing left for a test to see.
+        // Bitwise, and it is the whole of the guard.
         for f in 0..=40 {
             let forward = f as f32 / 40.0;
             assert_eq!(
@@ -1533,9 +952,7 @@ mod tests {
     #[test]
     fn the_shift_brightens_ahead_and_dims_astern() {
         // Brighter where it blues, fainter where it reddens, at every strength
-        // the ramp can reach. Ahead has to beat one and astern has to lose to
-        // it — a curve that only ever brightened would be a floodlight rather
-        // than a shift.
+        // the ramp can reach.
         for step in 1..=9 {
             let amount = step as f32 / 10.0 * 0.9;
             let (ahead, abeam, astern) = (
@@ -1564,9 +981,7 @@ mod tests {
         // is one constant on their difference rather than a gain and a loss
         // tuned apart: a star is drawn brighter than at rest exactly while it
         // is being carried toward blue, and fainter exactly while it is being
-        // carried toward red. Asked as a sign agreement rather than by hunting
-        // the root, which makes it exact and makes it cover the whole domain
-        // instead of one curve through it.
+        // carried toward red.
         for f in 0..=200 {
             let forward = f as f32 / 200.0;
             for step in 1..=9 {
@@ -1582,10 +997,6 @@ mod tests {
             }
         }
 
-        // And the angle itself, so a reshaping of either weight has to say so.
-        // `forward³ = 0.75(1 − forward)` puts it at 0.644, which is 73 degrees
-        // off the nose — outside the cockpit's own 49, so from the seat the sky
-        // only ever brightens and the dimming half is a view from outside.
         let mut lo = 0.0f32;
         let mut hi = 1.0f32;
         for _ in 0..60 {
@@ -1606,20 +1017,7 @@ mod tests {
     #[test]
     fn the_drive_spends_a_little_less_light_than_it_was_given() {
         // Over a whole sky the shift is meant to move light about rather than
-        // make it. `forward` is `(1 + cos)/2` and a uniform sky is uniform in
-        // cos, so `forward` is itself uniform on 0..=1 and a flat sweep of it is
-        // the honest average — worth saying, because the obvious alternative is
-        // to integrate over the *angle*, which weights the poles wrongly and
-        // would quietly answer a different question.
-        //
-        // The mean of the cube is a quarter against three eighths for the red
-        // weight, so one constant on the difference of the two lands a whole
-        // sky a little under where it started however hard it is driven. Both
-        // ends of the band are held. Over one and the drive is a free light
-        // source pushing the bright end into the tonemap's shoulder, which is
-        // what the baseline dim was spent to get *out* of; well under and it is
-        // a dimmer switch with a bright spot, which is a different picture from
-        // the one this draws.
+        // make it.
         for step in 1..=9 {
             let amount = step as f32 / 10.0 * 0.9;
             const SAMPLES: usize = 20_001;
@@ -1649,11 +1047,6 @@ mod tests {
     }
 
     /// Every exposure the sky hands over this frame, as the paths themselves.
-    ///
-    /// The sky hands its paths to a closure rather than yielding them, because
-    /// an exposure is a slice of a buffer the frame reuses — so a test that
-    /// wants to look at all of them at once has to copy them out, and this is
-    /// the one place that does it.
     fn swept(
         sky: &Universe,
         cam: &Camera,
@@ -1694,17 +1087,7 @@ mod tests {
         // The acceptance test for the fault this module was written to fix: a
         // camera swung round the ship used to turn up a sparse patch, because
         // the pool was a rectangle laid out in front of whichever eye was
-        // flying and a swing had to re-lay it. Asked of the *pool* rather than
-        // of a drawn frame, and that is the point rather than convenience — a
-        // frame at any sane star count is Poisson-noisy at better than two to
-        // one between its fullest and emptiest corner, so a frame cannot tell
-        // an anisotropy from an ordinary evening.
-        //
-        // Two hundred directions spread over the sphere, counting the stars
-        // within a cone of 0.2 sr about each. At `--magnitude 8` that is 91 100
-        // stars and about 1 450 a cone, so the standard deviation is 38 and the
-        // bound is five of them — tight enough that a sky thin anywhere by a
-        // seventh fails, loose enough that nothing flakes.
+        // flying and a swing had to re-lay it.
         let sky = Universe::new(8.0, 20);
         let cone = 0.2f32;
         let cos_half = 1.0 - cone / (2.0 * std::f32::consts::PI);
@@ -1746,17 +1129,7 @@ mod tests {
 
     #[test]
     fn the_sky_holds_still_at_impulse() {
-        // What the user asked for, as a number. The nearest star a magnitude
-        // limit puts in the sky is about ten light years off, and at 0.9 c the
-        // ship covers 0.0025 ly a second — so it subtends
-        // `focal · v / d = 40.8 · 0.0025 / 10` of a subpixel a second, or 0.30
-        // over thirty seconds of flight.
-        //
-        // The margin is 3.3x and deliberately not more. A threshold with a
-        // hundredfold margin would go on passing a speed map that had regressed
-        // by an order of magnitude, which is exactly the fault this replaced:
-        // the old sky ran impulse at a twentieth of its warp rate while the dial
-        // read a two-thousandth.
+        // What the user asked for, as a number.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         let mut sky = Universe::new(4.5, 3);
@@ -1789,12 +1162,6 @@ mod tests {
             if places[i] != ends[i] {
                 continue;
             }
-            // And only what is actually in the picture. A star square abeam has
-            // a camera depth of very nearly nothing and projects thousands of
-            // subpixels off the side, where the canvas clips it and where a
-            // hundredth of a degree of parallax is still a large number — so
-            // measuring one would be asking this question of the projection
-            // rather than of the sky.
             if let (Some(a), Some(b)) = (was, is) {
                 if !on_canvas(a) || !on_canvas(b) {
                     continue;
@@ -1816,9 +1183,7 @@ mod tests {
     #[test]
     fn the_sky_streams_at_warp() {
         // The other half, and the one that says the first is a sky rather than
-        // a still. At full warp the ship covers 5.48 ly a second, so the same
-        // near stars run at 22 subpixels a second and the exposure draws three
-        // seconds of it.
+        // a still.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         ship.toggle_warp();
@@ -1840,24 +1205,7 @@ mod tests {
 
     #[test]
     fn a_trail_only_ever_grows_away_from_the_vanishing_point() {
-        // The reported fault, as the property that rules it out. A trail is
-        // laid down behind a star as the ship flies, so on screen it may only
-        // extend *outward*; an end that creeps toward the point the track
-        // vanishes at is the renderer reaching further into the past than time
-        // has passed, and nothing in the picture is moving that way.
-        //
-        // Watched across an engage, because that is where it showed: lighting
-        // the drive takes the velocity from 3.4 c to 2000 c, and an exposure
-        // computed fresh each frame from `TRAIL_SECONDS · warp · velocity`
-        // lengthened up to twelve times faster than the ship flew. Every streak
-        // grew from its middle in both directions at once for the whole of the
-        // spool-up.
-        //
-        // The tail sits at depth `z + trail`. The star closes at the ship's
-        // speed, so `z` falls by `v·dt` a step, and holding the trail's growth
-        // to the same `v·dt` makes `z + trail` non-increasing — which is the
-        // whole proof, and why this is asserted on the radius rather than on
-        // the constant.
+        // The reported fault, as the property that rules it out.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         let mut sky = Universe::new(5.5, 23);
@@ -1866,12 +1214,7 @@ mod tests {
 
         // Only tails that are actually in the picture, which is the same
         // restriction `the_sky_holds_still_at_impulse` needs and for the same
-        // reason. A star square abeam has a camera depth of very nearly
-        // nothing, so its tail projects tens of thousands of subpixels off the
-        // side of a canvas eighty wide — and `focal · lateral / (z + trail)`
-        // with a denominator of two hundredths is a division whose *noise* is a
-        // third of a subpixel. Measuring one of those asks how well the
-        // projection conditions, not which way a trail grows.
+        // reason.
         let cam = cam();
         let centre = (cam.cx, cam.cy);
         let on_canvas =
@@ -1948,8 +1291,6 @@ mod tests {
                 sky.trail
             );
         }
-        // And it does get there, or the clamp would be hiding the exposure
-        // rather than pacing it.
         fly(&mut sky, &mut ship, 2400);
         let settled = TRAIL_SECONDS * ship.warp_intensity() * ship.velocity_ly_per_s();
         assert!(
@@ -1962,11 +1303,6 @@ mod tests {
     /// A spread of camera angles reaching both halves of the azimuth, so a
     /// question asked over it cannot be answered by the half where the track
     /// runs away from the eye.
-    ///
-    /// The forward half is the half that matters here and it is the half the
-    /// reference frames barely touch: `orbit.txt` is the only one of the nine
-    /// with the camera ahead of the ship at all, and it is oblique. Dead ahead,
-    /// where the exposure runs straight at the lens, nothing was watching.
     fn both_halves() -> Vec<crate::view::Orbit> {
         let mut spread = Vec::new();
         for azimuth in [-150.0f32, -90.0, -55.0, 0.0, 40.0, 90.0, 125.0, 179.0] {
@@ -2000,22 +1336,6 @@ mod tests {
         // The shift at the level it is applied at rather than the level it is
         // defined at, which is the difference between knowing the curve is
         // right and knowing it is wired to anything.
-        //
-        // One sky, swept twice through observers that differ in `warp` and in
-        // nothing else — same pool, same exposure, same camera — so the ratio
-        // of a star's two intensities is the ratio of its two gains and nothing
-        // else. Both warps sit above a third, where `twinkle_amt` is already a
-        // hard zero, so the twinkle cannot get into the comparison.
-        //
-        // The oracle is deliberately *not* a replay of `sweep`'s own dot
-        // product. Each path's head is where the star projected to, and from
-        // outside at `Orbit::LEVEL` the nose is exactly `(1, 0, 0)` in camera
-        // space — so a star's direction is `(u, v, 1)` for `u`, `v` the head's
-        // offset from the vanishing point in focal lengths, and `forward` falls
-        // out of screen geometry. A shift applied twice, or applied to the
-        // colour instead, or folded into `lumen`, misses this by tens of
-        // percent; an ulp of disagreement between two spellings of one dot
-        // product would not.
         let (sky, ship) = spooled_up(6.5, 5);
         let cam = cam();
         let watching = |warp: f32| {
@@ -2079,22 +1399,6 @@ mod tests {
     fn no_camera_angle_collapses_a_streak_to_a_point() {
         // The reported fault: from a camera ahead of the ship, stars sweeping
         // past it had no trails at all.
-        //
-        // The tail is the star projected from where the ship *was*, which is
-        // `nose · reach` further along the track. From the seat that is `+z`
-        // and the tail can only ever recede — the claim the code used to make
-        // flatly, with an `unwrap_or(head)` behind it that was supposed to be
-        // unreachable. From outside the nose is `Orbit::nose_in_camera`, whose
-        // depth component is `-cos(elevation)·sin(azimuth)`, so across the
-        // whole forward half of the azimuth the tail runs *toward* the eye and
-        // through it. The fallback then fired for real, and every star inside
-        // the exposure's reach — 16.4 light years at full warp, which is a
-        // fifth of the pool and every one of the near stars that carry the
-        // longest trails — collapsed to a point.
-        //
-        // Worse than losing the trail: `draw_streak`'s short branch splats at
-        // full intensity with no `spread` division, so each one came out
-        // *brighter* than the streaks it should have matched.
         let (sky, ship) = spooled_up(5.0, 41);
         let cam = cam();
         assert!(sky.trail > 0.0, "the exposure never opened");
@@ -2138,10 +1442,6 @@ mod tests {
         // The same statement down where the arithmetic is, and the other half
         // of it: the cut has to leave the tail in front of the near plane, and
         // it has to leave a tail that never reached the plane exactly alone.
-        //
-        // Bit-exactness on the second half is the point rather than a nicety.
-        // The cut is on the path every star in the program takes, and the four
-        // cockpit reference flights are pinned through it.
         let (sky, ship) = spooled_up(4.5, 43);
         let mut cut = 0;
         let mut untouched = 0;
@@ -2200,9 +1500,7 @@ mod tests {
     fn a_streak_is_the_track_the_star_actually_flew() {
         // The exposure, checked against the thing it claims to be rather than
         // against itself: the tail is where the star projected from where the
-        // ship was three seconds ago. It used to be an extrapolation of one
-        // step's motion multiplied by six, which is a chord across a curve —
-        // and which collapses to a subpixel once the distances are honest.
+        // ship was three seconds ago.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         ship.toggle_warp();
@@ -2270,25 +1568,6 @@ mod tests {
         // The reported fault, flown the way it was reported: turn at low warp,
         // let the stick go, and a second or so later every trail on screen is
         // erased at once rather than fading out.
-        //
-        // The retraction itself is honest and stays. An exposure is the track
-        // of the last few seconds and those seconds age out, so the smear
-        // genuinely shortens — down there it shortens fast, because the whole
-        // window is `TRAIL_SECONDS · warp` and warp at a quarter throttle is a
-        // little over a second. What was wrong was the *edge* it retracted
-        // behind: a streak used to be laid down at a third of full brightness
-        // where its light ran out, so the shortening dragged a bright blunt end
-        // across the frame and then cut it, and every star shares one shutter
-        // so they all went together.
-        //
-        // Said as a property of what is drawn rather than of the arithmetic:
-        // through the whole window the exposure is forgetting, the light at the
-        // end being forgotten has to be a small fraction of the light at the
-        // end where the star is. Measured over these five frames the mean ratio
-        // runs 0.027 to 0.073; with the floor back it runs 0.17 to 0.43, so the
-        // bound below separates them by about a third either way rather than by
-        // an order of magnitude — a threshold a factor of ten clear would go on
-        // passing a floor half the size of the one this is about.
         let mut sky = Universe::new(5.0, 83);
         let mut ship = Ship::new();
         ship.throttle = 0.25;
@@ -2355,14 +1634,7 @@ mod tests {
 
     #[test]
     fn a_trail_bends_the_way_the_ship_turned() {
-        // The reported fault, as the property that rules it out. With the drive
-        // lit and the stick held over, a star's exposure is the track it swept
-        // while the ship came round — so it is a curve, and drawing it as the
-        // chord between its ends is the bug.
-        //
-        // Measured as the sagitta the chord would have missed by, which is the
-        // number `Universe::stations` is spacing the poses against, so the two
-        // are talking about the same thing.
+        // The reported fault, as the property that rules it out.
         let (sky, ship) = spooled_up_turning(5.0, 47);
         let cam = cam();
         let eye = seated(&ship);
@@ -2400,8 +1672,7 @@ mod tests {
     fn a_flight_that_never_turns_draws_no_curve_at_all() {
         // The other half, and the one the reference frames rest on: an exposure
         // that does not reach back past a turn is two points and the arithmetic
-        // it always was. Asked of the same sky at the same speed, so the only
-        // difference between this and the test above is the stick.
+        // it always was.
         let (sky, ship) = spooled_up(5.0, 47);
         let cam = cam();
         let eye = seated(&ship);
@@ -2416,17 +1687,7 @@ mod tests {
     #[test]
     fn a_streak_is_the_track_the_star_actually_flew_when_the_ship_was_turning() {
         // The sibling of `a_streak_is_the_track_the_star_actually_flew`, asked
-        // where that one cannot reach. Every point of a bent exposure has to be
-        // the star projected from a pose the ship really held — worked out the
-        // long way round, by rewinding the ship and placing the star afresh,
-        // rather than by the relative rotation the renderer composes. That
-        // shortcut is the one thing here that could be quietly wrong, and this
-        // is what says it is not.
-        // A wider frame than the shared one, which is the only test here that
-        // wants a different camera and says why: it is not comparing against a
-        // figure quoted in subpixels, it is asking how many poses land in the
-        // picture at all — and a hard turn sweeps most of the sky out of an
-        // 80-column one.
+        // where that one cannot reach.
         let cam = Camera::new(200, 120);
         let on_canvas =
             |p: &(f32, f32)| (0.0..cam.width).contains(&p.0) && (0.0..cam.height).contains(&p.1);
@@ -2437,19 +1698,15 @@ mod tests {
             let eye = seated(&ship);
             let reach = sky.trail;
             let drawn = swept(&sky, &cam, &eye, 0.0);
-            // How many poses the frame cut the exposure into. It is one number
-            // for the whole frame, so the longest path is it — and a shorter
-            // path is one the walk stopped early, whose points still stand for
-            // the same poses counting back from the head. Only its *first*
-            // point is something else: that one is where the walk cut, and it
-            // answers to no pose at all.
+            // How many poses the frame cut the exposure into.
             let legs = drawn.iter().map(|p| p.len() - 1).max().unwrap_or(0);
             assert!(legs >= 2, "the frame drew no curve to check");
             for path in &drawn {
                 if path.len() < 3 {
                     continue;
                 }
-                // The head says which star this is: nothing else about it moved.
+                // The head says which star this is: nothing else about it
+                // moved.
                 let head = ends(path).1;
                 let Some(star) = sky
                     .stars
@@ -2469,15 +1726,13 @@ mod tests {
                     let Some(want) = cam.project_beyond(placed, STAR_NEAR) else {
                         continue;
                     };
-                    // Only what is actually in the picture, and for the reason the
-                    // trail tests above need the same filter: the two routes reach
-                    // a star's place from the two ends of a subtraction that is a
-                    // thousand light years wide, so they agree to about a
-                    // ten-thousandth of a light year — and `focal · lateral / z`
-                    // turns that into subpixels the moment `z` is a hundredth of
-                    // one. A pose that close to the plane projects some millions of
-                    // subpixels off the side of any canvas and is thrown away by
-                    // `Canvas::clip` before anything is drawn of it.
+                    // Only what is actually in the picture, and for the reason
+                    // the trail tests above need the same filter: the two
+                    // routes reach a star's place from the two ends of a
+                    // subtraction that is a thousand light years wide, so they
+                    // agree to about a ten-thousandth of a light year — and
+                    // `focal · lateral / z` turns that into subpixels the
+                    // moment `z` is a hundredth of one.
                     if !on_canvas(&want) {
                         continue;
                     }
@@ -2521,11 +1776,8 @@ mod tests {
 
     #[test]
     fn no_camera_angle_collapses_a_bent_streak_to_a_point() {
-        // The steered sibling of `no_camera_angle_collapses_a_streak_to_a_point`.
-        // That one flies `spooled_up`, which never touches the stick, so it says
-        // nothing whatever about the walk that cuts a curved exposure against
-        // the near plane — and the walk is where the forward half of the azimuth
-        // bites, exactly as it did for the straight one.
+        // The steered sibling of
+        // `no_camera_angle_collapses_a_streak_to_a_point`.
         let (sky, ship) = spooled_up_turning(5.0, 59);
         let cam = cam();
         let on_canvas =
@@ -2546,11 +1798,7 @@ mod tests {
             for path in swept(&sky, &cam, &eye, 0.0) {
                 let (from, to) = ends(&path);
                 // A star whose whole track is outside the cone is drawn as the
-                // point it has become — see `walk_back`. That is allowed and
-                // invisible: such a star is six focal lengths off the axis and
-                // hundreds of subpixels off the canvas. What is not allowed is
-                // one collapsing *in the picture*, which is the fault this test
-                // was written for.
+                // point it has become — see `walk_back`.
                 if from == to && !on_canvas(&to) {
                     continue;
                 }
@@ -2581,10 +1829,7 @@ mod tests {
         // The cut fires in the *cockpit* now, which it could not before and
         // which the crate's notes said it could not: going back in time used to
         // move a star straight away from the nose, so from the seat the tail's
-        // depth only ever increased. A turn takes that away — the ship was
-        // pointed somewhere else, so a star ahead of it now can have been
-        // abeam or behind three seconds ago — and what catches it is the same
-        // walk the view from outside needs.
+        // depth only ever increased.
         let (sky, ship) = spooled_up_turning(5.0, 61);
         let cam = cam();
         let eye = seated(&ship);
@@ -2607,10 +1852,6 @@ mod tests {
             cut > 0,
             "a hard turn at warp put no star behind the near plane at all"
         );
-        // And nothing that was cut came out as a bright point instead of a
-        // trail, which is the fault the walk exists to have fixed. Only a star
-        // whose whole track is outside the cone may be a point, and one of
-        // those is far off the side of any canvas.
         let on_canvas =
             |p: &(f32, f32)| (0.0..cam.width).contains(&p.0) && (0.0..cam.height).contains(&p.1);
         for path in swept(&sky, &cam, &eye, 0.0) {
@@ -2624,16 +1865,7 @@ mod tests {
 
     #[test]
     fn a_star_too_far_off_the_axis_still_has_its_exposure_cut() {
-        // The cone leaking through its own fallback. `leaves_the_cone` answers
-        // `None` for two different reasons — the leg never crosses, and the
-        // near end was never inside — and the plane it falls through to cannot
-        // tell them apart: handed a leg that starts outside, it finds the depth
-        // already clear and hands the station back uncut, which is the
-        // unbounded blow-up the cone exists to stop.
-        //
-        // Asked on a terminal wide enough for the cut to matter, because the
-        // cone sits at six focal lengths and a square window hides everything
-        // past it.
+        // The cone leaking through its own fallback.
         let (sky, ship) = spooled_up_turning(5.0, 67);
         let cam = Camera::new(600, 48);
         let eye = seated(&ship);
@@ -2646,10 +1878,7 @@ mod tests {
             if tail == head {
                 continue;
             }
-            // Every point but the last. The head is where the star actually is
-            // and the cone says nothing about it — a star square abeam of the
-            // camera *now* projects as far out as the arithmetic allows, which
-            // is true today and was true before there was a cone.
+            // Every point but the last.
             for p in &path[..path.len() - 1] {
                 worst = worst.max(crate::canvas::length_of(p.0 - cam.cx, p.1 - cam.cy));
                 seen += 1;
@@ -2668,11 +1897,7 @@ mod tests {
     #[test]
     fn a_star_the_walk_gives_up_on_is_still_a_star() {
         // The other half: a star whose whole track is outside the cone has no
-        // exposure to draw, and it used to be dropped head and all. It is still
-        // a star and it is still where it is, so it comes out as the point it
-        // has become. Nothing in the picture changes either way — such a star
-        // is six focal lengths off the axis — but a silent total vanish is the
-        // wrong failure for a guard about a tail.
+        // exposure to draw, and it used to be dropped head and all.
         let (sky, ship) = spooled_up_turning(5.0, 71);
         let cam = Camera::new(600, 48);
         let eye = seated(&ship);
@@ -2694,7 +1919,6 @@ mod tests {
     fn a_star_is_as_bright_as_the_inverse_square_of_its_own_range() {
         // Magnitudes are logarithms and the canvas is linear light, so the one
         // transform between them is the only thing here that has to be right.
-        // Halving a range is two magnitudes and four times the light.
         let sky = Universe::new(6.5, 2);
         let star = sky.stars[0];
         let near = star.lumen / 100.0;
@@ -2710,7 +1934,7 @@ mod tests {
     fn the_sky_follows_the_count_law() {
         // Each magnitude is `10^0.6` — about four — times as many stars, which
         // is what makes a limiting magnitude a density rather than a number
-        // somebody picked. Checked over the range a hand on the keys can reach.
+        // somebody picked.
         for limit in [4.0f32, 5.0, 6.0, 7.0, 8.0] {
             let here = Universe::population(limit) as f32;
             let brighter = Universe::population(limit - 1.0) as f32;
@@ -2720,9 +1944,6 @@ mod tests {
                 "a magnitude at {limit} is {ratio} times as many stars"
             );
         }
-        // And a sky can be asked for that holds nothing at all, which is how
-        // the tunnel, the bubble and the hull are looked at with nothing
-        // streaming past them.
         assert_eq!(Universe::population(-2.0), 0);
     }
 
@@ -2730,25 +1951,7 @@ mod tests {
     fn the_exposure_is_cut_finely_enough_to_be_a_curve() {
         // `SAGITTA` and the spacing it drives were named by no test at all, and
         // the first attempt at one asserted *counts* — a handful of legs for a
-        // weave, the ceiling for a buried stick. It caught nothing: a count
-        // compared against `MAX_STATIONS` moves with it, and a bound written as
-        // a multiple of `SAGITTA` moves with that. What the spacing is for is
-        // the picture, so this measures the picture: how far the drawn polyline
-        // falls from the curve it stands for, against a finely sampled walk of
-        // the same track, at an absolute number of subpixels.
-        //
-        // Measured rather than chosen. The spacing as written holds a moderate
-        // turn to 0.022 subpixels; dropping the parallax term from `swing` —
-        // the one CLAUDE.md records as having been measured and kept — cuts the
-        // same exposure from fifteen legs to three and takes it to 0.447. A
-        // quarter of a subpixel sits an order of magnitude clear of the first
-        // and half an order below the second, which is the margin that catches
-        // a regression rather than merely passing.
-        //
-        // Asked at a turn the ceiling does not bind, on purpose: at the yaw
-        // stop `MAX_STATIONS` wins and the exposure is faceted well past what
-        // the budget asks for, so the deviation there is a fact about the cap
-        // rather than about the spacing. That is written up beside the constant.
+        // weave, the ceiling for a buried stick.
         let (legs, worst) = fit_of_the_exposure(&Camera::new(60, 36), 0.01);
         assert!(
             legs < MAX_STATIONS - 1,
@@ -2762,12 +1965,6 @@ mod tests {
 
     /// Fly a turn, then ask how many legs one star's exposure was cut into and
     /// how far the drawn polyline strays from the curve it stands for.
-    ///
-    /// The reference curve is walked independently of the thing under test:
-    /// `Track::pose_at` is sampled two hundred times over the exposure's reach
-    /// and each pose is projected the way `Observer::cockpit` projects the
-    /// current one, so a wrong spacing shows as distance rather than as a
-    /// different count.
     fn fit_of_the_exposure(cam: &Camera, stick: f32) -> (usize, f32) {
         // A sky dense enough that the band below holds a few hundred stars
         // rather than a few: what is being sampled is the *curve*, and one star
@@ -2851,17 +2048,7 @@ mod tests {
         // Regression, and the shape of it is the one this tree keeps warning
         // about: every guard on `set_limit` flew a ship that had never left the
         // origin, so all of them passed a `spawn` that placed its stars about
-        // the world's origin rather than about the observer. Ten minutes of
-        // warp put the ship three thousand light years out, and the stars the
-        // `+` key added arrived in a clump directly astern — outside their own
-        // reach, so the next `advance` recycled every one of them to exactly
-        // the limiting magnitude, where a star is at no brightness at all. The
-        // key changed the count and did not change the picture.
-        //
-        // Asked as isotropy rather than as a position, because that is what
-        // went wrong: the mean direction from the ship to a fresh star is about
-        // nothing over a sky that surrounds it, and about -1 along the track
-        // over one that is all behind.
+        // the world's origin rather than about the observer.
         let mut sky = Universe::new(6.0, 11);
         let mut ship = Ship::new();
         ship.throttle = 1.0;
@@ -2897,11 +2084,6 @@ mod tests {
             fresh.len()
         );
 
-        // And each one is somewhere it can actually be seen from, which is the
-        // same statement one level down: a star outside its own reach is one
-        // the very next step throws away and puts back at exactly the limiting
-        // magnitude, where it is at no brightness at all. Every one of them
-        // used to be such a star.
         let strays = sky.stars[before..]
             .iter()
             .filter(|star| distance_sq(star.pos, ship.position) > star.reach_sq)
@@ -2918,8 +2100,7 @@ mod tests {
     fn asking_for_a_fainter_sky_leaves_the_one_already_out_there_alone() {
         // A limit is a property of the observer, so moving it must not move a
         // star: the sky that was visible before is visible still and in the
-        // same place, with more of it beyond. Bitwise, because a reach is a
-        // lumen over a limiting intensity and only the second of those moved.
+        // same place, with more of it beyond.
         let mut sky = Universe::new(5.5, 6);
         let before = sky.positions();
         sky.set_limit(6.5);
@@ -2948,8 +2129,7 @@ mod tests {
         // A star crosses its own visibility sphere at exactly the limiting
         // magnitude, which is the faintest anything here can be — but faint is
         // not nothing, and a star winking out at a twentieth of a unit is a
-        // star winking out. The fade is what answers that, and this is the one
-        // seam in the sky that a recycle could show through.
+        // star winking out.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         ship.toggle_warp();
@@ -2987,18 +2167,6 @@ mod tests {
                     over <= 1.0 + 1e-3,
                     "a recycled star arrived {over} times brighter than the limit"
                 );
-                // And the fade is what turns that into nothing *drawn*, which
-                // is the half `shift_light` has to leave alone. The recycle
-                // puts a star on the hemisphere the flow is coming from, so
-                // every arrival lands in the half of the sky the drive throws
-                // light at, where the shift reaches 1.54. That is safe because
-                // the shift is a multiplier and the fade it multiplies is
-                // nothing — but not because the fade is bitwise zero, which it
-                // is not: a star is put back at exactly its reach and then
-                // flies a step, so `over` sits a hair either side of one and
-                // this comes out around 1e-7. It enters squared, so what is
-                // asked here is the product the canvas would actually be
-                // handed, at the largest gain the drive can apply.
                 let fade_ratio = 10f32.powf(0.4 * FADE_MAGNITUDES);
                 let fade = ((over - 1.0) / (fade_ratio - 1.0)).clamp(0.0, 1.0);
                 let lit = fade * fade * shift_light(1.0, 0.9);
@@ -3014,10 +2182,7 @@ mod tests {
     #[test]
     fn the_flow_brings_stars_in_from_the_side_it_is_coming_from() {
         // The recycle's distribution, which is the other half of nothing
-        // arriving in view. A uniform flow crossing a sphere delivers stars in
-        // proportion to the cosine of the angle from where it is coming, so
-        // every one has to land on the forward hemisphere and they have to
-        // bunch toward its pole rather than spread evenly over it.
+        // arriving in view.
         let mut sky = Universe::new(4.0, 21);
         let nose = [0.0, 0.0, 1.0];
         let mut alongs = Vec::new();
@@ -3041,8 +2206,7 @@ mod tests {
     #[test]
     fn the_sky_is_left_alone_by_everything_but_the_flight() {
         // The property the whole rebuild rests on, stated at the level it lives
-        // at: nothing about *looking* at the sky can move it. Only `advance`
-        // may, and only because the ship went somewhere.
+        // at: nothing about *looking* at the sky can move it.
         let mut sky = Universe::new(5.5, 31);
         let parked = sky.positions();
         let ship = Ship::new();
@@ -3066,7 +2230,6 @@ mod tests {
         }
         assert_eq!(parked, sky.positions(), "looking at the sky moved it");
 
-        // And a ship at rest does not move it either, however long it sits.
         let mut ship = Ship::new();
         ship.throttle = 0.0;
         fly(&mut sky, &mut ship, 2000);
