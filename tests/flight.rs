@@ -1,11 +1,4 @@
 //! Driving a flight from outside the crate.
-//!
-//! The unit tests can reach into private state; these deliberately cannot.
-//! They fly through the same surface any other program would have to use, so
-//! they fail if the library stops being usable without the binary — which is
-//! the whole reason `main.rs` does nothing but parse, fly and report. Said
-//! that way rather than as a line count, which is what it used to be and had
-//! already drifted by one.
 
 use clap::Parser;
 use std::time::{Duration, Instant};
@@ -13,22 +6,6 @@ use warp_rs::app::Flight;
 use warp_rs::cli::Args;
 
 /// Fly `frames` frames at a fixed timestep and hand back the bytes.
-///
-/// The colour depth is pinned rather than left to the default: the bytes these
-/// tests assert on are the truecolor ones, and a test that reads its own
-/// subject off a default is a test that changes what it checks the day the
-/// default moves. It is truecolor either way today — that is the point of the
-/// pin rather than an argument against it. A caller that cares can pass its own
-/// `--color`.
-///
-/// `--fade 0` is pinned for exactly that reason and one sharper one. A shot
-/// opens out of black now, so a flight of twenty frames spends a third of a
-/// second of its life dim and its first frames entirely dark — and a test that
-/// compares two of those is comparing two black grids, which agree beautifully.
-/// `a_frame_does_not_repeat_a_colour_it_is_already_using` is the worst of it:
-/// it draws exactly one frame, and would have been asking whether the writer
-/// repeats a colour of a picture with one colour in it. The fade has its own
-/// test below; nothing else here is about it.
 fn fly(argv: &[&str], cols: usize, rows: usize, frames: usize) -> Vec<u8> {
     let mut full = vec!["warp", "--color", "truecolor", "--fade", "0"];
     full.extend_from_slice(argv);
@@ -66,9 +43,6 @@ fn a_flight_needs_nothing_but_the_library() {
 #[test]
 fn a_flight_can_be_left_to_fly_itself() {
     // The autopilot reached the way another program would have to reach it.
-    // `Flight::fly_itself` is what `--demo` and `--screensaver` are made of, and
-    // it flies the camera as well as the ship — so a program that wanted a
-    // screensaver of its own needs nothing here but this and `advance`.
     let args = Args::try_parse_from([
         "warp",
         "--color",
@@ -105,22 +79,6 @@ fn a_flight_can_be_left_to_fly_itself() {
         "the autopilot never moved the camera it was given"
     );
     // And it really flew: ten seconds is past the run-up, so the drive is lit.
-    //
-    // Asked of the banner by the whole phrase rather than of the word `WARP`,
-    // which is what this used to look for and which the NAV panel stamped as a
-    // label every frame at every speed — so the assertion was satisfied by a
-    // panel that had drawn, not by a drive that had lit, and went on being
-    // satisfied after that label was taken out for saying what the banner
-    // already says.
-    //
-    // Two things come out first, and a phrase needs both. The escape codes, the
-    // way the sibling above does it and for the same reason — the sky shows
-    // through the panel, so a star behind a word puts a colour code in the
-    // middle of it. And the half block itself, because `Screen::stamp` skips
-    // its own spaces: every gap between these words keeps the glyph `compose`
-    // drew there, and one cell of sky is exactly the one space the banner
-    // wrote, so putting it back is a reading of the frame rather than a
-    // loosening of the test.
     let glyphs: String = String::from_utf8_lossy(&out)
         .split('\u{1b}')
         .map(|chunk| chunk.split_once('m').map_or(chunk, |(_, rest)| rest))
@@ -132,11 +90,7 @@ fn a_flight_can_be_left_to_fly_itself() {
     );
 
     // And the panel is a decision the caller makes, which is the other half of
-    // what this file is for. `--demo` and `--screensaver` draw none — the three
-    // loops all ask `Args::unattended` and hand the answer down — but that is
-    // the loops' answer and not something baked into the flight, so a program
-    // driving one itself can have the instruments over an autopilot if it wants
-    // them, which is exactly what the assertion above just read.
+    // what this file is for.
     let mut bare = Vec::new();
     flight.draw(60.0, false, false);
     flight
@@ -154,13 +108,7 @@ fn a_flight_can_be_left_to_fly_itself() {
 
 #[test]
 fn a_turn_at_warp_can_be_flown_from_the_library_alone() {
-    // The stick, through the surface another program would have to use. It is
-    // here because a turn is the one thing the sky draws differently — an
-    // exposure the ship flew straight through is a segment and one it turned
-    // through is a curve — so a turn nothing outside this crate could fly is a
-    // feature the library cannot be said to offer. `Flight::nudge_stick` is the
-    // whole of what that needs, and it is the third of the trio beside
-    // `nudge_orbit` and `nudge_zoom`.
+    // The stick, through the surface another program would have to use.
     let fly = |steer: bool| {
         let args = Args::try_parse_from([
             "warp",
@@ -265,12 +213,6 @@ fn the_seed_is_still_the_whole_of_the_state_from_outside() {
 fn every_ship_can_be_flown_from_the_command_line() {
     // A ship the picker offers but the command line will not take is a ship
     // that cannot be screenshotted, which is most of what these flags are for.
-    //
-    // Read off `models()` rather than written out. The list here was written
-    // out once and came up a name short of the hangar — `enterprise`, the
-    // default and the one every run flies unless told otherwise, was the one
-    // missing — and the next hull added would have gone uncovered the same
-    // silent way.
     for ship in warp_rs::models::models().iter().map(|m| m.name) {
         let out = fly(
             &[
@@ -294,10 +236,7 @@ fn every_ship_can_be_flown_from_the_command_line() {
 #[test]
 fn a_flight_survives_a_step_the_caller_should_not_have_asked_for() {
     // `Flight::advance` is public, and the whole point of this file is that a
-    // flight can be driven from out here. The guard against a `dt` that is not
-    // a frame used to live in the interactive loop instead, so a caller at this
-    // level got neither half of it: an enormous step was unbounded work, and a
-    // NaN step stopped the simulation for good while frames went on drawing.
+    // flight can be driven from out here.
     let args = Args::try_parse_from([
         "warp",
         "--color",
@@ -351,8 +290,7 @@ fn a_flight_survives_a_step_the_caller_should_not_have_asked_for() {
 #[test]
 fn a_frame_does_not_repeat_a_colour_it_is_already_using() {
     // A cell carries about 40 bytes of escape codes, and a starfield is mostly
-    // long runs of black, so this is most of the size of a frame. Checked from
-    // out here because it is a property of the bytes, not of the buffers.
+    // long runs of black, so this is most of the size of a frame.
     let out = fly(&["--seed", "5", "--magnitude", "4.5"], 60, 20, 1);
     let text = String::from_utf8_lossy(&out);
 
@@ -371,11 +309,7 @@ fn a_frame_does_not_repeat_a_colour_it_is_already_using() {
 #[test]
 fn a_fade_can_be_asked_for_from_the_command_line() {
     // The flag's whole contract, stated where another program would have to
-    // read it. A shot opens out of black; and once it has arrived, the frames
-    // are byte for byte the ones a flight that never faded draws — which is
-    // what lets `--fade 0` stand as the control the ten reference flights were
-    // regenerated against, and what says the shutter reaches nothing but the
-    // resolve.
+    // read it.
     let frames = |fade: &str| -> Vec<Vec<u8>> {
         let args = Args::try_parse_from([
             "warp",
@@ -411,8 +345,8 @@ fn a_fade_can_be_asked_for_from_the_command_line() {
         "half a second of fade left the opening frame exactly as it was"
     );
     // A shot opens at the bottom of the dip, so the rise is the whole of the
-    // fade less its fall: half a second of `--fade` is settled by frame 21 at
-    // a sixtieth of a second a frame. Thirty is well clear of it.
+    // fade less its fall: half a second of `--fade` is settled by frame 21 at a
+    // sixtieth of a second a frame.
     for (i, (a, b)) in plain.iter().zip(&faded).enumerate().skip(30) {
         assert_eq!(
             a, b,

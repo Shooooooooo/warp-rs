@@ -1,45 +1,8 @@
 //! Bending starlight around the ship.
-//!
-//! A warp bubble is a lump of curved spacetime, and light that passes one is
-//! deflected the way it is by any other mass: the sky behind the ship is pushed
-//! outward, away from the bubble, and piles up into a bright ring at the radius
-//! where the deflection exactly cancels the offset. Inside that ring the same
-//! source shows again, fainter and on the opposite side — the counter-image
-//! every gravitational lens produces and the thing that makes one legible as a
-//! lens rather than as a smudge.
-//!
-//! What is drawn here is that lens *being flown*. A round bubble says nothing
-//! about which way the ship is going and reads as a collar painted on the
-//! glass, so this one is drawn out along the track and seated astern of the
-//! hull — the ship rides the leading third of its own disturbance, the way a
-//! body sits in its wake.
-//!
-//! Neither of those is a new lens, and the first is not even new arithmetic.
-//! Dividing an offset by the two semi-axes turns the ellipse into the circle
-//! the textbook solves, and because the semi-axes are reciprocals of each other
-//! that map has determinant one. Conjugating a lens by an invertible linear map
-//! preserves everything a lens is made of — how many images there are, which
-//! side of the ring each falls on, the product of the two roots, and the
-//! magnification, which is a determinant and so comes through a conjugation
-//! untouched. So this is still the standard thin point-mass lens, worked in
-//! screen space because that is where the deflection is wanted, in canvas
-//! subpixels throughout. The only difference is that distance is measured in an
-//! elliptical metric rather than a round one. [`Lens::offset`] is that metric,
-//! and everything below is the textbook once a quantity is expressed in it.
-//!
-//! The wake is the other half, and it is not in the outline at all. Skewing the
-//! ring fore and aft is the obvious way to draw a teardrop and it is the wrong
-//! one: each image then has to be solved on its own ray with its own radius,
-//! which costs the cancellation that keeps the counter-image accurate, and at
-//! any elongation worth having it pinches the waist into a peanut. Moving the
-//! *centre* astern instead leaves the outline a clean convex ellipse and every
-//! paired invariant exactly where it was, while relative to the hull the bubble
-//! is strongly asymmetric: at full warp the ring reaches 2.4 ship-halves ahead
-//! of the ship and 3.6 astern.
 
-/// Ceiling on how much a single image may be brightened. The magnification of
-/// a point source diverges on the lens axis — a star dead behind the bubble is
-/// a ring of infinite brightness — and nothing downstream survives an infinite
+/// Ceiling on how much a single image may be brightened. The magnification of a
+/// point source diverges on the lens axis — a star dead behind the bubble is a
+/// ring of infinite brightness — and nothing downstream survives an infinite
 /// intensity, so the peak is clamped to something the tonemap can still show as
 /// a highlight rather than as a hole.
 const MAX_MAGNIFICATION: f32 = 8.0;
@@ -55,16 +18,6 @@ const U_CEILING: f32 = 1e6;
 const REACH: f32 = 10.0;
 
 /// The bubble's own shadow, as a fraction of the way out to the ring.
-///
-/// A *transparent* point mass maps the entire sky into the disc inside its
-/// Einstein ring as a demagnified counter-image, and lensing conserves surface
-/// brightness, so that disc comes out about as bright as the sky it copies —
-/// no bubble, just a shuffled middle. What makes a real compact object read as
-/// one is that it swallows what passes closest, leaving a dark disc with the
-/// counter-images crowded into a bright rim just outside it. A warp bubble is
-/// opaque for the same reason a hull is, so anything imaged inside this is
-/// simply not drawn. The primary image is always outside the ring, on every
-/// ray, so this only ever swallows counter-images.
 const SHADOW_FRAC: f32 = 0.72;
 
 /// That last sentence, made a condition of the build rather than a claim in a
@@ -75,62 +28,25 @@ const _: () = assert!(
     "the shadow is outside the ring, and would swallow primary images"
 );
 
-/// The Einstein radius at full warp, as a multiple of the ship's own half-length
-/// on screen.
-///
-/// Sized against the hull rather than by eye, and now *said* that way. It used
-/// to be a fraction of the canvas height — 0.48, which was twice the ship's
-/// 0.24 by hand and by hand only, with a comment to hold the two together. That
-/// was a fair way to write a constant while the framing was itself constant. It
-/// stopped being one the moment the camera could be pushed in and out: a bubble
-/// pinned to the canvas would have sat there at a fixed size while the hull
-/// inside it grew and shrank, which is exactly the collar this number exists to
-/// avoid.
-///
-/// Two ship-lengths from nose to ring is deliberately more than the geometry
-/// demands. A bubble that merely clears the ship reads as a collar around it;
-/// the sky wants somewhere to bend, and the swept-clear disc is most of what
-/// makes the lensing legible.
+/// The Einstein radius at full warp, as a multiple of the ship's own half-
+/// length on screen.
 const RADIUS_IN_SHIPS: f32 = 2.0;
 
 /// The bubble's semi-major axis, along the track, as a multiple of the Einstein
 /// radius.
-///
-/// Squared, it is the elongation: the bubble is 2.2 times as long as it is
-/// wide. Pulled up by the whole point of the shape — a round bubble is the same
-/// bubble at rest as at warp, and says nothing about which way the ship is
-/// pointing. Pulled down by the waist, which narrows as the ends stretch: at
-/// about three to one the swept-clear sky above and below a rolled hull is
-/// thinner than the hull is, and the bubble stops reading as something the ship
-/// is inside.
 const RING_MAJOR: f32 = 1.4832;
 
 /// And across it — the reciprocal, which is the whole of why this is a reshape
 /// rather than an enlargement.
-///
-/// The ellipse encloses `π·radius²` whatever `RING_MAJOR` is set to, so the
-/// bubble is the same lump of curved spacetime shaped by the flow rather than a
-/// bigger one. That is worth more than tidiness: [`Lens::bends`] sweeps the same
-/// ellipse scaled by [`REACH`], so the region of sky that takes the expensive
-/// bent path has exactly the area it always had, and an exterior frame at warp
-/// costs what it always cost. Derived rather than tuned, so the two cannot drift
-/// apart.
 const RING_MINOR: f32 = 1.0 / RING_MAJOR;
 
-/// How far astern of the ship the bubble sits, as a fraction of its own
-/// semi-major axis.
-///
-/// This is the entire wake. The outline is a symmetric ellipse; what makes it
-/// read as something trailing the hull is that the hull is not in the middle of
-/// it. Pulled up by the asymmetry — at zero this is a collar again — and pulled
-/// down hard by the nose, which walks out of the shadow altogether at 0.383 and
-/// starts taking stars across the ship with it. The assertion below is what
-/// holds that end.
+/// How far astern of the ship the bubble sits, as a fraction of its own semi-
+/// major axis.
 const WAKE_SHIFT: f32 = 0.20;
 
 /// At full warp the shadow has to reach past the ship's nose, or stars are
-/// drawn over the hull and the swept-clear disc stops being what it is for.
-/// The shadow reaches `RADIUS_IN_SHIPS · RING_MAJOR · SHADOW_FRAC` ahead of the
+/// drawn over the hull and the swept-clear disc stops being what it is for. The
+/// shadow reaches `RADIUS_IN_SHIPS · RING_MAJOR · SHADOW_FRAC` ahead of the
 /// bubble's centre and the centre sits `RADIUS_IN_SHIPS · RING_MAJOR ·
 /// WAKE_SHIFT` behind the ship, both in ship half-lengths, and the nose is at
 /// one. Its opposite number is the runtime test over every hull in the hangar;
@@ -151,27 +67,11 @@ pub struct Lens {
     /// an exact identity rather than an approximation of one.
     pub radius: f32,
     /// The outline's two semi-axes in subpixels, the long one first.
-    ///
-    /// Stored rather than derived from [`RING_MAJOR`] on demand, because they
-    /// depend on where the camera is: the bubble is a solid drawn out along the
-    /// track, and a camera swung round toward the nose sees that length
-    /// foreshortened. [`Lens::for_warp`] is where they come from.
     axes: (f32, f32),
     /// The reciprocals of those two, worked out once when the bubble is built.
-    ///
-    /// [`Lens::offsets`] ended on a divide per axis, and it is the floor every
-    /// gate in this module stands on — `bends` and `shadowed` run it on the
-    /// whole pool, `map` and `crosses_the_ring` on every sample of every bent
-    /// streak. Two numbers fixed for the frame were being divided by a dozen
-    /// times per sample. Derived rather than stored independently: nothing may
-    /// set one without the other.
+    /// Nothing may set one without the other.
     inv_axes: (f32, f32),
     /// Which way the long axis lies on the canvas, as `(cos, sin)`.
-    ///
-    /// Exactly `(1.0, 0.0)` whenever the camera is abeam of the track — which
-    /// is the shot as it opens, and every elevation and camera roll of it — so
-    /// the rotation in [`Lens::offsets`] costs a multiply by one and an
-    /// addition of zero on the path the reference frames are recorded from.
     turn: (f32, f32),
 }
 
@@ -195,15 +95,6 @@ pub struct Lensed {
 }
 
 /// How much brighter a source at `u` Einstein radii comes out, per image.
-///
-/// Split out because the axis case below cannot reach it through the ordinary
-/// path and must not grow a second copy of it: `μ± = (u² + 2) / (2u√(u² + 4)) ±
-/// ½`. `u` is held inside the range where that closed form is worth evaluating.
-/// The magnification is monotonic in `u`: below the floor it is already past
-/// `MAX_MAGNIFICATION`, and above the ceiling it has settled onto its limit of
-/// one image at unit brightness. A NaN — which arrives when the caller hands
-/// over a NaN centre — is sent to the floor rather than through `clamp`, which
-/// passes one straight out the other side.
 fn magnification(u: f32, image: Image) -> f32 {
     let u = if u.is_nan() {
         U_FLOOR
@@ -222,11 +113,6 @@ impl Lens {
     /// the zero radius is what every path here checks, through [`Self::is_on`],
     /// so a sublight frame takes the same bytes it would if this module were
     /// not in the tree.
-    ///
-    /// The centre is not a second line of defence, whatever it looks like.
-    /// This once claimed to be "placed off-canvas as well as zero-sized", and
-    /// `(0.0, 0.0)` is the top-left subpixel — as on the canvas as a point can
-    /// be. The radius is the whole of it.
     pub const OFF: Lens = Lens {
         center: (0.0, 0.0),
         radius: 0.0,
@@ -239,35 +125,6 @@ impl Lens {
     /// the ship's half-length on screen in subpixels. Quadratic in the ramp, so
     /// it opens up as the drive spools rather than snapping on the instant the
     /// light barrier is crossed, and it is exactly zero at sublight.
-    ///
-    /// The bubble is measured in ships rather than in frames because it belongs
-    /// to the ship: it is the same lump of curved spacetime whether the camera
-    /// is looking from close to or far off, so it has to come and go on screen
-    /// exactly as the hull does. [`crate::view::ship_half_on_screen`] is where
-    /// that half-length comes from.
-    ///
-    /// The centre it is handed is where the *ship* is; the bubble is seated
-    /// astern of that, which is the one place in this module that knows which
-    /// way the ship is pointing. `nose` is that direction, in the camera's own
-    /// space, from [`crate::view::Orbit::nose_in_camera`] — a unit vector, and
-    /// the only thing here that changes when the camera is swung round. The
-    /// shift is a fraction of the semi-major axis rather than of the hull, so
-    /// the wake opens up with the bubble instead of sliding out of it.
-    ///
-    /// The bubble is a *solid* — a spheroid drawn out along the track — and
-    /// what goes on the canvas is its outline. Support functions do the rest:
-    /// for an ellipsoid the extent in a screen direction `ŝ` is
-    /// `√(L²(ŝ·t̂)² + W²(1 − (ŝ·t̂)²))`, and the track's own screen direction
-    /// has `ŝ·t̂ = sin φ`, while the one across it has `ŝ·t̂ = 0`. So the long
-    /// axis runs from `L` broadside down to `W` end-on and the short one never
-    /// moves — which is why a ship seen head-on sits in a circle rather than in
-    /// a line, and why nothing has to bound how far the camera may be swung.
-    ///
-    /// Broadside is branched rather than computed, and `nose[2] == 0.0` is
-    /// exactly that case: the camera abeam of the track, at any elevation and
-    /// any roll of its own. `√(RING_MAJOR²)` is `RING_MAJOR` under IEEE
-    /// arithmetic and would very probably survive, but "very probably" is not
-    /// what the reference frames are pinned with.
     pub fn for_warp(center: (f32, f32), warp: f32, ship_half: f32, nose: [f32; 3]) -> Self {
         let warp = warp.clamp(0.0, 1.0);
         let radius = ship_half.max(0.0) * RADIUS_IN_SHIPS * warp * warp;
@@ -295,9 +152,7 @@ impl Lens {
 
         // The wake is a displacement along the track in three dimensions, so it
         // foreshortens with the track rather than with the outline it is a
-        // fraction of — `along` has a floor at `W` and this does not. `radius`
-        // already carries the range correction, so this is the honest
-        // projection of that displacement and not an approximation of one.
+        // fraction of — `along` has a floor at `W` and this does not.
         let wake = radius * RING_MAJOR * WAKE_SHIFT * sin_phi;
         Self {
             center: (center.0 - wake * turn.0, center.1 - wake * turn.1),
@@ -315,32 +170,12 @@ impl Lens {
 
     /// The ring's two semi-axes in subpixels: along the track first, across it
     /// second.
-    ///
-    /// Their product is `radius²` broadside, which is the area promise — and it
-    /// is deliberately *not* extended to every angle, because a bubble seen
-    /// end-on genuinely covers less sky than one seen side-on and pretending
-    /// otherwise would inflate it as the camera came round. What
-    /// `RING_MINOR` being a reciprocal buys is that the promise holds however
-    /// the bubble is *shaped*; how much of it the camera can see is a different
-    /// question with a different answer.
     pub fn semi_axes(&self) -> (f32, f32) {
         self.axes
     }
 
     /// Where `p` sits in the frame the bubble is round in: turned onto the
     /// outline's own axes, then divided by them.
-    ///
-    /// The one place the ellipse is actually spelled out, so the four questions
-    /// below cannot drift apart about what shape it is. No `is_on` guard —
-    /// every caller has already asked, and this sits under the inner loop.
-    ///
-    /// The square case is branched, and this one is for speed rather than for
-    /// exactness: `dx * 1.0 + dy * 0.0` is already `dx` to the bit, but this is
-    /// two of the three hottest gates in the program and paying four multiplies
-    /// and two adds per sample for a turn of zero cost five percent of the
-    /// drawing time in a warp frame at twenty thousand stars — measured, 21.3 ms
-    /// against 22.3. The branch is free: `turn` is fixed for the whole frame, so
-    /// it predicts perfectly.
     fn offsets(&self, p: (f32, f32)) -> (f32, f32) {
         let (dx, dy) = (p.0 - self.center.0, p.1 - self.center.1);
         let (cos, sin) = self.turn;
@@ -369,12 +204,6 @@ impl Lens {
 
     /// How far `p` sits from the centre, in Einstein radii — exactly 1.0 on the
     /// ring, whichever way round the bubble it is measured.
-    ///
-    /// This is the elliptical metric the whole module is worked in, and every
-    /// question it used to answer with a distance and a radius it now answers
-    /// with this and a pure number: the shadow is `SHADOW_FRAC`, the reach is
-    /// `REACH`, the ring is one. A lens that is not there has nothing inside
-    /// it, so it reports everything infinitely far out.
     pub fn offset(&self, p: (f32, f32)) -> f32 {
         if !self.is_on() {
             return f32::INFINITY;
@@ -399,21 +228,6 @@ impl Lens {
 
     /// Whether a segment passes close enough for the bend to be worth the work
     /// of chopping it up and curving it.
-    ///
-    /// The deflection falls off as `e²/r`, so ten Einstein radii out it is a
-    /// tenth of a radius — a subpixel or two at the sizes this runs at, against
-    /// a streak that is already several — and the counter-image has long since
-    /// faded. The overwhelming majority of a star pool is out there, and this
-    /// is what lets it cost exactly what it costs with the drive shut down.
-    ///
-    /// The reach is the ring scaled up, so it is elongated too, and its area is
-    /// `π(REACH·radius)²` — the same disc's worth of sky as when the bubble was
-    /// round. That is not a coincidence and it is not free: it is what
-    /// `RING_MINOR` being a reciprocal buys.
-    /// Asked of every point rather than of the two ends, because an exposure
-    /// the ship turned through is a curve and its middle can pass the bubble
-    /// while neither end does. At two points it is the two comparisons it
-    /// always was, in the order it always made them.
     pub fn bends(&self, points: &[crate::canvas::Trace]) -> bool {
         if !self.is_on() {
             return false;
@@ -444,19 +258,6 @@ impl Lens {
     }
 
     /// How sharply the lens is bending things at `p`, as a 0..=1 ramp.
-    ///
-    /// This is the *gradient* of the deflection, not the deflection: what
-    /// matters for chopping a streak up is how much the bend changes along it,
-    /// and that falls off as the inverse square of the distance where the
-    /// deflection itself only falls off as `e²/r`. So a streak out at the edge
-    /// of the frame is displaced almost uniformly along its length — which is
-    /// to say not curved at all — and can be laid down straight. That is what
-    /// keeps a lensed frame close to the price of an unlensed one.
-    ///
-    /// `e²/(r² + e²)` said in offsets is `1/(1 + m²)`, which is the same number
-    /// where the bubble is round and the right one where it is not: a streak
-    /// passing over the narrow waist is bent harder, at the same distance, than
-    /// one running out along the wake, and gets subdivided to match.
     pub fn curvature(&self, p: (f32, f32)) -> f32 {
         if !self.is_on() {
             return 0.0;
@@ -470,21 +271,6 @@ impl Lens {
 
     /// Where `p` appears once the lens has had it, and by how much its
     /// brightness changes.
-    ///
-    /// With the source `m` Einstein radii off the centre, the two images sit at
-    /// the roots of `θ − 1/θ = m`, in the same units:
-    ///
-    /// ```text
-    /// θ₊ = (m + √(m² + 4)) / 2      outside the ring, same side
-    /// θ₋ = (m − √(m² + 4)) / 2      inside it, and negative: the far side
-    /// ```
-    ///
-    /// Both come out as a multiple of the source's own offset, so the answer is
-    /// the offset scaled — and since the scaling happens in the round frame and
-    /// the frame is reached by a linear map, scaling the *canvas* offset by the
-    /// same number lands in the same place. That is why nothing here has to
-    /// normalise anything or take an angle: the image is on the source's own
-    /// ray whatever shape the ring is, and only the length of the ray changes.
     pub fn map(&self, p: (f32, f32), image: Image) -> Lensed {
         let unbent = Lensed { at: p, gain: 1.0 };
         if !self.is_on() || !p.0.is_finite() || !p.1.is_finite() {
@@ -501,11 +287,7 @@ impl Lens {
         let m = crate::canvas::length_of(ex, ey);
 
         // On the axis the source images as the complete ring, which a single
-        // point cannot be drawn as. Pick a direction — any fixed one will do,
-        // and this is a case of measure zero — so the ring at least gets a
-        // point on it instead of a NaN. A NaN centre is sent down here too and
-        // for the same reason: there is no ray to put an image on, so it takes
-        // the one this picks and comes back with the NaN it arrived with.
+        // point cannot be drawn as.
         if m.is_nan() || m <= f32::EPSILON {
             let along = match image {
                 Image::Primary => self.axes.0,
@@ -524,19 +306,11 @@ impl Lens {
         // a projection can produce: a star a hair past the near plane lands
         // billions of subpixels off the canvas, and squaring that overflows an
         // `f32` into an infinity that would then propagate into the position.
-        // Written this way the overflow is harmless — `4/∞` is zero, the root
-        // is one, and the primary comes back exactly unbent, which is what a
-        // source that far out should do.
         let root = (1.0 + 4.0 / (m * m)).sqrt();
         let scale = match image {
             Image::Primary => (1.0 + root) * 0.5,
             // `θ₋` is `(m − √(m² + 4))/2`, which is two nearly equal numbers
-            // subtracted once `m` is large. The two roots multiply to one, so
-            // taking it from the primary is the same answer without the
-            // cancellation — and it is exactly the ring when the source is on
-            // axis. As a multiple of the source's own offset that is
-            // `1/(m²·θ₊)`, negative because the counter-image is on the far
-            // side.
+            // subtracted once `m` is large.
             Image::Secondary => -2.0 / (m * m * (1.0 + root)),
         };
 
@@ -547,10 +321,10 @@ impl Lens {
     }
 }
 
-/// Largest angular step, in radians, allowed between two points of a bent
-/// path before the arc between them is filled in. Measured about the round
-/// frame rather than the canvas, so a step is the same fraction of the way
-/// round the ring at the waist as out along the wake.
+/// Largest angular step, in radians, allowed between two points of a bent path
+/// before the arc between them is filled in. Measured about the round frame
+/// rather than the canvas, so a step is the same fraction of the way round the
+/// ring at the waist as out along the wake.
 const MAX_ARC_STEP: f32 = 0.25;
 /// Ceiling on that filling-in, so a source sweeping right past the axis cannot
 /// ask for an unbounded number of points.
@@ -559,20 +333,6 @@ const MAX_ARC_FILL: usize = 24;
 impl Lens {
     /// Append the arc from `from` to `to`, as seen about the lens, to `out`.
     /// `from` is assumed to be there already; `to` always ends up there.
-    ///
-    /// Two points of a bent streak are joined by a straight line, and near the
-    /// lens that is wrong in a way that shows: as a source passes behind the
-    /// mass its image sweeps *around* the ring, and a chord between two samples
-    /// on opposite sides of that sweep cuts straight through the middle of the
-    /// bubble the lens is supposed to have emptied. Interpolating in polar
-    /// coordinates instead follows the sweep. Away from the lens the angle
-    /// barely moves and this adds nothing at all.
-    ///
-    /// The polar coordinates are the round frame's, so what gets laid down is
-    /// an arc of the ellipse rather than of some circle drawn through it — the
-    /// turned ellipse, since the way back out of that frame has to undo the
-    /// same turn `Self::offsets` applied on the way in. Two points on the
-    /// ring stay on the ring the whole way round.
     pub fn arc_to(
         &self,
         from: crate::canvas::Trace,
@@ -583,9 +343,6 @@ impl Lens {
         // and the great majority of pairs do not need it: two samples of a
         // streak that is merely passing by are a fraction of a radian apart and
         // a straight line between them is the arc to well under a subpixel.
-        // What has to be caught is the pair that *straddles* the sweep, and
-        // that shows up as a chord cutting inside the ring — where no primary
-        // image can be, so nothing legitimate is ever there to be cut.
         if !self.crosses_the_ring((from.0, from.1), (to.0, to.1)) {
             out.push(to);
             return;
@@ -615,9 +372,8 @@ impl Lens {
             let s = i as f32 / steps as f32;
             let (r, th) = (r0 + (r1 - r0) * s, th0 + sweep * s);
             let (along, across) = (a * r * th.cos(), b * r * th.sin());
-            // The pace is carried across the points the sweep fills in: a
-            // bend moves where a star's light lands, never how fast it got
-            // there.
+            // The pace is carried across the points the sweep fills in: a bend
+            // moves where a star's light lands, never how fast it got there.
             out.push((
                 self.center.0 + along * self.turn.0 - across * self.turn.1,
                 self.center.1 + across * self.turn.0 + along * self.turn.1,
@@ -657,19 +413,6 @@ mod tests {
 
     /// The noses this module's properties are asked at, which is more than the
     /// one they were all written against.
-    ///
-    /// `ABEAM` is the shot the whole module was written from, and it is the one
-    /// angle where `offsets` takes its `sin == 0.0` branch — an exact swizzle
-    /// with the rotation switched off. That branch exists because a broadside
-    /// bubble ought not to depend on `√(RING_MAJOR²)` surviving IEEE
-    /// arithmetic, and it is a measured five percent of drawing a warp frame,
-    /// since it sits under the two hottest gates in the program. The cost of
-    /// having it is that every property here was asserted with the *other*
-    /// branch — the one every frame off the beam actually runs — never taken.
-    ///
-    /// So: abeam, a little off it, well off it, head-on down the barrel, dead
-    /// astern, and two corners with the elevation off zero as well, which is
-    /// where the outline is foreshortened and turned at once.
     fn noses() -> impl Iterator<Item = [f32; 3]> {
         [
             [1.0, 0.0, 0.0],
@@ -696,14 +439,6 @@ mod tests {
 
     /// The point `m` Einstein radii from the centre along `(ux, uy)`, where the
     /// direction is read in the *bubble's* own frame.
-    ///
-    /// The rotation at the end is not decoration and its absence did not show
-    /// for as long as every test here was written at one nose: abeam, `turn` is
-    /// exactly `(1, 0)` and this is the arithmetic it always was. Off the beam
-    /// the outline is turned, so a point placed as though the ellipse were
-    /// square to the frame is not `m` rings out at all — which reads as the
-    /// lens having moved an image the wrong way rather than as the fixture
-    /// having asked about the wrong point.
     fn at(lens: &Lens, dir: (f32, f32), m: f32) -> (f32, f32) {
         let (a, b) = lens.semi_axes();
         let scale = m / (dir.0 / a).hypot(dir.1 / b);
@@ -724,7 +459,6 @@ mod tests {
             let got = Lens::OFF.map(p, Image::Primary);
             assert_eq!(got.at, p);
             assert_eq!(got.gain, 1.0);
-            // And there is no counter-image to draw.
             assert_eq!(Lens::OFF.map(p, Image::Secondary).gain, 0.0);
         }
     }
@@ -732,15 +466,7 @@ mod tests {
     #[test]
     fn the_sky_is_pushed_outside_the_einstein_ring() {
         // The primary image never lands inside the ring, which is what leaves
-        // the bubble around the ship swept clear of stars. Said in offsets, so
-        // it is a statement about the ellipse and not about a circle that
-        // happens to be inscribed in it.
-        //
-        // Asked at every nose rather than only abeam, which is a correction:
-        // abeam is the one angle where `offsets` takes its `sin == 0.0` branch,
-        // so every property in this module was written with the rotated
-        // arithmetic — the arithmetic every frame off the beam runs — never
-        // exercised.
+        // the bubble around the ship swept clear of stars.
         for nose in noses() {
             let lens = Lens::for_warp((100.0, 50.0), 1.0, 10.0, nose);
             for dir in directions() {
@@ -753,7 +479,6 @@ mod tests {
                         imaged >= 1.0 - 1e-3,
                         "at nose {nose:?}, a source {m} rings out along {dir:?} imaged at {imaged}"
                     );
-                    // And it only ever moves outward, never toward the centre.
                     assert!(
                         imaged >= m - 1e-3,
                         "at nose {nose:?}, {m} imaged at {imaged}"
@@ -853,7 +578,6 @@ mod tests {
                 out.at
             );
             assert!((out.gain - 1.0).abs() < 0.01);
-            // And the counter-image has faded to nothing rather than lingering.
             assert!(lens.map(p, Image::Secondary).gain < 0.01);
         }
     }
@@ -874,7 +598,6 @@ mod tests {
         // Out of range in either direction is clamped, not extrapolated.
         assert_eq!(Lens::for_warp(c, -3.0, ship, ABEAM).radius, 0.0);
         assert_eq!(Lens::for_warp(c, 9.0, ship, ABEAM).radius, full);
-        // And a bubble that is not there is not seated anywhere either.
         assert_eq!(Lens::for_warp(c, 0.0, ship, ABEAM).center, c);
     }
 
@@ -883,8 +606,7 @@ mod tests {
         // The whole of what makes the bubble a bubble rather than a collar
         // painted on the glass: it is measured in ships, so twice the ship is
         // twice the bubble, and everything derived from the radius follows
-        // without being asked to. Those are asserted rather than assumed
-        // exactly because deriving them is what makes them easy to forget.
+        // without being asked to.
         let c = (60.0, 30.0);
         let small = Lens::for_warp(c, 1.0, 9.0, ABEAM);
         let large = Lens::for_warp(c, 1.0, 18.0, ABEAM);
@@ -907,7 +629,6 @@ mod tests {
             (c.0 - small.center.0) / small.radius,
             "the ship moved inside its own wake"
         );
-        // And the reach, which is what decides whether a streak is bent at all.
         let far = (c.0 + small.radius * 9.5, c.1);
         assert!(
             small.bends(&[(far.0, far.1, 0.0), (far.0, far.1, 1.0)]),
@@ -924,13 +645,7 @@ mod tests {
     #[test]
     fn the_bubble_never_swallows_the_primary_image() {
         // The shadow is what makes the middle of the frame dark instead of
-        // filled with a demagnified copy of the sky. It has to swallow only
-        // counter-images: if it could take a primary, a streak sweeping past
-        // would break into pieces, and the sky would flicker as stars crossed.
-        // True on every ray for the same reason it is true on one — the shadow
-        // is a fraction of the way out to the ring and the primary is never
-        // inside it — which is exactly what an elongation that pinched fore and
-        // aft would have thrown away.
+        // filled with a demagnified copy of the sky.
         let lens = lens();
         for dir in directions() {
             for i in 0..200 {
@@ -950,11 +665,7 @@ mod tests {
     #[test]
     fn the_bubble_sweeps_the_same_sky_clear_however_it_is_shaped() {
         // The area promise, taken through the real arithmetic rather than
-        // against the two constants that are supposed to make it hold. It is
-        // load-bearing twice over: it is why elongating the bubble is a reshape
-        // rather than an enlargement, and it is why `bends` still routes the
-        // same amount of sky down the expensive path, so an exterior frame at
-        // warp costs what it always cost.
+        // against the two constants that are supposed to make it hold.
         let lens = lens();
         let steps = 4096;
         let mut area = 0.0f64;
@@ -975,9 +686,7 @@ mod tests {
 
     #[test]
     fn the_bubble_is_longer_along_the_track_than_across_it() {
-        // The shape itself, and which way round it lies. The nose is to screen
-        // right out here, so the long axis is the screen horizontal; a bubble
-        // elongated the other way would be a ship flying sideways.
+        // The shape itself, and which way round it lies.
         let lens = lens();
         let along = at(&lens, (1.0, 0.0), 1.0).0 - lens.center.0;
         let across = at(&lens, (0.0, 1.0), 1.0).1 - lens.center.1;
@@ -992,10 +701,7 @@ mod tests {
     #[test]
     fn the_ship_rides_in_the_front_of_its_own_wake() {
         // The bubble is seated astern of the hull rather than around it, which
-        // is the whole of why it reads as something the ship is dragging. The
-        // nose still has to be inside the shadow, though — the compile-time
-        // assertion above says so in constants, and this says it in subpixels,
-        // through the arithmetic a frame actually runs.
+        // is the whole of why it reads as something the ship is dragging.
         let c = (100.0, 50.0);
         let ship = 9.0;
         let lens = Lens::for_warp(c, 1.0, ship, ABEAM);
@@ -1022,9 +728,7 @@ mod tests {
     #[test]
     fn an_arc_goes_round_the_ring_rather_than_across_it() {
         // A source passing behind the mass has its image sweep right round the
-        // ring. Joining two samples of that sweep with a straight line draws a
-        // chord through the middle of the bubble — the one place nothing is
-        // supposed to be.
+        // ring.
         let lens = lens();
         let (from, to) = (at(&lens, (1.0, 0.0), 1.0), at(&lens, (-1.0, 0.0), 1.0));
         let (from, to) = ((from.0, from.1, 0.0), (to.0, to.1, 1.0));
@@ -1042,8 +746,6 @@ mod tests {
                 "the arc left the ring, at {m} rings out"
             );
         }
-        // And the moment travels with the place: the sweep fills in time as
-        // well as space, so the pace a leg was flown at survives being bent.
         for pair in path.windows(2) {
             assert!(
                 pair[1].2 >= pair[0].2,
@@ -1072,9 +774,6 @@ mod tests {
             raw((0.0, 0.0), f32::MIN_POSITIVE),
             raw((f32::NAN, 0.0), 10.0),
             raw((0.0, 0.0), f32::INFINITY),
-            // And one built the way the renderer builds them, from a nose
-            // direction that has gone wrong: `for_warp` divides by the track's
-            // on-screen length, and a zero-length one is the end-on case.
             Lens::for_warp((100.0, 50.0), 1.0, 10.0, [0.0, 0.0, 1.0]),
             Lens::for_warp((100.0, 50.0), 1.0, 10.0, [0.0, 0.0, 0.0]),
             Lens::for_warp((100.0, 50.0), 1.0, 10.0, [f32::NAN, 0.0, 0.0]),
@@ -1097,8 +796,8 @@ mod tests {
                         out.gain
                     );
                     // A non-finite *position* is allowed straight back out —
-                    // the canvas drops those — but it must not be invented
-                    // from finite inputs.
+                    // the canvas drops those — but it must not be invented from
+                    // finite inputs.
                     if p.0.is_finite() && p.1.is_finite() && lens.center.0.is_finite() {
                         assert!(
                             out.at.0.is_finite() && out.at.1.is_finite(),

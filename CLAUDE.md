@@ -2116,35 +2116,42 @@ the pair able to tell those two halves apart.
 
 ### Comments
 
-This is the most distinctive thing about the codebase and the easiest to get
-wrong. Comments here are **essays about why**, not labels on what. They are
-written in full sentences, often several, frequently with an em-dash, and they
-routinely explain the alternative that was rejected and what went wrong with
-it. A comment that restates the code is worse than no comment.
+Comments are **short and load-bearing**. A comment says what a thing is, in
+its own units, or why the code could not be written the obvious way — and then
+it stops. A comment that restates the code is worse than no comment.
+
+The tree used to hold the opposite convention: multi-paragraph essays that
+carried the rejected alternative, the bug that prompted the current spelling,
+and the measurement that settled it. Those were removed deliberately. **That
+history is not gone, it moved here** — this file is where a change's reasoning,
+its rejected alternatives and its numbers belong now, and it is why so much of
+what follows reads as prose rather than as reference. Do not put it back beside
+the code.
 
 ```rust
-/// There is nothing between here and Proxima at 4.2 light years, and the
-/// catalogue needs telling because it is built from photometry rather than
-/// from a volume: the faint end of the scatter has a visibility sphere under
-/// two light years across and is therefore *always* very close. Those were the
-/// stars that tore past at impulse in a sky whose whole point is to hold still
-/// down there. They are left out rather than moved, since a star that faint is
-/// not visible from anywhere it could actually be.
+/// Nearest any star is, in light years.
 pub const NEAREST_STAR: f32 = 4.0;
 ```
 
 ```rust
-// Cleared, not just re-length-ed: the row stride follows the width,
-// so light left over from the old layout would reappear somewhere
-// it was never drawn. Every frame clears before it draws, but that
-// is the renderer's habit, not something resize may lean on.
+// Cleared, not just re-length-ed: the row stride follows the width, so light
+// left over from the old layout would reappear somewhere it was never drawn.
 ```
 
-Every module opens with a `//!` block that says what the module is for and
-names the one or two decisions carrying the most weight — `src/models.rs` and
-`src/lens.rs` are the fullest examples. Tuned constants carry a `///` saying
-what pulls them in each direction and, where it applies, what the value was
-before and what that broke. Regression tests carry a comment naming the bug.
+Every module opens with a one-line `//!` saying what it is for. Every public
+item takes a `///` of a sentence or two — for a constant, what it is and its
+units; for a function, what it answers. Two things earn more than that and
+nothing else does:
+
+- **An invariant a caller can break.** `Canvas::splat_inside` does no bounds
+  checking, `Lens::inv_axes` may not be set without `axes`, `Canvas::fill_hull`
+  must take the whole hull in one call, `Universe::spawn`'s draw order is what
+  `--seed` rests on, and the signal handler may only set its flag. These say so,
+  because the code cannot.
+- **An oracle or a duplication that looks like a mistake.** The `fill_convex`
+  and `resolve_with_no_shutter` bodies kept in the test modules, and
+  `Renderer::exterior_camera` spelling out `Renderer::camera`'s shake rather
+  than sharing a helper. Each carries one note saying not to tidy it away.
 
 Third person, no hedging, no first person, no emoji, no `TODO`. Wrap at 80.
 

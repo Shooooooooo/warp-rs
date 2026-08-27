@@ -1,13 +1,4 @@
 //! Getting pixels onto a terminal, and putting the terminal back afterward.
-//!
-//! Terminal cells are about twice as tall as they are wide, which would squash
-//! a starfield into an ellipse. The fix is the upper half block, `▀`: set its
-//! foreground to the top pixel and its background to the bottom one and a cell
-//! becomes two stacked, roughly square pixels. That doubles vertical resolution
-//! and keeps the field circular.
-//!
-//! Only cells that actually changed are re-emitted, and colour codes are only
-//! re-sent when they differ from the last cell written.
 
 use crossterm::{
     cursor,
@@ -19,8 +10,7 @@ use std::io::{self, Write};
 // — so unqualified they are an unused import on Windows, which is a warning
 // nothing in CI can see: `clippy -D warnings` runs on `ubuntu-latest` alone,
 // and the Windows leg of the matrix runs `cargo test`, which does not fail on
-// one. Found by `cargo check --target x86_64-pc-windows-msvc`, which is worth
-// running before touching anything under a `cfg`.
+// one.
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -30,21 +20,13 @@ const HALF_BLOCK: char = '\u{2580}';
 /// and `char::encode_utf8` branches on the code point and fills a scratch array
 /// to arrive at these three constant bytes.
 const HALF_BLOCK_UTF8: &[u8] = "\u{2580}".as_bytes();
-/// Brightness ramp for terminals that cannot do colour at all. Visible to
-/// the crate because the panel picks its ASCII face partly to avoid it: with
-/// no colour to separate glass from sky, an instrument drawn in a character
-/// the starfield also uses is one the eye cannot pick out.
+/// Brightness ramp for terminals that cannot do colour at all. Visible to the
+/// crate because the panel picks its ASCII face partly to avoid it: with no
+/// colour to separate glass from sky, an instrument drawn in a character the
+/// starfield also uses is one the eye cannot pick out.
 pub(crate) const ASCII_RAMP: &[u8] = b" .,:;-=+*oO#%@";
 
 /// How much colour the terminal can be trusted with.
-///
-/// Chosen at the command line and nowhere else. There was a `detect` here once
-/// that read `COLORTERM` and then `TERM`, and it is worth knowing what it did
-/// rather than only that it went: a terminal exporting no `COLORTERM` was
-/// handed [`ColorMode::Ansi256`] whatever it could actually do, and one with no
-/// `TERM` at all was handed [`ColorMode::Ascii`] — so the mode this whole
-/// canvas is designed for was the one the program least often chose for itself.
-/// The narrower two are still here and are asked for by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
     /// 24-bit colour. What the renderer is designed for, and what it opens in.
@@ -63,19 +45,18 @@ type CellColors = (Option<(u8, u8, u8)>, Option<(u8, u8, u8)>);
 /// How an overlaid glyph treats the frame behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backdrop {
-    /// Write the ink and nothing else, leaving the cell's background exactly
-    /// as it was composed. For instrument readouts, which are marks on the
-    /// canopy rather than a plate bolted over it.
+    /// Write the ink and nothing else, leaving the cell's background exactly as
+    /// it was composed. For instrument readouts, which are marks on the canopy
+    /// rather than a plate bolted over it.
     Glass,
     /// Like [`Backdrop::Glass`], except that the ink may only ever add light:
-    /// the glyph comes out as the brighter of itself and the pixel it
-    /// replaces. For a mark that belongs in the scene, where writing a dim
-    /// colour over a bright pixel reads as a hole rather than as an
-    /// instrument.
+    /// the glyph comes out as the brighter of itself and the pixel it replaces.
+    /// For a mark that belongs in the scene, where writing a dim colour over a
+    /// bright pixel reads as a hole rather than as an instrument.
     Lighten,
-    /// Cover what is behind it outright, spaces included. For a dialogue,
-    /// which is in front of the scene rather than painted on the glass — and
-    /// which has to stay readable over whatever the sky happens to be doing.
+    /// Cover what is behind it outright, spaces included. For a dialogue, which
+    /// is in front of the scene rather than painted on the glass — and which
+    /// has to stay readable over whatever the sky happens to be doing.
     Panel,
 }
 
@@ -101,13 +82,6 @@ impl Cell {
 }
 
 /// Where a frame's bytes go, and how they are spelled.
-///
-/// Spelling them by hand is worth the code: a frame is tens of thousands of
-/// escape sequences and crossterm writes each one through `fmt::Display`,
-/// which came to more than everything the renderer does to produce them. The
-/// command path stays for the one terminal whose commands are not sequences at
-/// all — a Windows console without virtual terminal processing, where they are
-/// WinAPI calls that no amount of bytes can stand in for.
 enum Sink<'a, W: Write> {
     Ansi(&'a mut Vec<u8>),
     Commands(&'a mut W),
@@ -136,11 +110,6 @@ impl<W: Write> Sink<'_, W> {
     /// rather than carried on the cell because the cell's colour is still being
     /// blended with after `compose` — and because this runs once per colour
     /// change, where `compose` runs twice per cell.
-    ///
-    /// A dialogue is the reason the snapping cannot simply be assumed: it dims
-    /// what is behind it by a fraction, which lands between palette entries, so
-    /// what reaches here is an ordinary colour and wants the nearest entry to
-    /// it rather than a lookup that trusts it is already one.
     fn set_color(
         &mut self,
         color: Option<(u8, u8, u8)>,
@@ -157,11 +126,7 @@ impl<W: Write> Sink<'_, W> {
                     }
                     Some((r, g, b)) => {
                         // Spelled into one stack sequence and handed over in a
-                        // single copy. The seven `push`es this replaced each
-                        // took the buffer's capacity check with them, and a
-                        // truecolor cell that changes colour spells two of
-                        // these — which came to a twentieth of every
-                        // instruction the program retired.
+                        // single copy.
                         let mut seq = [0u8; RGB_SEQUENCE_MAX];
                         let prefix = ground.rgb_prefix();
                         seq[..prefix.len()].copy_from_slice(prefix);
@@ -415,9 +380,9 @@ impl Screen {
         }
     }
 
-    /// Stamp instrument text over the composed frame without disturbing it:
-    /// the glyph is the only thing written, so the field goes on showing
-    /// through the panel. Anything off the edge is dropped.
+    /// Stamp instrument text over the composed frame without disturbing it: the
+    /// glyph is the only thing written, so the field goes on showing through
+    /// the panel. Anything off the edge is dropped.
     pub fn overlay(&mut self, col: usize, row: usize, text: &str, fg: (u8, u8, u8)) {
         self.stamp(col, row, text, fg, Backdrop::Glass);
     }
@@ -451,8 +416,7 @@ impl Screen {
             // A space carries no ink, so there is nothing to write and no
             // reason to spend the cell's upper pixel on it: the gaps between
             // the words keep both halves of the frame, where every other cell
-            // of the panel keeps only the lower one. Except under a dialogue,
-            // where a space is part of the box.
+            // of the panel keeps only the lower one.
             if ch == ' ' && how != Backdrop::Panel {
                 continue;
             }
@@ -462,17 +426,7 @@ impl Screen {
             match how {
                 Backdrop::Glass => {
                     // The ink and nothing else: whatever `compose` put behind
-                    // the glyph stays exactly as it drew it. The panel used to
-                    // take that pixel down to a quarter first, which bought
-                    // legibility when a streak was blazing directly behind a
-                    // readout and paid for it with a dark box fenced around
-                    // every word — and against a sky that is mostly black, a
-                    // box that was mostly a black one. Left alone, the text
-                    // reads light against the dark and as a silhouette against
-                    // the bright, and the field runs on underneath it unbroken.
-                    //
-                    // It also makes a stamp idempotent, which the shadow was
-                    // not: two overlays landing on one cell dimmed it twice.
+                    // the glyph stays exactly as it drew it.
                     cell.fg = mark;
                 }
                 Backdrop::Panel => {
@@ -486,12 +440,7 @@ impl Screen {
                     };
                     cell.bg = cell.bg.map(dim);
                     if ch == ' ' {
-                        // A gap in the box is backdrop and nothing else. In
-                        // colour the half block stays, so the sky is still
-                        // faintly there behind the dialogue rather than a hole
-                        // being cut in the frame. With no colour to take down
-                        // there is nothing to dim, so it has to be cleared
-                        // instead or the brightness ramp shows through the box.
+                        // A gap in the box is backdrop and nothing else.
                         cell.ch = if mark.is_some() { under } else { ' ' };
                         cell.fg = cell.fg.map(dim);
                     } else {
@@ -501,9 +450,6 @@ impl Screen {
                 Backdrop::Lighten => {
                     // `compose` already ran, so the cell's own colours *are*
                     // the two pixels underneath: fg the top, bg the bottom.
-                    // Taking the brighter of the two per channel means the
-                    // mark only ever adds light, and the background is left
-                    // exactly as the starfield drew it.
                     cell.fg = match (cell.fg, mark) {
                         (Some(under), Some(m)) => Some(lighten(under, m, mode)),
                         // Ascii mode carries no colour to blend.
@@ -521,8 +467,8 @@ impl Screen {
             return Ok(());
         }
         if self.ansi {
-            // The scratch buffer is taken out and put back so that building
-            // the frame can borrow the two grids at the same time.
+            // The scratch buffer is taken out and put back so that building the
+            // frame can borrow the two grids at the same time.
             let mut buf = std::mem::take(&mut self.scratch);
             buf.clear();
             let built = self.diff(Sink::<Vec<u8>>::Ansi(&mut buf));
@@ -595,11 +541,6 @@ impl Screen {
 
     /// Render the frame as plain text plus ANSI colour, for piping somewhere
     /// that is not an interactive terminal.
-    ///
-    /// Colours are re-sent only when they change, the same way `flush` does it:
-    /// a cell carries about 40 bytes of escape codes, and a starfield is mostly
-    /// long runs of black. Each row still ends on a reset, so a row is
-    /// self-contained and never inherits state from the one above it.
     pub fn write_plain(&mut self, out: &mut impl Write) -> io::Result<()> {
         let mut buf = std::mem::take(&mut self.scratch);
         buf.clear();
@@ -639,10 +580,10 @@ impl Screen {
 }
 
 /// The same choice [`Sink::set_color`]'s fast path makes, in the vocabulary the
-/// slow one speaks. `AnsiValue` is crossterm's `38;5;N`, `Rgb` its `38;2;r;g;b`,
-/// so the two backends put the same bytes on the wire for the same cell — which
-/// is the only reason a terminal that takes the command path is looking at the
-/// picture this program was tested drawing.
+/// slow one speaks. `AnsiValue` is crossterm's `38;5;N`, `Rgb` its
+/// `38;2;r;g;b`, so the two backends put the same bytes on the wire for the
+/// same cell — which is the only reason a terminal that takes the command path
+/// is looking at the picture this program was tested drawing.
 fn to_color(rgb: Option<(u8, u8, u8)>, mode: ColorMode) -> Color {
     match rgb {
         None => Color::Reset,
@@ -651,14 +592,9 @@ fn to_color(rgb: Option<(u8, u8, u8)>, mode: ColorMode) -> Color {
     }
 }
 
-/// Cut a line to `max` *characters*, which is what a cell holds. Counting
-/// bytes would slice a box rule or a degree sign in half and put the tail of
-/// it on the wire.
-///
-/// Here rather than in the panel or the picker because both draw text into a
-/// grid and both had a copy — the picker's this one, the panel's the same
-/// thing behind a `chars().count()` guard that bought nothing, since taking
-/// `max` characters from a shorter string already yields all of it.
+/// Cut a line to `max` *characters*, which is what a cell holds. Counting bytes
+/// would slice a box rule or a degree sign in half and put the tail of it on
+/// the wire.
 pub(crate) fn truncate(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
@@ -673,7 +609,7 @@ fn lighten(under: (u8, u8, u8), mark: (u8, u8, u8), mode: ColorMode) -> (u8, u8,
     match mode {
         // A per-channel max of two palette entries need not itself be one: the
         // 24-step grey ramp and the 6×6×6 cube share no values, so mixing them
-        // can land between both. Snap the result back onto the palette.
+        // can land between both.
         ColorMode::Ansi256 => quantize_256([lit.0, lit.1, lit.2]),
         _ => lit,
     }
@@ -686,8 +622,8 @@ fn luma(rgb: [u8; 3]) -> f32 {
 /// The six levels of the xterm-256 colour cube.
 const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
 
-/// The distance between a cube level and a value, without a signed detour.
-/// A free function rather than a closure because the table below is built in a
+/// The distance between a cube level and a value, without a signed detour. A
+/// free function rather than a closure because the table below is built in a
 /// `const` context, where a closure cannot be called.
 const fn gap(level: u8, value: usize) -> u8 {
     if level as usize > value {
@@ -698,28 +634,6 @@ const fn gap(level: u8, value: usize) -> u8 {
 }
 
 /// For every 8-bit value, which of the cube's six levels is nearest it.
-///
-/// The level's *step* rather than the level itself, because the palette entry
-/// number is built out of the three steps — `16 + 36r + 6g + b` — and that
-/// number is what goes on the wire. The level is one lookup further on through
-/// [`CUBE`], for the callers that want the colour back.
-///
-/// This replaces a linear scan over six entries that depended on a single byte,
-/// run twice per cell per frame. Composing a frame at 300x90 cost 2.35 ms in
-/// this mode against 1.10 ms in truecolor, and the scan was most of the
-/// difference — about 7% of a 60 fps budget. Built at compile time, so it costs
-/// nothing at startup either.
-///
-/// That measurement used to be sold on how many terminals fell into this mode,
-/// which was the whole of the argument while `--color` defaulted to detecting
-/// one. Nothing falls into it now; it is asked for by name. The table stays
-/// because the measurement stands on its own — a mode somebody chose
-/// deliberately is a mode they want drawn at frame rate — and because the scan
-/// it replaced was the last `unwrap` anywhere in the tree.
-///
-/// Ties break downward, the way `min_by_key` broke them by keeping the first
-/// minimum. 115, 155, 195 and 235 all sit exactly between two levels, and a
-/// test pins every value against the scan this stands in for.
 const NEAREST_CUBE_STEP: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut value = 0usize;
@@ -750,17 +664,6 @@ const CUBE_BASE: u8 = 16;
 const GREY_BASE: u8 = 232;
 
 /// Which xterm-256 palette entry is nearest a colour.
-///
-/// The entry's number, because that is what goes on the wire: `38;5;N` is the
-/// sequence a terminal that cannot read 24-bit colour understands, and that
-/// terminal is the whole reason this mode exists. It used to hand back the
-/// RGB instead and the writer sent it as `38;2;r;g;b` — palette *values* in a
-/// 24-bit sequence, on the argument that a 256-colour terminal would then
-/// render them exactly. It only would if it could read the sequence at all,
-/// and one that can had no need of the snapping.
-///
-/// [`quantize_256`] is this composed with [`palette_rgb`], for the places that
-/// need the colour back because they go on blending with it.
 fn palette_256(rgb: [u8; 3]) -> u8 {
     let step = [
         NEAREST_CUBE_STEP[rgb[0] as usize],
@@ -773,16 +676,8 @@ fn palette_256(rgb: [u8; 3]) -> u8 {
         CUBE[step[2] as usize],
     ];
 
-    // The 24-step grey ramp is finer than the cube's grey diagonal, so
-    // near-grey colours come out visibly better for letting it compete.
-    //
-    // Which step, in integers. This was a float divide, a `round` and a
-    // `clamp` — a round trip through the FPU for what is a table lookup's worth
-    // of arithmetic, taken twice per cell per frame. The `+ 5` is the rounding
-    // the `round` was doing; below 8 both forms floor to zero, so the
-    // saturating subtraction loses nothing. Worth about 0.4 ms a frame at
-    // 300x90, and a test walks all 256 inputs against the form it replaced —
-    // this decides an output colour, so "equivalent" has to mean equal.
+    // The 24-step grey ramp is finer than the cube's grey diagonal, so near-
+    // grey colours come out visibly better for letting it compete.
     let avg = (rgb[0] as u32 + rgb[1] as u32 + rgb[2] as u32) / 3;
     let grey_step = ((avg.saturating_sub(8) + 5) / 10).min(23);
     let grey = (8 + grey_step * 10) as u8;
@@ -832,15 +727,6 @@ fn quantize_256(rgb: [u8; 3]) -> (u8, u8, u8) {
 /// Ask the terminal to report mouse *buttons* — which is where the wheel
 /// arrives — and to report them in SGR, which is the encoding that survives a
 /// window wider than 223 columns.
-///
-/// Written out rather than taken from crossterm's `EnableMouseCapture`, which
-/// is a blanket that also turns on `?1002h` and `?1003h`: drag reporting, and
-/// then reporting of *every* pointer movement over the window. Nothing in this
-/// program is aimed at, so those two buy nothing and cost a stream of events on
-/// every twitch of a mouse — arriving into the one loop that deliberately
-/// spends its slack blocking on the queue rather than sleeping through it,
-/// which is the last place worth handing a torrent of nothing to read. Asking
-/// for less is the whole of the difference.
 #[cfg(not(windows))]
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 /// And giving it back. A superset of what [`MOUSE_ON`] asks for, deliberately:
@@ -849,23 +735,6 @@ const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /// Take the pointer, or give it back.
-///
-/// Two spellings, and the split is the same one
-/// `the_escapes_written_by_hand_are_the_ones_crossterm_writes` exists for. A
-/// Windows console without virtual terminal processing cannot read an escape
-/// sequence at all — crossterm's own commands fall back to the console API
-/// there — so the hand-written pair above, which is every other command in this
-/// module's business to avoid, would arrive as visible rubbish and leave the
-/// mouse switched off. Off Windows they are exactly right and are kept: they
-/// ask for less than crossterm's command does, which is the whole reason they
-/// were written out.
-///
-/// What Windows gives up for that is the narrowness. `EnableMouseCapture` turns
-/// on button-event and any-motion reporting as well, so a pointer crossing the
-/// window is a stream of events into the drain loop. That is the cheaper of the
-/// two mistakes: the events are read and dropped by `handle_mouse` in a loop
-/// that already coalesces a burst into one frame, where the alternative is a
-/// console that cannot use the wheel and has rubbish printed at it.
 fn set_mouse(out: &mut impl Write, on: bool) -> io::Result<()> {
     #[cfg(windows)]
     {
@@ -882,26 +751,13 @@ fn set_mouse(out: &mut impl Write, on: bool) -> io::Result<()> {
     }
 }
 
-/// Set when a signal has asked this process to stop, so the flight can leave
-/// by the ordinary door and let [`RawGuard`] put the terminal back on the way.
-///
-/// An `Arc` rather than a plain static because that is what `signal_hook::flag`
-/// takes, and taking its safe API is the whole point: the handler it installs
-/// stores `true` and does nothing else. Restoring the terminal from inside the
-/// handler is the obvious move and the wrong one — [`restore`] writes to
-/// `io::stdout`, which takes a lock, and a signal landing while the frame being
-/// flushed holds that lock would deadlock the process in the one place it must
-/// not. A store is a single instruction and safe to make in a handler, and the
-/// loop is never more than a frame's budget away from reading it.
+/// Set when a signal has asked this process to stop, so the flight can leave by
+/// the ordinary door and let [`RawGuard`] put the terminal back on the way.
 #[cfg(unix)]
 static INTERRUPTED: std::sync::OnceLock<std::sync::Arc<AtomicBool>> = std::sync::OnceLock::new();
 
 /// Whether a signal has asked this process to stop since the last [`RawGuard`]
 /// was taken out.
-///
-/// Always false where there are no signals to catch. A Windows console sends
-/// its own kind of close event and nothing here listens for one, so the
-/// terminal is still lost there if the window goes rather than the program.
 pub fn interrupted() -> bool {
     #[cfg(unix)]
     {
@@ -917,25 +773,14 @@ pub fn interrupted() -> bool {
 
 /// Ask to be told about the signals that would otherwise take the process down
 /// without running anything, and start the flight with the flag clear.
-///
-/// `SIGTERM` and `SIGHUP`, and no others. `SIGINT` is deliberately not among
-/// them: raw mode turns off the terminal's own signal generation, so `Ctrl-C`
-/// arrives as a key event and `handle_key` already answers it — catching the
-/// signal as well would put two doors on one control and the two would not
-/// agree about the picker, which owns the keyboard while it is up. The pair
-/// here have no key to arrive as. They are a plain `kill`, a `tmux
-/// kill-session`, and the window a flight is running in going away, which is
-/// the screensaver case the README recommends.
-///
-/// Registration failing is not worth refusing to fly over: what is lost is a
-/// tidy exit on a signal, which is what the program had before this existed.
-/// Installed once per process rather than once per guard, because a second
-/// registration would stack a second handler on the same two signals.
 fn catch_signals() {
     #[cfg(unix)]
     {
         let flag = INTERRUPTED.get_or_init(|| std::sync::Arc::new(AtomicBool::new(false)));
         flag.store(false, Ordering::Relaxed);
+        // The handler sets the flag and does nothing else, and nothing may be
+        // added to it: `restore` locks stdout, so a signal landing while a frame
+        // holds that lock would deadlock the process.
         static INSTALLED: std::sync::Once = std::sync::Once::new();
         INSTALLED.call_once(|| {
             for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
@@ -955,19 +800,12 @@ impl RawGuard {
     /// not be taking the pointer off the user for the duration.
     pub fn new(mouse: bool) -> io::Result<Self> {
         terminal::enable_raw_mode()?;
-        // Own the undoing before anything else can fail. Constructing the guard
-        // last meant a `?` on any of the lines below returned with raw mode
-        // still on and nothing left to switch it off.
+        // Own the undoing before anything else can fail.
         let guard = Self;
 
         let mut out = io::stdout();
         out.queue(terminal::EnterAlternateScreen)?;
-        // No autowrap. The grid is painted with explicit cursor moves and never
-        // relies on it, and leaving it on means a terminal that shrinks between
-        // the width last measured and the next flush shears the frame
-        // diagonally instead of harmlessly clipping. It also keeps the
-        // bottom-right cell — which every full repaint writes — from scrolling
-        // the alternate screen.
+        // No autowrap.
         out.queue(terminal::DisableLineWrap)?;
         out.queue(cursor::Hide)?;
         if mouse {
@@ -983,12 +821,7 @@ impl RawGuard {
             previous(info);
         }));
 
-        // The other way out that runs nothing on the way. Beside the panic
-        // hook because it answers the same question — what undoes the two lines
-        // above when the flight does not get to its own end — and after it
-        // because the hook is the one that has to be in place first: a panic
-        // here would otherwise leave the terminal exactly as this exists to
-        // stop.
+        // The other way out that runs nothing on the way.
         catch_signals();
 
         Ok(guard)
@@ -1002,14 +835,6 @@ impl Drop for RawGuard {
 }
 
 /// Undo everything `RawGuard::new` did. Safe to call more than once.
-///
-/// Unconditional throughout, mouse included, and that is not an oversight: this
-/// is what the panic hook calls, and a panic hook has no way of knowing which
-/// modes were asked for. So it gives back every mouse mode rather than the two
-/// that may have been taken — turning off a mode that was never on is nothing,
-/// where leaving one on is a terminal that goes on reporting clicks at whatever
-/// runs next. It already resets colours it may never have set on the same
-/// reasoning.
 pub fn restore() {
     let mut out = io::stdout();
     let _ = set_mouse(&mut out, false);
@@ -1031,22 +856,6 @@ mod tests {
     }
 
     /// Just enough terminal to read back what [`Screen::flush`] paints.
-    ///
-    /// Spelled out here rather than taken as a dependency, which is the move
-    /// `tests/golden.rs` makes for SHA-256 and for the same reason: this
-    /// understands the four things this program emits and nothing else, so it
-    /// is thirty lines rather than a crate, and a stream that contained
-    /// anything else would fail to parse rather than be quietly tolerated.
-    ///
-    /// It exists because there are two writers and only one of them was ever
-    /// checked. Every byte-exact guard in the tree — the ten reference
-    /// flights, the `sha256sum -c` job, `tests/flight.rs` — goes through
-    /// `write_plain`, which emits every cell and resets colour at the end of
-    /// each row. `flush` emits only the cells that changed, carries colour
-    /// across row boundaries, and tracks the cursor on the assumption that
-    /// autowrap is off. Nothing anywhere interpreted a byte of it.
-    /// A glyph and the two colours it was written in, as the terminal would be
-    /// showing them. `None` for a colour is the terminal's own default.
     type VtCell = (char, Option<(u8, u8, u8)>, Option<(u8, u8, u8)>);
 
     struct Vt {
@@ -1158,29 +967,7 @@ mod tests {
 
     #[test]
     fn the_frame_the_terminal_ends_up_showing_is_the_frame_that_was_drawn() {
-        // The interactive writer had nothing checking it. `write_plain` is
-        // pinned to the byte by ten reference flights and two CI jobs; `flush`
-        // is a different body — only the changed cells, colour carried across
-        // rows, and a cursor tracked on the assumption autowrap is off — and
-        // nothing anywhere read a byte of what it emits. A wrong column, a
-        // dropped cell after a colour run, or a `front` update in the wrong
-        // place would leave the whole suite green and repaint every real
-        // terminal wrong.
-        //
-        // Frames on purpose rather than one: the whole point of `flush` is that
-        // frame N+1 is a difference against frame N, so a single frame would
-        // test the one case where the difference is everything.
-        //
-        // What it reaches, measured by mutating the writer rather than assumed.
-        // It fails on a transposed `move_to`, on the move being dropped, on
-        // `front` not being updated, and on a colour not being sent. It does
-        // *not* fail if `cursor_at` is left one column short — that makes the
-        // writer emit a move before every cell, which is a fatter stream and
-        // the identical picture, and a picture is what this reads. The size of
-        // the stream is `only_changed_cells_are_written`'s business, and the
-        // one thing autowrap being off really buys — that writing the
-        // bottom-right cell does not scroll the alternate screen — is caught
-        // here only as the `put` assertion refusing a glyph outside the grid.
+        // The interactive writer had nothing checking it.
         for mode in [ColorMode::Truecolor, ColorMode::Ansi256, ColorMode::Ascii] {
             let (cols, rows) = (24usize, 6usize);
             let mut screen = Screen::new(cols, rows, mode);
@@ -1208,8 +995,6 @@ mod tests {
                 if frame % 3 == 0 {
                     screen.overlay(2, frame % rows, "NAV 9.78", (96, 176, 208));
                 }
-                // And a change in the last column of a row, which is the case
-                // the autowrap-off cursor bookkeeping rests on.
                 screen.overlay(cols - 1, frame % rows, "|", (255, 186, 92));
 
                 wire.clear();
@@ -1237,8 +1022,6 @@ mod tests {
                 "a forced redraw in {mode:?} did not repaint the whole frame"
             );
 
-            // And a resize, after which the front buffer describes a grid that
-            // no longer exists.
             let (wide, tall) = (cols + 5, rows + 2);
             screen.resize(wide, tall);
             screen.compose(&pixels(wide, tall, [30, 40, 50]));
@@ -1261,10 +1044,9 @@ mod tests {
     #[test]
     fn a_signal_asks_the_flight_to_stop_instead_of_killing_it() {
         // Regression, and the sharpest form the test can take: without the
-        // registration `SIGTERM` has its default disposition, so the line
-        // below does not fail this assertion — it takes the whole test binary
-        // down with it, which is the thing being fixed said back. A flight is
-        // no different, except that it takes the terminal with it.
+        // registration `SIGTERM` has its default disposition, so the line below
+        // does not fail this assertion — it takes the whole test binary down
+        // with it, which is the thing being fixed said back.
         catch_signals();
         assert!(!interrupted(), "nothing has been signalled yet");
 
@@ -1275,8 +1057,7 @@ mod tests {
         assert!(status.success(), "kill refused to signal this process");
 
         // Delivery is asynchronous, so the flag is not up the instant `kill`
-        // returns. A second is several orders of magnitude more than a signal
-        // takes and still not long enough to hang a suite on.
+        // returns.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         while !interrupted() && std::time::Instant::now() < deadline {
             std::thread::yield_now();
@@ -1314,8 +1095,7 @@ mod tests {
     #[test]
     fn the_escapes_written_by_hand_are_the_ones_crossterm_writes() {
         // The fast path spells its own sequences rather than formatting
-        // crossterm's, which is most of why it is fast. It is only allowed to
-        // do that while the two agree to the byte.
+        // crossterm's, which is most of why it is fast.
         for (col, row) in [(0, 0), (7, 3), (79, 23), (199, 59), (1234, 999)] {
             assert_eq!(
                 sink_ansi(|s| s.move_to(col, row).unwrap()),
@@ -1418,10 +1198,7 @@ mod tests {
     fn a_readout_writes_ink_and_leaves_the_sky_alone() {
         // The panel is glass rather than a plate bolted to it: a cell's
         // background is the lower subpixel of the frame, and a readout has no
-        // business moving it in either direction. It used to arrive at a
-        // quarter brightness, which fenced every word in a dark box. The whole
-        // range is walked because a divide by four is invisible at the dark
-        // end of it and unmissable at the bright one.
+        // business moving it in either direction.
         for level in [0u8, 1, 3, 17, 128, 200, 255] {
             let mut screen = Screen::new(8, 2, ColorMode::Truecolor);
             screen.compose(&pixels(8, 2, [level, level, level]));
@@ -1438,9 +1215,8 @@ mod tests {
 
     #[test]
     fn stamping_a_readout_twice_lands_where_stamping_it_once_did() {
-        // The shadow was applied per stamp, so two readouts meeting on one
-        // cell dimmed it twice and left a darker notch where they overlapped.
-        // Transparent, a stamp has nothing to accumulate.
+        // The shadow was applied per stamp, so two readouts meeting on one cell
+        // dimmed it twice and left a darker notch where they overlapped.
         let lit = [180u8, 195, 220];
         let mut once = Screen::new(8, 2, ColorMode::Truecolor);
         once.compose(&pixels(8, 2, lit));
@@ -1490,8 +1266,7 @@ mod tests {
     #[test]
     fn a_panel_covers_the_gaps_a_readout_lets_through() {
         // An instrument skips its spaces so the starfield glows between the
-        // words. A dialogue must not: the gaps in a box are part of the box,
-        // and a picker with stars shining through it reads as a fault.
+        // words.
         let lit = [240u8, 245, 255];
         let mut screen = Screen::new(12, 2, ColorMode::Truecolor);
         screen.compose(&pixels(12, 2, lit));
@@ -1508,7 +1283,6 @@ mod tests {
             fg.0 < 80 && bg.0 < 80,
             "the sky showed through: {fg:?} {bg:?}"
         );
-        // And what it wrote is still legible in its own ink.
         assert_eq!(screen.cell_colors(0, 1).0, Some((200, 100, 50)));
         assert_eq!(screen.back[screen.cols].ch, 'A');
     }
@@ -1516,8 +1290,8 @@ mod tests {
     #[test]
     fn a_panel_in_ascii_mode_clears_what_it_covers() {
         // With no colour there is nothing to take down, so a gap has to be
-        // blanked instead — otherwise the brightness ramp goes on drawing
-        // stars inside the box.
+        // blanked instead — otherwise the brightness ramp goes on drawing stars
+        // inside the box.
         let mut screen = Screen::new(8, 1, ColorMode::Ascii);
         screen.compose(&pixels(8, 1, [255, 255, 255]));
         assert_ne!(screen.row_text(0).trim(), "", "the sky should be drawn");
@@ -1604,8 +1378,7 @@ mod tests {
     fn the_cube_table_is_exactly_the_search_it_replaces() {
         // The table stands in for a scan over six levels, and `min_by_key` kept
         // the *first* minimum — so a value sitting exactly between two levels
-        // has to keep the lower one. Breaking that the other way would move
-        // every colour on a boundary, which is a whole band of the sky.
+        // has to keep the lower one.
         for value in 0..=255u8 {
             let scanned = CUBE
                 .iter()
@@ -1628,12 +1401,8 @@ mod tests {
 
     #[test]
     fn the_grey_step_is_exactly_the_float_form_it_replaces() {
-        // The integer form stands in for
-        //
-        //     ((avg as i32 - 8) as f32 / 10.0).round().clamp(0.0, 23.0) as i32
-        //
-        // and it picks an output colour, so agreeing closely is not enough. The
-        // input is a mean of three bytes, so there are only 256 of them and the
+        // The integer form picks an output colour, so agreeing closely with the
+        // float one is not enough. The input is a mean of three bytes, so the
         // check can simply be exhaustive.
         for avg in 0..256u32 {
             let float = ((avg as i32 - 8) as f32 / 10.0).round().clamp(0.0, 23.0) as u32;
@@ -1664,7 +1433,7 @@ mod tests {
                             .max((q.2 as i32 - b as i32).abs()),
                     );
                     // The palette's widest gap is 0..95, so the worst honest
-                    // per-channel error is 48. Anything past that is a bug.
+                    // per-channel error is 48.
                     assert!(err <= 48, "quantizing {r},{g},{b} drifted to {q:?}");
                 }
             }
@@ -1676,12 +1445,8 @@ mod tests {
 
     #[test]
     fn splitting_the_quantizer_in_two_moved_no_colour() {
-        // `quantize_256` used to choose between two RGB triples and hand back
-        // the winner. It now chooses between two palette *entries* and looks
-        // the winner's colour up, because the entry number is what the writer
-        // needs. This decides what a cell is painted, so equivalent has to mean
-        // equal — the body it replaced is kept here as its oracle, the way the
-        // hull rasteriser's is in `canvas.rs`.
+        // `was` is the spelling this replaced, kept as the oracle: choose between
+        // two RGB triples and hand back the winner.
         fn was(rgb: [u8; 3]) -> (u8, u8, u8) {
             let nearest = |v: u8| {
                 CUBE.iter()
@@ -1713,8 +1478,6 @@ mod tests {
                 }
             }
         }
-        // And every grey exhaustively: the diagonal is where the cube and the
-        // 24-step ramp compete, so it is where a changed tie-break would show.
         for v in 0..=255u8 {
             assert_eq!(quantize_256([v, v, v]), was([v, v, v]), "at grey {v}");
         }
@@ -1734,10 +1497,7 @@ mod tests {
                 "entry {index} is {r},{g},{b}, which snaps somewhere else"
             );
         }
-        // Nothing may choose one of the sixteen system colours. They are
-        // whatever the user's theme says they are, so a renderer that reached
-        // for one would be drawing a colour it cannot know the value of — and
-        // `palette_rgb` has no answer for them either.
+        // Nothing may choose one of the sixteen system colours.
         for r in (0..=255u8).step_by(7) {
             for g in (0..=255u8).step_by(11) {
                 for b in (0..=255u8).step_by(13) {
@@ -1753,9 +1513,6 @@ mod tests {
         // Regression: the mode snapped every colour to the palette and then
         // wrote the result as `38;2;r;g;b`, so the one terminal it exists for —
         // the one that cannot read a 24-bit sequence — was sent nothing but.
-        // The spelling matters more since detection went, not less: this mode
-        // is now reached only by asking for it, so the terminal on the other
-        // end of it is one that has already been told 24-bit will not do.
         let mut screen = Screen::new(8, 2, ColorMode::Ansi256);
         screen.compose(&pixels(8, 2, [90, 140, 200]));
         let mut out = Vec::new();
@@ -1813,8 +1570,7 @@ mod tests {
     fn ascii_mode_puts_no_escape_sequences_on_the_wire() {
         // Regression: every row of plain output opened and closed with
         // `\x1b[39m\x1b[49m` — four SGR sequences a row — in the one mode that
-        // exists because the terminal cannot be sent colour. On a `TERM=dumb`
-        // terminal those arrive as visible garbage.
+        // exists because the terminal cannot be sent colour.
         let mut screen = Screen::new(12, 3, ColorMode::Ascii);
         let mut px = pixels(12, 3, [0, 0, 0]);
         px[5] = [255, 255, 255]; // something for the ramp to bite on
@@ -1852,8 +1608,8 @@ mod tests {
 
     #[test]
     fn colour_modes_that_have_colour_still_send_it() {
-        // The guard above is on the mode, not on the cell, so the modes that
-        // do carry colour must be untouched by it.
+        // The guard above is on the mode, not on the cell, so the modes that do
+        // carry colour must be untouched by it.
         for mode in [ColorMode::Truecolor, ColorMode::Ansi256] {
             let mut screen = Screen::new(8, 2, mode);
             screen.compose(&pixels(8, 2, [10, 20, 30]));
@@ -1890,9 +1646,9 @@ mod tests {
 
     #[test]
     fn every_plain_row_stands_on_its_own() {
-        // Rows reset at the end, so the run-length state must not carry over:
-        // a row that opens with the colour the previous one ended on still has
-        // to say so, or it inherits the reset instead.
+        // Rows reset at the end, so the run-length state must not carry over: a
+        // row that opens with the colour the previous one ended on still has to
+        // say so, or it inherits the reset instead.
         let mut screen = Screen::new(2, 2, ColorMode::Truecolor);
         let mut px = pixels(2, 2, [7, 8, 9]);
         px[0] = [1, 2, 3]; // only the very first subpixel differs

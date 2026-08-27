@@ -1,15 +1,4 @@
 //! The reference frames, checked from `cargo test`.
-//!
-//! `tests/golden/frames.sha256` pins the bytes `--headless` produces, which is
-//! the only thing in the tree with an opinion about whether a change to the
-//! renderer changed more than it meant to. It used to be read by nothing but a
-//! CI job running `sha256sum` against a release binary, so the answer arrived
-//! minutes after a push and a green `cargo test` was no evidence at all. This
-//! reproduces the same bytes in process, against the same committed file.
-//!
-//! Linux only, for the reason written at the top of that file: `sin`, `cos`,
-//! `exp` and `powf` come from the system maths library, and recycling the star
-//! pool turns a one-ulp difference into a different sky.
 #![cfg(target_os = "linux")]
 
 use clap::Parser;
@@ -17,12 +6,6 @@ use warp_rs::app;
 use warp_rs::cli::Args;
 
 /// SHA-256, spelled out.
-///
-/// Written here rather than pulled in. The crate has four dependencies and a
-/// standing rule against a fifth without saying why the tree cannot do the job
-/// itself, and this is a page of shifts and adds with a published
-/// specification — which `the_digest_agrees_with_the_published_answers` checks
-/// against the two canonical vectors before anything else trusts a word of it.
 mod sha256 {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -51,9 +34,7 @@ mod sha256 {
             compress(&mut h, block);
         }
 
-        // The tail, plus the terminator and the bit count. Two blocks are
-        // always enough: the length needs nine bytes of room, so it either
-        // fits behind the remainder or spills into one more block.
+        // The tail, plus the terminator and the bit count.
         let rest = &data[whole * 64..];
         let mut tail = [0u8; 128];
         tail[..rest.len()].copy_from_slice(rest);
@@ -123,105 +104,6 @@ const COMMON: [&str; 7] = [
 ];
 
 /// The reference flights, by the file each one is recorded under.
-///
-/// The last three are here because the first two turned out to cover very
-/// little.
-/// `--demo` spends its opening six seconds easing the throttle up and 120
-/// frames at 60 fps is two of them, so the pinned sky was sublight throughout,
-/// peaking at a quarter of light speed with the drive cold — leaving the streak
-/// ramp, the glare, the flash, the Doppler shift and the whole view from
-/// outside unpinned. A change to any of those could repaint the sky unremarked.
-///
-/// `ansi256.txt` is the same flight as `truecolor.txt` in the other colour
-/// mode, which is the sharpest form that comparison takes: the two differ in
-/// how a cell's colour is spelled and in nothing else, so a change that moves
-/// one and not the other has landed in the writer rather than in the sky. It
-/// arrived because the mode had no reference at all, back when it was the one
-/// most terminals were handed by detection; it matters more now that detection
-/// is gone and nothing is handed it. Reachable only by name means reachable
-/// only by someone who needed it, and it means this file is the only thing
-/// watching `quantize_256` and the palette-index path under it — every other
-/// flight here is truecolor or ascii and would not notice them repainted.
-///
-/// `astern.txt` arrived the way `ansi256.txt` did — with the fix for a fault
-/// the others could not see. Every one of them puts the camera abeam or forward
-/// of it, and the point the *ship's own track* vanishes at is on the screen only
-/// from behind: half the range of a control that goes all the way round, and the
-/// only half where a trail can be stretched past somewhere it will never reach.
-/// Recorded at `--orbit -75,6,20`, which has all three angles off zero and puts
-/// that point on the canvas clear of the ship — the same two conditions
-/// `models::forward_quarter()` picks its angles for, and for the same reason.
-///
-/// `steer.txt` went in to close the widest hole any of them had left — not one
-/// of the seven before it ever put a hand on the stick — and that hole is open
-/// again, because the autopilot flies straight now and nothing else here can
-/// steer. The name has outlived what it named; what the flight still buys is
-/// *length*. It is `--demo` at `--fps 10`, which in headless *is* the timestep,
-/// so the same 120 frames are twelve seconds of flight rather than two — long
-/// enough for the drive to light at frame 60 and spend six seconds spooling up,
-/// where the three 60 fps `--demo` runs never leave sublight at all. It is the
-/// `--demo` flight that reaches warp, which is the only reason a run-up from a
-/// cold drive is drawn anywhere in this file.
-///
-/// `drift.txt` is the same twelve seconds watched from outside, and it is the
-/// flight that says the autopilot flies the *camera* — which is now the only
-/// thing the autopilot flies that an eye can see move, so it carries more than
-/// it did. Not one of the eight flights before it could have said so: the
-/// `--engage` ones carry no autopilot, and the cockpit `--demo` ones read
-/// neither the orbit nor the zoom, so the camera could have been swung anywhere
-/// at all with every hash standing. It shares every flag with `steer.txt` but
-/// the view, which makes the pair one flight seen from inside and from outside:
-/// a change that moves both has landed in the autopilot, and one that moves
-/// only one has landed in a view.
-///
-/// It is parked at `--orbit -60,0,0` rather than left on the beam, for two
-/// reasons that are both about what a moving camera can ask and a parked one
-/// cannot. The autopilot's swing is *added* to where the flag put it, so a
-/// bubble that opened where `--orbit` asked and then flew off on its own would
-/// look identical to one that ignored the flag if the flag said zero. And
-/// starting aft of the beam means the camera **crosses** it, at frame 72, with
-/// the drive lit since frame 60 — so the ship's own vanishing point stops
-/// existing partway through, and the band the drive swaps sides over is
-/// traversed as a ramp rather than sat on one side of. `orbit.txt` sits at a
-/// fixed 55 degrees and `astern.txt` at a fixed -75; neither ever crosses.
-/// Elevation and roll are parked at exactly zero, so anything off level in
-/// these frames is the autopilot's own doing — and sharper than it used to be,
-/// since the ship holds its attitude to the bit, so anything off level is the
-/// *camera's* doing and nothing else's.
-///
-/// That angle is *derived from* `autopilot::CAMERA_TURN` rather than picked,
-/// and has to be re-derived whenever that moves: it is how far the camera walks
-/// in the seconds before the crossing should land, and the crossing has to land
-/// after the drive lights at frame 60 or the sentence above stops being true of
-/// anything. It was -20 while a turn took 137 seconds. At 43 that same angle
-/// would have crossed at frame 24, with the drive still cold.
-///
-/// `ahead.txt` is the newest, and the hole it closes is the subtlest so far,
-/// because on paper it was already covered. The exposure's tail is the star
-/// projected from where the ship *was*, `nose · reach` further along the track,
-/// and whether that runs away from the eye or straight at it is the sign of
-/// `Orbit::nose_in_camera`'s depth component — negative across the whole
-/// forward half of the azimuth. `orbit.txt` sits on that half. What it does not
-/// do is stay there long enough for the sign to matter: 120 frames at 60 fps is
-/// two seconds, in which the drive covers a few light years, and the nearest a
-/// star can be is four. So the near plane was never reached, the branch that
-/// deals with reaching it was never taken, and a bug that turned every star
-/// inside the exposure into a bright point instead of a streak — a fifth of the
-/// pool, and every one of the near stars that streak furthest — moved not one
-/// of the nine hashes.
-///
-/// It is `--engage --throttle 1.0` at `--fps 10`, so the same 120 frames are
-/// twelve seconds and the exposure settles at its full sixteen light years,
-/// and `--orbit 90,0,0` puts the nose straight down the barrel where the depth
-/// component is exactly -1 and the cut bites hardest. That the angle is the
-/// extreme rather than a corner is deliberate and is the one difference from
-/// how `astern.txt` was chosen: what wants pinning here is arithmetic that
-/// switches on with a *sign*, so the shot is taken where the sign is least
-/// ambiguous.
-///
-/// The same list appears at the top of `tests/golden/frames.sha256` and in the
-/// `headless` job of `.github/workflows/ci.yml`; adding a flight means adding
-/// it to all three, and to `.gitignore`.
 const CASES: [(&str, &[&str]); 10] = [
     ("truecolor.txt", &["--demo", "--color", "truecolor"]),
     ("ascii.txt", &["--demo", "--color", "ascii"]),
@@ -332,30 +214,6 @@ fn committed() -> Vec<(String, String)> {
 fn the_case_list_says_the_same_thing_in_all_four_places() {
     // `CASES` above, the comment block at the top of `frames.sha256`, the
     // `headless` job's shell in `.github/workflows/ci.yml`, and `.gitignore`.
-    // Two of the four were already held together — the hashes below check the
-    // names — and the other two were held by a note asking the next editor to
-    // remember. `.gitignore`'s own comment records that the note has been
-    // forgotten twice, each time leaving the documented regeneration recipe
-    // with an untracked file waiting to be swept into somebody's `git add .`.
-    //
-    // Asked of the *file names*, which is the part that has to agree; what each
-    // flight is for is prose and belongs to whoever writes it. Guarded on the
-    // files existing rather than assumed, because `exclude` in `Cargo.toml`
-    // keeps `.github/` out of the published crate and this test travels with
-    // the package.
-    // Matched against what each file *does* with a flight rather than against
-    // anywhere its name appears, which is the difference between a check and a
-    // formality: both files carry a prose block naming all ten, so a plain
-    // substring search finds a flight in the paragraph about it long after the
-    // line that acts on it has gone. Deleting `/drift.txt` from `.gitignore`
-    // passed that way.
-    //
-    // Note which way the reverse direction cuts, because it is wider than it
-    // looks and catches prose: any filename-shaped word in either file has to
-    // be one of the ten, so a *comment* in the workflow that names the
-    // reference frames' extension in passing fails this. That is the right
-    // trade — the alternative is a scan that a deletion can hide from — but it
-    // means a note about these files has to be written without spelling one.
     let root = env!("CARGO_MANIFEST_DIR");
     for (place, path, acts_on) in [
         (
@@ -401,7 +259,6 @@ fn the_digest_agrees_with_the_published_answers() {
     // The hasher above is only worth as much as this: a wrong constant in it
     // would fail every comparison below and read exactly like a renderer that
     // had drifted, which is the most misleading way this file could break.
-    // Both canonical vectors, and a message long enough to need a second block.
     assert_eq!(
         sha256::hex(b""),
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -415,11 +272,7 @@ fn the_digest_agrees_with_the_published_answers() {
         "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"
     );
     // And the block boundaries either side of where the padding has to spill,
-    // against the published digest of that many zero bytes. This used to
-    // assert that the digest was sixty-four characters long, which `hex` gets
-    // right by construction — it formats eight `u32`s — so the one case the
-    // loop exists for, the length word landing in a second block, was checked
-    // by an assertion that could not fail.
+    // against the published digest of that many zero bytes.
     for (len, want) in [
         (
             55,
@@ -462,8 +315,7 @@ fn the_digest_agrees_with_the_published_answers() {
 fn the_frames_are_the_ones_committed_as_the_reference() {
     // Any change to renderer arithmetic moves these, and that is the point of
     // them: an edit meant to touch one thing that touched the whole sky has to
-    // say so. When the change was intended, regenerate with the recipe at the
-    // top of `tests/golden/frames.sha256` and say in the commit what moved.
+    // say so.
     let committed = committed();
     assert_eq!(
         committed.len(),
@@ -496,24 +348,16 @@ fn the_frames_are_the_ones_committed_as_the_reference() {
 fn the_reference_flights_between_them_reach_the_whole_renderer() {
     // The hashes are only worth what they cover, and what they covered was
     // discovered the hard way: a deliberate change to the ramp along a warp
-    // streak did not move them at all, because two seconds
-    // of `--demo` never leaves sublight and a sublight streak is shorter than a
-    // subpixel, so it takes the branch that never reads the constant.
-    //
-    // Stated as the property the case list has to keep: some flight in it
-    // lights the drive, some flight in it gets outside the ship.
+    // streak did not move them at all, because two seconds of `--demo` never
+    // leaves sublight and a sublight streak is shorter than a subpixel, so it
+    // takes the branch that never reads the constant.
     let engaged = CASES.iter().any(|(_, case)| case.contains(&"--engage"));
     let outside = CASES.iter().any(|(_, case)| case.contains(&"side"));
     assert!(engaged, "no reference flight ever lights the drive");
     assert!(outside, "no reference flight ever leaves the cockpit");
 
-    // And some flight gets *behind* the ship, which is a third of the same
-    // kind and was found the same way. The camera goes all the way round, and
-    // the point the ship's own track vanishes at is on the screen from that
-    // half of the range and no other — so with every flight abeam or forward of
-    // it, a trail could be stretched clean through a point it never reaches and
-    // nothing here would say so. Asked of the parsed orbit rather than of the
-    // angle written above it, so it is the renderer's own arithmetic answering.
+    // And some flight gets *behind* the ship, which is a third of the same kind
+    // and was found the same way.
     let astern = CASES
         .iter()
         .any(|(_, case)| reference_args(case).orbit.nose_in_camera()[2] > 0.0);
@@ -522,23 +366,6 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
     // And *no* flight has a hand on the stick, which is this clause inverted —
     // it asked for the opposite until the autopilot stopped steering, and the
     // inversion is worth more than the assertion it replaces.
-    //
-    // What it used to buy: the `--engage` flights fly with nobody at the
-    // controls, so without a `--demo` run long enough to reach the weave the
-    // cockpit's whole steering path went unpinned. What it buys now is the
-    // other side of that. Every flight here holds every steering rate at an
-    // exact zero from the first frame to the last, which makes the whole set a
-    // *control* for the steering path rather than four flights against four: a
-    // hash that moves for a change to steering has leaked. And an autopilot
-    // that quietly picked the stick back up would otherwise cost five moved
-    // hashes and no explanation of them, where this costs one sentence.
-    //
-    // Asked by running each case's own autopilot over its own frame count and
-    // timestep rather than by reading the flags, for the reason it always was:
-    // what a flight *does* is the question, and `--demo` on the command line is
-    // not that fact. Of the rates and of the attitude both, against a ship
-    // fresh out of `Ship::new` — `ship::LEVEL_AXES` is `pub(crate)` and this is
-    // an external crate, and a fresh ship is that value by construction.
     for (name, case) in CASES {
         let args = reference_args(case);
         let mut ship = warp_rs::ship::Ship::new();
@@ -564,13 +391,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
     }
 
     // And some flight has the autopilot on the *camera*, which is the fifth of
-    // the same kind and arrived with the ability. The four `--engage` flights
-    // carry no autopilot, and the four `--demo` flights that watch from the
-    // cockpit read neither the orbit nor the zoom — so an autopilot that swung
-    // the camera anywhere at all could have left every one of those eight
-    // hashes standing. Asked the same way as the stick above, by running the
-    // real path over the case's own frame count and timestep rather than by
-    // reading the flags, and of the parsed view rather than the string.
+    // the same kind and arrived with the ability.
     let swung = CASES.iter().any(|(_, case)| {
         let args = reference_args(case);
         if args.demo.is_none() || args.view.resolve() != warp_rs::view::ViewMode::Side {
@@ -588,20 +409,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
 
     // And some flight gets *ahead* of the ship with the exposure long enough to
     // matter, which is the sixth of the same kind and the sharpest lesson in
-    // the set. The camera being forward of the ship is not the question — the
-    // `astern` clause above has an exact counterpart in `orbit.txt`, whose nose
-    // points at the lens. The question is whether any flight holds that angle
-    // long enough for the exposure to reach *past* the nearest a star can be,
-    // because that is what puts a trail's far end behind the near plane, and
-    // for nine flights nothing did: the four `--engage` runs last two seconds,
-    // where the drive has flown only a few light years, and the `--demo` pair
-    // that lasts twelve never opens the throttle far enough. So a bug that lost
-    // the trail of every star inside the exposure — a fifth of the pool, and
-    // every one of the near ones that streak furthest — moved not one hash.
-    //
-    // Asked by flying each case's own sky at its own timestep, because the
-    // exposure is *state* and there is nothing to read it off but the sky that
-    // unrolled it.
+    // the set.
     let ahead = CASES.iter().any(|(_, case)| {
         let args = reference_args(case);
         let nose_z = args.orbit.nose_in_camera()[2];
@@ -635,12 +443,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
 
     // And every colour mode is spelled by some flight, which is the one region
     // the prose at the top of `frames.sha256` names that nothing here was
-    // asking about. It matters most for the mode nobody is handed: detection is
-    // gone and `--color` defaults to truecolor, so `ansi256.txt` is the only
-    // thing in the tree that draws `quantize_256` or the palette-index path
-    // under it, and if it were ever dropped every other flight would go on
-    // passing while that writer went unwatched. Asked of the parsed mode, so a
-    // renamed value cannot satisfy it by spelling.
+    // asking about.
     for mode in [
         warp_rs::term::ColorMode::Truecolor,
         warp_rs::term::ColorMode::Ansi256,
@@ -656,28 +459,6 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
 
     // And *no* flight bends an exposure, which is the other half of the clause
     // above and is the real cost of this reference having no stick in it.
-    //
-    // An exposure is drawn along the track the ship actually flew, so it is a
-    // curve only where it reaches back past a turn. This used to ask that some
-    // flight draw one, and the two `--demo --fps 10` cases qualified because
-    // their drive lights at frame 60 of a twelve-second flight with the weave
-    // still going. Nothing here turns now, and nothing here *can*: no flag on
-    // the command line steers, and a headless flight has no keyboard, so the
-    // autopilot was the only thing that ever put a stick over.
-    //
-    // So the reference measures the renderer with the curve switched off, and
-    // that is a hole with a floor under it rather than an oversight. What it
-    // stops watching: `Universe::stations`, the multi-leg walk through
-    // `Canvas::draw_path`, `Track::turn_over` and the near-plane cut on a tail
-    // a turn has swung. Those are pinned by property tests in `universe.rs`,
-    // `track.rs` and `canvas.rs`, and by
-    // `a_turn_at_warp_can_be_flown_from_the_library_alone` in `tests/flight.rs`
-    // — and by nothing in this file. A change that repainted every turn ever
-    // flown would move not one hash here.
-    //
-    // Stated as an assertion rather than as prose so that whoever gives this
-    // reference a flight that steers has to come here and turn it back over,
-    // which is where they will read what they are getting back.
     let bent = CASES.iter().any(|(_, case)| {
         let args = reference_args(case);
         let Some(demo) = args.demo else {
@@ -715,14 +496,7 @@ fn the_reference_flights_between_them_reach_the_whole_renderer() {
 
     // And every flight here spends most of itself with the shutter fully open,
     // which is a premise rather than a property of the renderer and is exactly
-    // why it is worth asserting. A shot opens out of black, so the front of
-    // every one of these is the sky arriving rather than the sky. At the
-    // default that is 26 frames of 120 at 60 fps and 5 of 120 at `--fps 10`;
-    // raise `cli::DEFAULT_FADE` far enough and the two-second flights would be
-    // most fade, and the ten would go on passing while pinning the arrival
-    // instead of the arithmetic. Measured against the whole fade rather than
-    // against its rise, which is the shorter half and the one that reaches
-    // these — so this is the conservative statement of it.
+    // why it is worth asserting.
     for (name, case) in CASES {
         let args = reference_args(case);
         let seconds = args.frames as f32 / args.fps as f32;

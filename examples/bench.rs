@@ -1,40 +1,4 @@
 //! A stopwatch on the render loop.
-//!
-//! ```sh
-//! cargo run --release --example bench            # a default sweep
-//! cargo run --release --example bench 200 60 8
-//! cargo run --release --example bench 200 60 8 side 256
-//! ```
-//!
-//! The third argument is a limiting *magnitude* — how faint a sky, the way
-//! `--magnitude` asks for one — and these two lines said `20000` for a while
-//! after it stopped being a star count, which is not a magnitude any parser
-//! will take. They aborted. Documentation that can be run is worth keeping
-//! runnable: `8` is the faint sky the default sweep's expensive rows use, and
-//! comes out around seventy thousand stars.
-//!
-//! Reports where a frame goes: simulating the flight, drawing it, and getting
-//! it out. The interesting number is the sum against the frame budget — 16.7 ms
-//! at the default 60 fps — and how it moves when the renderer is changed.
-//!
-//! The colour mode is **pinned** rather than left to the default, for the
-//! reason `tests/flight.rs` pins its own: a sweep that takes whatever the flag
-//! happens to default to measures a different thing the day that default
-//! changes, and the numbers written down in `CLAUDE.md` are compared across
-//! exactly such changes. It made a real difference — the same case came out at
-//! 6.87, 7.31 and 6.66 ms of drawing in ascii, 256 and truecolor — so the mode
-//! is a column here rather than an assumption. The pin used to be against
-//! detection reading `TERM`, which was a stronger-sounding reason for a weaker
-//! property: two machines disagreeing is easier to notice than one machine
-//! quietly measuring something else than it did last week.
-//!
-//! A `0` in the stars column leaves the flag off, so the case measures whatever
-//! a default run draws. That used to be a number derived from the canvas and is
-//! a fixed count now, which changes how those rows *read* rather than what they
-//! measure: they are one pool at three canvases, so what stands between them is
-//! the cost of the canvas with the sky held still. The rows naming a number are
-//! the ones that vary the pool, and they are the ones a figure written down in
-//! `CLAUDE.md` can be compared against across this change.
 
 use clap::Parser;
 use std::time::Instant;
@@ -158,16 +122,10 @@ fn main() {
                 view: "side",
                 color: "truecolor",
             },
-            // And the cockpit at the same size and pool in the palette
-            // spelling — the fourth row's flight, not the two `side` ones
-            // directly above, which is what this comment claimed for as long as
-            // it said "the same frame". It composes a cell differently from
-            // every row above it, an index per colour change against three
-            // spelled-out decimals, so it is the one case here that is not
-            // truecolor. It earned the row when this was the mode most
-            // terminals fell into and keeps it now that none do: the quantiser
-            // is still on the frame path of everyone who asks for it, and a
-            // column nobody times is a column nobody notices regressing.
+            // And the cockpit at the same size and pool in the palette spelling
+            // — the fourth row's flight, not the two `side` ones directly
+            // above, which is what this comment claimed for as long as it said
+            // "the same frame".
             Case {
                 cols: 200,
                 rows: 60,
@@ -177,12 +135,8 @@ fn main() {
                 view: "cockpit",
                 color: "256",
             },
-            // The stick buried, which is the only thing here that asks the
-            // sky for a curve. An exposure the ship flew straight through is
-            // two points and the arithmetic it always was, so these are the
-            // rows that say what the curve costs — and they are last so the
-            // seven above stay comparable with the figures written down before
-            // there was one.
+            // The stick buried, which is the only thing here that asks the sky
+            // for a curve.
             Case {
                 cols: 200,
                 rows: 60,

@@ -1,7 +1,4 @@
 //! Running a flight: the loops that drive one, and the state they drive.
-//!
-//! Three of them, sharing a `Flight` and differing only in where the frames
-//! end up — an interactive terminal, stdout, or a PNG.
 
 use crate::autopilot::Autopilot;
 use crate::cli::{self, resolved_size, Args};
@@ -28,38 +25,11 @@ const SIM_STEP: f32 = 1.0 / 120.0;
 /// A stalled process must not fast-forward the universe on the next frame.
 const MAX_FRAME_DT: f32 = 0.25;
 /// The widest step [`Flight::advance`] will take, whatever it is handed.
-///
-/// Deliberately looser than `MAX_FRAME_DT`, which is the interactive loop's own
-/// limit and is tight because a frame on a real terminal is never a quarter of
-/// a second. This one sits underneath *every* caller, so it has to leave the
-/// legitimate ones alone: headless and snapshot step at `1.0 / --fps` and
-/// `--fps` is floored at 1, so a second is the longest step anything in the
-/// tree asks for. Past that it is not a frame, and the fixed-step loop below
-/// would grind through a hundred and twenty simulation steps for every second
-/// of it.
 const MAX_STEP_DT: f32 = 1.0;
 /// How much fainter or brighter one press of `+` or `-` asks the sky to go.
-///
-/// Half a magnitude, which is about a factor of two in how many stars there
-/// are: a visible change on a single tap and a couple of seconds of auto-repeat
-/// across the whole range, the bargain the zoom's 1.12 and the orbit's turn in
-/// sixty strike. It replaced a multiply of 1.25 on a literal pool, which had to
-/// carry a floor of its own because zero and one are fixed points of a multiply
-/// and the key would swallow the press. An addition has no fixed points, so the
-/// floor is gone and the two ends of the flag are the two ends of the key —
-/// which is the invariant `cli::MAX_STARS` used to hold, one door further back.
 const MAGNITUDE_STEP: f32 = 0.5;
 
 /// How much of a cut is spent going dark, as a fraction of `--fade`.
-///
-/// Held at both ends. Smaller and the outgoing picture is gone before the eye
-/// has registered that anything happened, which is a hard switch with a flicker
-/// on it rather than a cut. Larger and the shot sags — a picture that sits
-/// there dying reads as a fault rather than as a change of camera. It also sets
-/// what a *run* opens on, since the program starts at the bottom of a cut it
-/// was never on the other side of: a fresh flight rises over the other
-/// `1 - FADE_OUT_SHARE` of the fade, which at the default is the four tenths of
-/// a second anybody actually looks at once a run.
 const FADE_OUT_SHARE: f32 = 0.3;
 /// Both ends of that fraction, as a build failure rather than a runtime one:
 /// [`fade_t`] divides by `fade - fade * FADE_OUT_SHARE` on the rise, which is
@@ -72,22 +42,6 @@ const _: () = assert!(
 
 /// Where a cut has got to, as the parameter the light is ramped from: 1.0 for a
 /// settled shot, 0.0 at the bottom of the dip.
-///
-/// A closed form of the clock rather than a decaying transient like
-/// [`Ship::flash`], and the reason is not the one it looks like. `exp(-k·dt)`
-/// is frame-rate independent too — that is why everything in `ship.rs` eases
-/// that way. What a closed form buys is what the autopilot's throttle bought
-/// when it stopped stepping: independence that is *structural*, because nothing
-/// is being stepped at all, and an end that is reached exactly rather than
-/// approached. That second half is load-bearing. A gain a single ulp under one
-/// would repaint the whole sky for the rest of the flight, where this returns a
-/// literal 1.0 and `v * 1.0` is the identity.
-///
-/// `from` is where the fall starts, and it is a field rather than a constant
-/// because a second cut can land while the first is still going down. Stamping
-/// a fresh cut with `from` at one would slam the picture back to full
-/// brightness and drop it again — a flash in the one feature whose whole job is
-/// to look right, and auto-repeat on `C` reaches it constantly.
 fn fade_t(elapsed: f32, fade: f32, from: f32) -> f32 {
     if fade <= 0.0 {
         return 1.0;
@@ -101,17 +55,6 @@ fn fade_t(elapsed: f32, fade: f32, from: f32) -> f32 {
 }
 
 /// The shutter a frame is resolved through, from where the cut has got to.
-///
-/// Smoothstep for soft ends at both stops, then squared — and the square is
-/// chosen against the tonemap's gamma of 2.2 rather than by eye. Perceived
-/// level goes as the gain to the power of one over that, so a linear ramp on
-/// the gain is already half-bright a fifth of the way through and the fade
-/// reads as a step followed by a wait. Squaring the eased parameter puts the
-/// level at very nearly the parameter itself, so half way through a cut in time
-/// is half way through it in brightness. `e * e` rather than a `powf` of 2.2
-/// because it is exact at both ends and costs no call; the tenth of an exponent
-/// left over leaves the picture very slightly front-loaded, which is the right
-/// way round for something arriving.
 fn fade_gain(elapsed: f32, fade: f32, from: f32) -> f32 {
     let t = fade_t(elapsed, fade, from).clamp(0.0, 1.0);
     let eased = t * t * (3.0 - 2.0 * t);
@@ -147,19 +90,6 @@ pub struct Flight {
     view: ViewMode,
     /// Which camera the *picture* was on when the current cut was made, and
     /// where that cut is in its dip.
-    ///
-    /// `view` above is which camera the *flight* is on: it changes the instant
-    /// `C` is pressed, so the stick, the wheel and the hint tiers all change
-    /// hands at once and nothing has to know about a switch that has not landed
-    /// yet. What this frame is drawn from is [`Flight::shown`], which holds
-    /// `previous` until the bottom of the dip. The cut is made in the dark,
-    /// where there is nothing on screen to change over.
-    ///
-    /// `cut` joins `time` below on the `f64` list and for the same reason: it
-    /// tracks a clock that only grows, and a screensaver left up for a week
-    /// would have an `f32` copy of it unable to resolve half a second at all.
-    /// `from` and `fade` stay `f32` for the reason the zoom does — both are
-    /// bounded and neither accumulates.
     previous: ViewMode,
     cut: f64,
     from: f32,
@@ -172,45 +102,17 @@ pub struct Flight {
     /// How far the outside camera has been pushed in or out, and where it is
     /// being asked to go. Kept apart so a wheel — which arrives as a burst of
     /// notches rather than as one — is eased into rather than jumped to.
-    ///
-    /// Both stay `f32` where `time` below is `f64`: these are bounded at both
-    /// ends and are not accumulators, so the drift that argument is about
-    /// cannot reach them.
     zoom: f32,
     zoom_target: f32,
     /// Which way round the ship the outside camera has been swung, and where it
     /// is being asked to swing to. The same pair for the same reason, and eased
     /// the same way — a key held down arrives as auto-repeat, which is a burst
     /// of steps rather than one.
-    ///
-    /// `f32` too, and this one needs its own excuse: two of the three angles go
-    /// all the way round without stopping, which is exactly the accumulator the
-    /// argument above is about. [`Orbit::held`] is what settles it — both the
-    /// eased angle and the target are folded back into a single turn, so
-    /// neither can grow however long a key is leaned on.
     orbit: Orbit,
     orbit_target: Orbit,
     /// Whether a hand has been put on the camera since the flight opened.
-    ///
-    /// Only [`Flight::fly_itself`] reads it, and it reads it to stand off: an
-    /// autopilot writing the orbit target every frame would leave the camera
-    /// keys pressing against something that overwrote them before the next
-    /// draw, and a control that swallows a press and gives nothing back is
-    /// exactly what the split in `handle_key` exists to avoid. `R` clears it,
-    /// so the autopilot can be handed the camera back. The ship stays on
-    /// autopilot either way — `--demo` still flies itself and still stops.
-    ///
-    /// It cannot reach a reference frame: headless and snapshot flights take no
-    /// input at all, so nothing there ever sets it.
     hands_on: bool,
     /// The number this flight's sky was built from.
-    ///
-    /// Kept because it is the only thing about a run that cannot be recovered
-    /// by looking at it: `--seed` is optional and defaults to the clock, so a
-    /// flight worth keeping a picture of is one nobody can shoot again. Held
-    /// here rather than asked of [`Universe`] because it is a property of the
-    /// flight rather than of the sky — the same seed would build the same sky
-    /// at a different magnitude.
     seed: u64,
     /// Wall time since launch, in seconds. `f64` because it only ever grows and
     /// a screensaver is expected to be left running: as an `f32` accumulator it
@@ -249,8 +151,7 @@ impl Flight {
             // A shot opens at the bottom of a cut it was never on the other
             // side of: `time` starts at zero, so seating the cut exactly one
             // fall behind it puts the first frame on the trough and the sky
-            // arrives over the rise. One field, one curve, and no special case
-            // for the opening.
+            // arrives over the rise.
             cut: -((args.fade * FADE_OUT_SHARE) as f64),
             from: 1.0,
             fade: args.fade,
@@ -274,10 +175,6 @@ impl Flight {
 
     /// The next camera round, building the sky it needs if this is the first
     /// time it has been asked for.
-    ///
-    /// The zoom is left alone. It belongs to the outside camera, and going in
-    /// to look at something and coming back out to find the shot re-framed
-    /// would be its own small annoyance; `R` is the way to put it back.
     pub fn cycle_view(&mut self) {
         self.set_view(self.view.next());
     }
@@ -288,17 +185,6 @@ impl Flight {
     }
 
     /// Push it a notch: positive is closer and bigger, negative is further off.
-    ///
-    /// Geometric, so a notch is the same size of change wherever it is taken
-    /// from — an additive step big enough to be worth pressing out at the far
-    /// end would shove the near view straight through its stop. Multiplied in
-    /// and divided out by the one constant rather than raised to `dir`, so a
-    /// press and its opposite land back where they started instead of a `powf`
-    /// away from it.
-    ///
-    /// It is the *target* that is held to the range, not the eased value. Clamp
-    /// the eased one and the target winds up somewhere past the end, and the
-    /// first notch back does nothing at all.
     pub fn nudge_zoom(&mut self, dir: f32) {
         let step = if dir >= 0.0 {
             view::ZOOM_STEP
@@ -329,22 +215,6 @@ impl Flight {
 
     /// Put the stick over: the three impulses `WASD` and `QE` hand the ship
     /// from the pilot's seat, for a caller that has no keyboard.
-    ///
-    /// Public for the same reason [`Self::nudge_orbit`] and [`Self::nudge_zoom`]
-    /// are, and it completes the set: `handle_key` reaches the ship only because
-    /// it lives in this module, so until this existed nothing outside could fly
-    /// a turn. Two things need to, and they need it more than they did: the
-    /// autopilot used to weave, so a turn could be had by leaving a flight
-    /// alone, and it flies straight now — this is the only thing in the tree
-    /// that puts a stick over. `examples/bench.rs` measures what a hard turn
-    /// costs to draw. And `tests/flight.rs` drives everything through the surface
-    /// another program would have to use, so a turn it could not fly is a turn
-    /// that surface cannot be said to support.
-    ///
-    /// Impulses rather than rates, because that is what the ship takes: see the
-    /// note on [`crate::ship`] about terminals reporting presses and not
-    /// releases, and the identity in `crate::autopilot` about scaling one by
-    /// `dt`.
     pub fn nudge_stick(&mut self, yaw: f32, pitch: f32, roll: f32) {
         self.ship.nudge_yaw(yaw);
         self.ship.nudge_pitch(pitch);
@@ -353,13 +223,6 @@ impl Flight {
 
     /// Swing the camera round the ship, over it, or about its own view axis, a
     /// step at a time.
-    ///
-    /// One function for the three axes rather than three, because they arrive
-    /// together and are held together: [`Orbit::held`] folds all three onto a
-    /// single turn, and none of them stops. As with the zoom it is the *target*
-    /// that is held, not the eased value — and unlike the zoom the step is
-    /// additive, since an angle has no far end to be shoved about and every
-    /// part of a turn is worth the same.
     pub fn nudge_orbit(&mut self, azimuth: f32, elevation: f32, roll: f32) {
         self.orbit_target = Orbit {
             azimuth: self.orbit_target.azimuth + azimuth * view::ORBIT_STEP,
@@ -373,34 +236,15 @@ impl Flight {
     /// Back to the shot the flight opened on, snapped rather than eased, for
     /// the same reason the zoom is: `R` is the key for when the view has got
     /// away from you.
-    ///
-    /// Where it opened, not [`Orbit::LEVEL`] — `--orbit` is a starting angle
-    /// the same way `--throttle` is a starting throttle, and `R` has always put
-    /// that one back rather than the flight model's own default.
     pub fn reset_orbit(&mut self, orbit: Orbit) {
         self.orbit = orbit.held();
         self.orbit_target = self.orbit;
-        // And the autopilot has the camera again. `R` is the key for putting
-        // the view back, and on an unattended flight the view it goes back to
-        // is the one that was flying itself.
+        // And the autopilot has the camera again.
         self.hands_on = false;
     }
 
     /// Fly a frame with nobody at the controls: the ship, and the camera that
     /// is watching it.
-    ///
-    /// Both `--demo` and `--screensaver` come through here, and the camera half
-    /// is the reason it exists. `Autopilot` knows nothing about a `Flight` —
-    /// it flies a `Ship` and answers where a camera should be, and the joining
-    /// up happens here, where the targets it writes are the same ones a key
-    /// writes and the same ease in [`Flight::advance`] smooths both.
-    ///
-    /// The swing is *added* to what `--orbit` asked for rather than replacing
-    /// it, so the flag still parks the shot and the autopilot walks out from
-    /// there. Both views are driven, not just the one that can see it: the
-    /// cockpit reads neither the orbit nor the zoom, so it costs nothing there
-    /// and means cycling out to the camera mid-flight lands on a live shot
-    /// rather than one that has been parked since launch.
     pub fn fly_itself(&mut self, args: &Args, elapsed: f64) {
         self.autopilot.update(&mut self.ship, elapsed);
         if self.hands_on {
@@ -417,25 +261,6 @@ impl Flight {
     }
 
     /// Change camera, and cut to it through black.
-    ///
-    /// It used to build the outside view's sky here, the first time that view
-    /// was asked for, from a seed of its own so the cockpit's stream stayed
-    /// untouched. There is one sky now and it is already built, so a view is a
-    /// question about where to stand and nothing else — which is also why the
-    /// `C` key can no longer show two different universes.
-    ///
-    /// The whole of the cut is here because this is the only funnel: `C` comes
-    /// through [`Self::cycle_view`] and `M` through [`Self::open_menu`], which
-    /// forces the outside view. The early return is what keeps `M` pressed
-    /// while already outside from dipping the picture for a dialogue that is
-    /// only opening.
-    ///
-    /// `previous` is taken from [`Self::shown`] rather than from `self.view`,
-    /// and the difference only shows when a second cut lands inside the first
-    /// one's fall: what has to fade out is whatever is actually on screen, not
-    /// a camera the flight had committed to and never drawn. Order is
-    /// load-bearing too — both `shown` and `fade_t` read the *old* `cut`, so
-    /// they have to be asked before it is overwritten.
     fn set_view(&mut self, view: ViewMode) {
         if view == self.view {
             return;
@@ -447,11 +272,6 @@ impl Flight {
     }
 
     /// How long the current cut has been running, in flight seconds.
-    ///
-    /// Subtracted in `f64` and only the small difference narrowed, which is the
-    /// same care [`Renderer::camera`] takes with the shake: the two terms are a
-    /// screensaver's whole uptime apart from each other and their difference is
-    /// under a second.
     fn since_cut(&self) -> f32 {
         (self.time - self.cut) as f32
     }
@@ -473,28 +293,6 @@ impl Flight {
     }
 
     /// Land whatever cut is in flight, at once.
-    ///
-    /// `P` stops [`Self::advance`], which is the only thing that moves `time`,
-    /// so a cut made while the flight is stopped never gets anywhere: it sits
-    /// at zero elapsed, where the gain is exactly one and `shown` is still the
-    /// old camera. Pressing `C` while paused would therefore hold the outgoing
-    /// view at full brightness and look like a key that does nothing at all,
-    /// which is the thing `handle_key`'s whole split over which control belongs
-    /// to which view exists to avoid.
-    ///
-    /// So: there is nothing to dissolve between while nothing is moving, and a
-    /// cut made with the flight stopped lands where it was going. The nearest
-    /// precedent is `R`, which snaps the orbit and the zoom rather than easing
-    /// them, because a key pressed when the view has got away from you wants an
-    /// answer now. This owes nothing on the way out either, unlike the camera
-    /// bug `P` used to have: `from` goes back to one and the picture is
-    /// settled, so unpausing resumes an ordinary flight rather than replaying a
-    /// stored dip.
-    ///
-    /// A whole second past the end rather than exactly the end, because
-    /// `time - fade` and then the difference back again do not round-trip to
-    /// `fade` at large `time`, and a gain one ulp under one is a gain that
-    /// repaints the frame.
     fn land_cut(&mut self) {
         self.cut = self.time - self.fade as f64 - 1.0;
         self.from = 1.0;
@@ -537,20 +335,9 @@ impl Flight {
     }
 
     /// Advance by `dt` of wall time, in fixed physics steps.
-    ///
-    /// Only the sky being looked at is stepped. That is safe because both
-    /// fields recompute where a star was from where it is at the top of their
-    /// update, so a field coming back after a spell out of view draws a proper
-    /// short streak on its first frame rather than one long scratch.
     pub fn advance(&mut self, dt: f32) {
         // Held to something a frame could plausibly be *here*, rather than at
-        // the one call site that used to do it. This is public, and `lib.rs`
-        // offers a flight to any program that cares to fly one, so the guard
-        // belongs with the loop it protects. Both ways an unchecked step goes
-        // wrong are quiet ones: an enormous `dt` is unbounded work, and a NaN
-        // one is worse than that — it poisons the accumulator, `NaN >=
-        // SIM_STEP` is never true again, and the flight goes on drawing frames
-        // for the rest of its life without simulating another one.
+        // the one call site that used to do it.
         let dt = if dt.is_finite() {
             dt.clamp(0.0, MAX_STEP_DT)
         } else {
@@ -562,28 +349,12 @@ impl Flight {
             self.ship.update(SIM_STEP);
             // The camera catching up with the zoom it was asked for, in the
             // same frame-rate-independent form everything else here eases in.
-            // Stepped whichever view is flying: it is one multiply, and a zoom
-            // that only settled while it was being looked at would arrive
-            // mid-move on the frame the camera came back.
-            //
-            // When there is nothing to catch up with the difference is exactly
-            // zero and so is the whole term, so this cannot move a reference
-            // frame by an ulp. That covers the four flights in the reference
-            // that carry no autopilot — it stopped covering the rest of them
-            // when the autopilot started flying the camera, which is what
-            // `drift.txt` is recorded to watch.
             self.zoom +=
                 (self.zoom_target - self.zoom) * (1.0 - (-view::ZOOM_EASE * SIM_STEP).exp());
             // And the same for the orbit, with one difference: all three of its
             // angles go round, so each chases its target the short way rather
             // than unwinding three hundred and fifty degrees to reach a target
-            // ten degrees away. Taking the raw difference on an axis that wraps
-            // is the bug this is written to avoid, and the elevation had it
-            // until the elevation stopped being clamped.
-            //
-            // `wrap_signed` of an exact zero is an exact zero, so a flight
-            // whose camera is neither being flown by a hand nor by the
-            // autopilot still adds nothing at all here.
+            // ten degrees away.
             let ease = 1.0 - (-view::ORBIT_EASE * SIM_STEP).exp();
             let chase = |from: f32, to: f32| from + wrap_signed(to - from) * ease;
             self.orbit = Orbit {
@@ -592,11 +363,8 @@ impl Flight {
                 roll: chase(self.orbit.roll, self.orbit_target.roll),
             }
             .held();
-            // One sky, and it is stepped whichever camera is flying — there
-            // is no longer a second one to be kept warm or skipped. What the
-            // step does is take away whatever has fallen past the limit and
-            // put it back where the flow is bringing stars in from; the ship
-            // does all the moving, in `Ship::coast`.
+            // One sky, and it is stepped whichever camera is flying — there is
+            // no longer a second one to be kept warm or skipped.
             self.sky.advance(
                 self.ship.position,
                 self.ship.axes,
@@ -609,32 +377,9 @@ impl Flight {
     }
 
     /// Build a frame, and put an instrument panel over it if `panel` says so.
-    ///
-    /// `panel` is off exactly when the flight is flying itself, which the three
-    /// loops each ask `Args::unattended` and hand down. It is a parameter
-    /// rather than something read off `args` in here so a caller driving a
-    /// flight from outside the binary can have either — `tests/flight.rs` flies
-    /// the autopilot and reads the warp banner off the result.
-    ///
-    /// The ship picker is deliberately *not* covered by it. A panel is chrome
-    /// that arrives unbidden; the picker is a dialogue somebody pressed `M`
-    /// for, and hiding one of those would leave the key swallowing a press and
-    /// giving nothing back, which is the thing `handle_key`'s whole split over
-    /// which view a control belongs to exists to avoid.
-    ///
-    /// `paused` does one thing beyond the readout, and a caller driving a
-    /// flight from outside the binary should know it: it lands any camera cut
-    /// that is in flight, at once. A cut dips the picture through black as a
-    /// function of the flight's own clock, and a pause is what stops that
-    /// clock — so a cut begun with the flight stopped would otherwise sit
-    /// where it was armed, showing the outgoing camera, until the flight was
-    /// let go again.
     pub fn draw(&mut self, fps: f32, paused: bool, panel: bool) {
         // A cut cannot get anywhere with the clock stopped, so it lands here
-        // instead — see [`Self::land_cut`]. This is the only function in the
-        // tree handed both the flight and whether it is stopped, which is why
-        // it covers `C` while paused, `M` while paused, and a `P` taken in the
-        // middle of a cut, all in one line.
+        // instead — see [`Self::land_cut`].
         if paused {
             self.land_cut();
         }
@@ -648,8 +393,7 @@ impl Flight {
             panel,
             // The camera the flight is on rather than the one on screen: the
             // hint tiers name keys, and over the fall of a cut the keys have
-            // already changed hands. The `SHIP` row goes the same way, since it
-            // belongs to whoever is flying rather than to what is drawn.
+            // already changed hands.
             view: self.view,
             model: model.name,
         };
@@ -681,9 +425,6 @@ impl Flight {
     }
 
     /// How many stars are in flight — over the whole sphere, not on screen.
-    ///
-    /// It no longer depends on which camera is flying, because there is no
-    /// longer a sky per camera.
     pub fn stars(&self) -> usize {
         self.sky.len()
     }
@@ -700,18 +441,6 @@ impl Flight {
     }
 
     /// Ask the sky for a fainter or a brighter limit.
-    ///
-    /// Held to the two ends `--magnitude` is held to, so a sky these keys walk
-    /// to can never be one the command line would have refused. That invariant
-    /// is older than the flag it now guards: the `+` key used to carry a
-    /// ceiling of its own, 20 000, which sat *under* what `--stars` allowed, so
-    /// `--stars 100000` and a single press shrank the pool by four fifths.
-    ///
-    /// An empty sky used to need an early return here and no longer does. It
-    /// was a fixed point of the old multiply — `-` would clamp a deliberately
-    /// empty pool up to a floor and `+` could never climb off zero — and an
-    /// addition has neither problem, so a sky can be emptied and refilled by
-    /// the same two keys that set it.
     fn step_magnitude(&mut self, delta: f32) {
         let limit = (self.sky.limit() + delta).clamp(cli::MIN_MAGNITUDE, cli::MAX_MAGNITUDE);
         self.sky.set_limit(limit);
@@ -725,9 +454,7 @@ impl Flight {
     /// Adapt to a new terminal size. Reports whether the canvas actually moved,
     /// so the caller can skip the repaint a resize otherwise forces.
     pub fn resize(&mut self, args: &Args, cols: usize, rows: usize) -> bool {
-        // `--size` is a fixed size, not a starting point. Without this the flag
-        // held only until the first resize event, after which the terminal
-        // silently won.
+        // `--size` is a fixed size, not a starting point.
         if args.size.is_some() {
             return false;
         }
@@ -735,20 +462,6 @@ impl Flight {
         // the one call site for the reason `advance` clamps its own `dt`: this
         // is `pub`, and `lib.rs` offers a flight to any program that cares to
         // fly one, so the guard belongs with the allocation it protects.
-        //
-        // It used to bound nothing but zero, which left the only unvetted door
-        // into the canvas wide open. `cli::resolved_size` runs an ioctl answer
-        // through `clamp_size` on the argument that "a terminal that claims to
-        // be enormous should not be believed to the point of exhausting
-        // memory over it" — and then every *later* answer, arriving as
-        // `Event::Resize`, went straight through. A `stty cols 30000 rows
-        // 30000` against the pane a flight is running in is 9e8 cells against
-        // a `MAX_CELLS` of two million, and a failed allocation aborts the
-        // process outright: no unwind, no `Drop`, no panic hook, so `RawGuard`
-        // never restores and the user is dropped back into a shell in raw mode
-        // on the alternate screen with no cursor and no prompt. That is the
-        // exact outcome `Flight::new` is built before `RawGuard::new` to
-        // prevent, reached through the other end of the same program.
         let (cols, rows) = cli::clamp_size(
             cols.clamp(1, u16::MAX as usize) as u16,
             rows.clamp(1, u16::MAX as usize) as u16,
@@ -759,11 +472,7 @@ impl Flight {
         }
 
         self.renderer.resize(cols, rows);
-        // And the sky is not told. It is laid out in the world rather than in
-        // front of the camera, so a wider window is more of the same sky rather
-        // than a differently-shaped pool — which is what the two `retarget`
-        // calls that used to stand here existed to paper over, each of them
-        // dropping every trail in the field to hide the seam.
+        // And the sky is not told.
         true
     }
 }
@@ -791,51 +500,24 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     // A dialogue is up: it takes the keyboard, and in particular it takes
-    // `Esc`. Nothing is worse than reaching for the key that dismisses a menu
-    // and ending the flight with it.
+    // `Esc`.
     if flight.menu_open() && !ctrl {
         return menu_key(key, flight);
     }
-    // Pointing the nose is a thing you do from behind it. The camera outside
-    // rides with the ship rather than with the sky, so out there a turn moves
-    // nothing an eye can see — the stars stream on exactly as they were and the
-    // hull leans a few degrees — and a control that swallows the input and
-    // gives nothing back is worse than one that is plainly not there. So the
-    // stick flies the ship in the one view that is looking down its nose.
-    //
-    // One exhaustive `match` rather than three `==` comparisons, and the
-    // difference is a compile error rather than a style. A third camera added
-    // to `ViewMode::ALL` used to answer all three of these with false, and a
-    // key matching none of them falls through to nothing at all — so the new
-    // view would arrive with the stick, the camera and the zoom silently
-    // disconnected and the compiler perfectly happy. Now it does not build
-    // until somebody has said what the stick does in it.
+    // Pointing the nose is a thing you do from behind it.
     let (steers, flies_the_camera, zooms) = match flight.view() {
         ViewMode::Cockpit => (true, false, false),
         ViewMode::Side => (false, true, true),
     };
     // And out there the same six keys fly the *camera*, which is the thing that
-    // can usefully move in a view whose whole subject is the ship. It is not
-    // that pitch and yaw were switched off and something was found for them: a
-    // camera that cannot be walked round the thing it is pointed at is the
-    // control that is missing out here, and these are the keys everything else
-    // puts it on.
-    //
-    // Roll goes with them rather than staying on the hull, which costs the one
-    // thing this view could do that the cockpit cannot — a barrel roll flown
-    // and watched from the beam. The trade is a stick that means one thing in
-    // each view instead of two things in one of them, and the cockpit still
-    // rolls the ship. The zoom runs the same way and always has: there is no
-    // ship to be bigger or smaller from inside one, so it is connected exactly
-    // where it has something to show.
+    // can usefully move in a view whose whole subject is the ship.
     match key.code {
         // `q` is on the stick, so it cannot also be the way out: nothing a
         // pilot reaches for mid-turn should end the flight.
         KeyCode::Char('c' | 'd') if ctrl => return Action::Quit,
         KeyCode::Esc => return Action::Quit,
 
-        // The stick. WASD for the two axes that point the nose, QE for the one
-        // that turns the sky about it; `i`/`k` pitch too, as they always have.
+        // The stick.
         KeyCode::Char('w' | 'W' | 'i' | 'I') if steers => flight.ship.nudge_pitch(-1.0),
         KeyCode::Char('s' | 'S' | 'k' | 'K') if steers => flight.ship.nudge_pitch(1.0),
         KeyCode::Left | KeyCode::Char('a' | 'A') if steers => flight.ship.nudge_yaw(-1.0),
@@ -843,16 +525,7 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char('q' | 'Q') if steers => flight.ship.nudge_roll(-1.0),
         KeyCode::Char('e' | 'E') if steers => flight.ship.nudge_roll(1.0),
 
-        // The same six, outside, on the camera. These sit below the ones above
-        // rather than inside them: a guard that fails falls through to the next
-        // arm that matches, so each key is written once per view and neither
-        // spelling has to know about the other.
-        //
-        // The keys move the *camera*, not the ship in frame — `W` lifts it over
-        // the hull so the hull is being looked down on, `D` walks it forward
-        // toward the nose. An orbit camera that went the other way would read
-        // as dragging the ship about, and the ship is the one thing out here
-        // that is not being flown from this seat.
+        // The same six, outside, on the camera.
         KeyCode::Char('w' | 'W' | 'i' | 'I') if flies_the_camera => {
             flight.nudge_orbit(0.0, 1.0, 0.0)
         }
@@ -870,9 +543,8 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char('q' | 'Q') if flies_the_camera => flight.nudge_orbit(0.0, 0.0, 1.0),
         KeyCode::Char('e' | 'E') if flies_the_camera => flight.nudge_orbit(0.0, 0.0, -1.0),
 
-        // The throttle is the up and down arrows, which is where it has
-        // always been: only its letters went to the stick. The other two
-        // arrows are yaw, four lines above.
+        // The throttle is the up and down arrows, which is where it has always
+        // been: only its letters went to the stick.
         KeyCode::Up => flight.ship.nudge_throttle(1.0),
         KeyCode::Down => flight.ship.nudge_throttle(-1.0),
 
@@ -890,9 +562,7 @@ fn handle_key(key: KeyEvent, flight: &mut Flight, args: &Args, paused: &mut bool
         KeyCode::Char('+' | '=') => flight.step_magnitude(MAGNITUDE_STEP),
         KeyCode::Char('-' | '_') => flight.step_magnitude(-MAGNITUDE_STEP),
 
-        // The outside camera, in and out. Shifted as well as plain for the
-        // same reason `+` is paired with `=` and `-` with `_`: which of the
-        // two arrives depends on the keyboard, not on what was meant.
+        // The outside camera, in and out.
         KeyCode::Char('[' | '{') if zooms => flight.nudge_zoom(-1.0),
         KeyCode::Char(']' | '}') if zooms => flight.nudge_zoom(1.0),
 
@@ -919,17 +589,6 @@ fn menu_key(key: KeyEvent, flight: &mut Flight) -> Action {
 }
 
 /// The wheel, which is the zoom and nothing else.
-///
-/// No [`Action`], because there is nothing here that could end a flight — a
-/// pointer wandering across the window must never be the thing that quits.
-/// Buttons and motion are ignored outright: nothing in this program is aimed
-/// at, so the only mouse event it has a use for is the one that says nearer or
-/// further.
-///
-/// While the picker is up the wheel moves the highlight, matching the arrow
-/// keys the dialogue already owns. The picker forces the outside view, so the
-/// alternative would be scrolling the list and zooming the ship behind it at
-/// the same time.
 fn handle_mouse(mouse: MouseEvent, flight: &mut Flight) {
     let scroll = match mouse.kind {
         MouseEventKind::ScrollUp => 1.0,
@@ -946,23 +605,6 @@ fn handle_mouse(mouse: MouseEvent, flight: &mut Flight) {
 fn run_interactive(args: &Args) -> io::Result<()> {
     // Refused by name, the way `--stars` and `--color auto` are refused, and
     // for the same reason: the mistake is worth telling somebody about.
-    //
-    // Without a terminal this is where the flight ended anyway, but it ended
-    // as `warp: No such device or address (os error 6)` — `RawGuard::new`'s
-    // ioctl, travelling out through `main` — on a command line that answers
-    // every other absurd argument with a sentence naming the limit. And with
-    // a tty on stdin but not on stdout it did something worse than fail:
-    // crossterm takes raw mode against the tty while every frame goes to
-    // stdout, so `warp > frames.txt` turned the terminal's echo and line
-    // editing off, never entered the alternate screen — that escape went into
-    // the file — and left the user looking at a blank shell that appears
-    // hung. `Esc` still quits it, which nothing on screen says.
-    //
-    // A fact read off a file descriptor rather than a capability guessed at
-    // from the environment, which is the distinction `ColorMode::detect` was
-    // deleted over: this decides whether to take the terminal over at all, not
-    // how to spell a colour at one. `--headless` and `--snapshot` never reach
-    // here, so the two modes that legitimately have no terminal are untouched.
     if !io::stdout().is_terminal() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -970,15 +612,13 @@ fn run_interactive(args: &Args) -> io::Result<()> {
         ));
     }
 
-    // Not `terminal::size()` directly: tmux runs a `lock-command` against a
-    // tty whose window size is not set yet, so it can report zero.
+    // Not `terminal::size()` directly: tmux runs a `lock-command` against a tty
+    // whose window size is not set yet, so it can report zero.
     let (cols, rows) = resolved_size(args);
 
-    // Built before the terminal is taken over. This is the only thing here that
-    // allocates in bulk, and a failed allocation aborts the process outright —
-    // no unwind, no `Drop`, no panic hook — so anything installed first would
-    // never be undone, and the user would be left in raw mode on the alternate
-    // screen with an invisible cursor and no shell prompt.
+    // Built before the terminal is taken over: a failed allocation aborts
+    // outright — no unwind, no `Drop`, no panic hook — so anything installed
+    // first would never be undone.
     let mut flight = Flight::new(args, cols as usize, rows as usize);
 
     // The wheel is a control, and a screensaver has none — it dies on contact
@@ -1000,12 +640,7 @@ fn run_interactive(args: &Args) -> io::Result<()> {
     'flying: loop {
         let frame_start = Instant::now();
 
-        // A signal asked for the process. Leave the way a key would, so the
-        // guard above puts the terminal back rather than the flight being cut
-        // down where it stands with the alternate screen still up. Checked
-        // here rather than acted on in the handler, which can do nothing but
-        // set the flag safely — so the delay is one frame's budget, and at the
-        // frame rates a screensaver runs at that is the wait.
+        // A signal asked for the process.
         if crate::term::interrupted() {
             break 'flying;
         }
@@ -1019,11 +654,7 @@ fn run_interactive(args: &Args) -> io::Result<()> {
             }
         }
         // What the simulation is stepped by, and what the readout is smoothed
-        // from. Nothing else reads it: the autopilot used to, because the
-        // stick it worked was impulse-driven and had to be scaled by the frame
-        // it was pressed over, and it works no stick now. Note that the rate
-        // this loop actually runs at is not `--fps`, which is only a cap and is
-        // abandoned outright while something is being typed.
+        // from.
         let dt = (frame_start - last).as_secs_f32().clamp(0.0, MAX_FRAME_DT);
         last = frame_start;
         // Smoothed so the readout is legible rather than flickering.
@@ -1032,35 +663,6 @@ fn run_interactive(args: &Args) -> io::Result<()> {
         if args.unattended() {
             // The flight's own clock rather than the wall's, and that is now
             // the whole of what a pause needs from here.
-            //
-            // It took two corrections to arrive at, and the first one has
-            // since gone away rather than been kept: a zero step used to be
-            // passed alongside, because the stick was an impulse against a
-            // damper and the damper lives in `advance`, which a pause stops —
-            // so a pause that did not stop the impulse ratcheted the rate with
-            // nothing bleeding it off. Eleven seconds of `P` pinned the yaw at
-            // `MAX_YAW_RATE` and snapped the ship into a turn on resuming. The
-            // autopilot touches no impulse now, so there is no step to zero.
-            //
-            // The clock is the correction that still holds it up. It was left
-            // on wall time on the argument that the throttle and the camera
-            // are closed forms of it and so are unaffected either way. True of
-            // the throttle, and not true of the camera: what the closed form
-            // gives is the orbit *target*, and the camera a frame is built
-            // from is `Flight::orbit`, which eases toward it in `advance` —
-            // which the pause also stops. So the target walked and the camera
-            // did not. `autopilot::CAMERA_TURN` is a turn every 43 seconds, so
-            // ten seconds of `P` opened an eighty-four degree gap, and the
-            // ease closes 7.2% of one per sim step: the camera whipped most of
-            // the way round the hull inside a second of resuming. It saturates
-            // at half a turn after about twenty-one seconds, which is the
-            // worst it can be.
-            //
-            // `Flight::time` is the clock that already stops — `advance` is
-            // the only thing that advances it — so handing it over costs
-            // nothing and needs no second accumulator. The `--demo` deadline
-            // above goes on reading the wall, which is the documented
-            // behaviour: a paused demo still exits when it said it would.
             flight.fly_itself(args, flight.time);
         }
 
@@ -1071,18 +673,7 @@ fn run_interactive(args: &Args) -> io::Result<()> {
         flight.renderer.present(&mut out)?;
 
         // Spend what is left of the frame waiting on the event queue rather
-        // than sleeping through it. The wait ends the moment something is
-        // typed, so a key is acted on when it arrives instead of whenever the
-        // sleep happens to finish — which at 60 fps is a few milliseconds, and
-        // at `--fps 5` is the difference between a screensaver that dismisses
-        // when touched and one that finishes its nap first.
-        //
-        // Acting on the key was only ever half of answering it, though. Once
-        // something has moved the flight there is a frame owing to it, and
-        // going back to `poll` for the rest of the budget is that frame waiting
-        // on a clock: the stick was answered at once and the picture was not.
-        // So the wait is what is left of the budget *until* something has been
-        // acted on, and nothing after it.
+        // than sleeping through it.
         let mut acted = false;
         loop {
             // Saturating, not checked: a frame that has already run over its
@@ -1093,10 +684,6 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                 Ok(true) => {}
                 Ok(false) => break,
                 // A signal landing in the middle of the wait cuts it short.
-                // That is not a failure to report — it is the thing the flag
-                // at the top of the loop exists for — so go back and read it
-                // rather than handing the user an "Interrupted" and an exit
-                // code for having pressed nothing.
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => break,
                 Err(err) => return Err(err),
             }
@@ -1124,23 +711,8 @@ fn run_interactive(args: &Args) -> io::Result<()> {
                 // resize events that settle on the size already in use, and
                 // clearing on those makes the field blink for no reason.
                 Event::Resize(cols, rows) => {
-                    // Two questions, and one boolean used to answer both. What
-                    // `Flight::resize` reports is whether the *canvas* moved,
-                    // and under `--size` it always answers no — which is right
-                    // about the canvas and wrong about the repaint, because
-                    // the terminal moved whatever the canvas did. The
-                    // alternate screen discards the rows past a new smaller
-                    // height, `Screen::front` goes on holding the cells it drew
-                    // there, and `diff` re-emits nothing: a band of the frame
-                    // stays blank until each cell in it happens to take a
-                    // different value, which on a starfield is mostly never.
-                    //
-                    // So the repaint follows the size the *terminal* last
-                    // reported, and the canvas follows `resize`. The reason the
-                    // gate is here at all survives intact: terminals emit
-                    // resize events that settle on the size already in use, and
-                    // one of those still reports the same pair and still
-                    // repaints nothing.
+                    // The repaint follows the size the terminal last reported and the
+                    // canvas follows `resize`, which answers no under `--size`.
                     let moved = (cols, rows) != last_seen;
                     last_seen = (cols, rows);
                     flight.resize(args, cols as usize, rows as usize);
@@ -1167,12 +739,6 @@ fn run_interactive(args: &Args) -> io::Result<()> {
 
 /// Fly `args.frames` frames on a fixed timestep, writing each one out as a
 /// self-contained block of text. All of `--headless` except where it goes.
-///
-/// Public, and split out from the loop below, because the reference frames in
-/// `tests/golden` are of exactly these bytes. Until this was reachable the only
-/// thing in the tree that could produce them was the binary, so the check that
-/// they had not moved lived in CI alone — and a green `cargo test` said nothing
-/// at all about whether an edit had repainted the whole sky.
 pub fn render_headless(args: &Args, out: &mut impl Write) -> io::Result<()> {
     let (cols, rows) = resolved_size(args);
     let mut flight = Flight::new(args, cols as usize, rows as usize);
@@ -1198,15 +764,6 @@ fn run_headless(args: &Args) -> io::Result<()> {
 }
 
 /// The canvas a snapshot falls back to when `--size` is not given.
-///
-/// Named rather than written into `run_snapshot`, because the two recipes in
-/// CLAUDE.md that shoot the README's front page both depend on it and neither
-/// passes `--size`: a cell is two subpixels tall, so both come out 480x272 at
-/// `--scale 2` and the pair stacks with its edges in line. The hero used to ask
-/// for `--size 220x60`, came out 440x240, and put a forty-pixel step down the
-/// side of the page that nobody had written down a reason for. A reshoot that
-/// reaches for `--size` puts it back, and nothing but this constant and the
-/// test beside it says so.
 #[cfg(feature = "snapshot")]
 pub const SNAPSHOT_SIZE: (u16, u16) = (240, 68);
 
@@ -1227,11 +784,7 @@ fn run_snapshot(args: &Args, path: &std::path::Path) -> io::Result<()> {
     let (w, h) = flight.renderer.canvas_dims();
     snapshot::write_png(path, flight.renderer.pixels(), w, h, args.scale)?;
     // The seed is in here because it is the one thing about the shot that
-    // cannot be read back off the picture. `--seed` is optional and falls back
-    // to the clock, so without this a frame worth keeping is a frame nobody
-    // can take again — including the two on the README's front page, whose
-    // recipes are written down in `CLAUDE.md` precisely because they were once
-    // recoverable only from the commit that shot them.
+    // cannot be read back off the picture.
     eprintln!(
         "wrote {} ({}x{} px) at velocity {:.1} c, --seed {}",
         path.display(),
@@ -1254,8 +807,8 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// A notch of the wheel. The column and row are not read by anything here
-    /// — nothing in this program is aimed at — so they are a fixed nowhere.
+    /// A notch of the wheel. The column and row are not read by anything here —
+    /// nothing in this program is aimed at — so they are a fixed nowhere.
     fn wheel(kind: MouseEventKind) -> MouseEvent {
         MouseEvent {
             kind,
@@ -1267,11 +820,6 @@ mod tests {
 
     /// A flight already outside, which is where the zoom lives — and settled,
     /// with the cut that `c` armed landed and the shot opened.
-    ///
-    /// Landed rather than flown through, because every test built on this is
-    /// about something else: a flight left inside its opening fade draws dim
-    /// frames, and two dim frames agree about a great deal more than two lit
-    /// ones do.
     fn outside(args: &Args) -> Flight {
         let mut flight = Flight::new(args, 80, 24);
         let mut paused = false;
@@ -1283,10 +831,7 @@ mod tests {
 
     #[test]
     fn a_flight_that_has_been_up_for_days_still_advances() {
-        // Regression: `time` was an `f32` accumulator. At 1/60 s steps it
-        // stopped moving entirely at t = 524288 s — a little over six days —
-        // taking the twinkle and the shake with it, which is precisely the
-        // situation a tmux screensaver is left in.
+        // Regression: `time` was an `f32` accumulator.
         let args = args_for(&["--seed", "3", "--magnitude", "4"]);
         let mut flight = Flight::new(&args, 60, 20);
         let dt = 1.0 / 60.0;
@@ -1314,11 +859,7 @@ mod tests {
 
     #[test]
     fn a_step_that_is_not_a_step_does_not_end_the_flight() {
-        // Regression: `advance` is public and took whatever it was given. A NaN
-        // `dt` poisoned the accumulator — `NaN >= SIM_STEP` is false forever —
-        // so the flight went on drawing and never simulated another step. The
-        // interactive loop clamps before it calls in, which is the only reason
-        // the binary never met this; nothing else in the tree was covered.
+        // Regression: `advance` is public and took whatever it was given.
         let args = args_for(&["--seed", "3", "--magnitude", "4", "--size", "60x20"]);
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, -0.0] {
             let mut flight = Flight::new(&args, 60, 20);
@@ -1338,7 +879,6 @@ mod tests {
                 "{bad} poisoned the accumulator"
             );
 
-            // And the frames after it still move the ship and the clock.
             let (clock, speed) = (flight.time, flight.ship.speed);
             for _ in 0..60 {
                 flight.advance(1.0 / 60.0);
@@ -1353,8 +893,7 @@ mod tests {
         // The simulation steps at 1/120 s, so an unclamped `advance` grinds
         // through a hundred and twenty of them for every second handed to it:
         // `advance(10_000.0)` was five seconds of work inside a frame that had
-        // sixteen milliseconds. Asserted on the clock rather than on a
-        // stopwatch, which is the same property without the flake.
+        // sixteen milliseconds.
         let args = args_for(&["--magnitude", "3", "--size", "40x12"]);
         let mut flight = Flight::new(&args, 40, 12);
         for huge in [1.0e3f32, 1.0e9, f32::MAX] {
@@ -1376,12 +915,7 @@ mod tests {
     #[test]
     fn the_sky_a_flight_opens_with_does_not_depend_on_the_window() {
         // The point of asking for a sky by its limiting magnitude, stated as
-        // the property it is for. The pool used to be the canvas area times a
-        // density, so these two windows opened on 19 stars and 1080 and no two
-        // terminals flew the same sky; then it was a fixed count, which held
-        // that line by giving up on saying anything about what a window shows.
-        // A limit says both at once: the same universe on every terminal, and
-        // as much of it on screen as the window can see.
+        // the property it is for.
         for (cols, rows) in [(40usize, 12usize), (300, 90)] {
             let size = format!("{cols}x{rows}");
             let args = args_for(&["--size", &size]);
@@ -1393,9 +927,6 @@ mod tests {
             );
         }
 
-        // And there is only one of it. The outside view used to build a second
-        // pool of its own, from a seed of its own, the first time that camera
-        // was asked for — so `C` really did show two different universes.
         let args = args_for(&["--size", "40x12"]);
         let mut outside = Flight::new(&args, 40, 12);
         let inside = outside.stars();
@@ -1418,9 +949,7 @@ mod tests {
         // There is a magnitude below which the whole celestial sphere holds no
         // star at all, and asking for it is the way to see the tunnel, the
         // bubble and the hull with nothing streaming past them — which is what
-        // `--stars 0` used to be for. Flown in both views because they used to
-        // be separate pools reached by separate paths and the empty one is
-        // exactly where that showed.
+        // `--stars 0` used to be for.
         let args = args_for(&["--magnitude", "-2", "--size", "60x20"]);
         let mut paused = false;
         let mut flight = Flight::new(&args, 60, 20);
@@ -1435,11 +964,6 @@ mod tests {
             flight.renderer.present(&mut Vec::new()).unwrap();
         }
 
-        // And the two keys are each other's inverse here, where they used not
-        // to be. A multiply on a literal pool has zero for a fixed point, so
-        // `+` could never climb off an empty sky and `-` had to be stopped from
-        // clamping one up to a floor; an addition on a magnitude has neither
-        // problem and neither special case.
         flight.set_view(ViewMode::Cockpit);
         handle_key(press(KeyCode::Char('-')), &mut flight, &args, &mut paused);
         assert_eq!(flight.stars(), 0, "`-` put stars into an empty sky");
@@ -1454,12 +978,6 @@ mod tests {
 
     #[test]
     fn the_magnitude_keys_move_the_limit_the_way_they_point() {
-        // Regression, twice over. The keys used to scale a literal pool and
-        // clamped up to a floor of 64 chosen under an automatic minimum of 300,
-        // so on a thin window `-` *added* stars and both keys landed on the
-        // same number; and `+` carried a ceiling of 20 000 that sat under what
-        // `--stars` already allowed, so one press could shrink a pool the flag
-        // had asked for by four fifths. Both ends are the flag's ends now.
         let args = args_for(&["--size", "40x12"]);
         let mut paused = false;
 
@@ -1509,8 +1027,7 @@ mod tests {
         // `--fade 0` pinned rather than left to the default, the way
         // `tests/flight.rs` pins its colour mode: thirty frames is half a
         // second and the shot opens over most of it, so what these two would
-        // otherwise be comparing is mostly how dark the opening is. The same
-        // note covers the sibling below.
+        // otherwise be comparing is mostly how dark the opening is.
         let render = || {
             let args = args_for(&[
                 "--seed",
@@ -1564,21 +1081,11 @@ mod tests {
         // The hint line is chosen by width, so on the eighty-column terminal
         // most people have it names four keys of a dozen: no camera, no picker,
         // no pause, no reset, no zoom, and `+`/`-` on no tier at any width.
-        // Under `MIN_COLS` there is not even a printed way to quit. Widening
-        // the tiers costs columns the narrow ones do not have and repaints all
-        // ten reference frames, so the full list lives in `--help`, where it
-        // costs nothing — and this is what keeps it in step with the keyboard.
-        //
-        // Each key is *driven* as well as looked up, so the list cannot quietly
-        // become a description of controls that no longer exist: a key that
-        // moves nothing fails here just as loudly as one the help forgot.
         use clap::CommandFactory;
         let help = cli::Args::command().render_help().to_string();
         // The key *column* of the controls block, not the help at large: a
         // single letter turns up all over a page that also spells `--magnitude
-        // <MAG>`, so `contains` answers yes to keys the block never names. It
-        // did, and this test passed with a whole line deleted before the
-        // lookup was narrowed to the column the keys are printed in.
+        // <MAG>`, so `contains` answers yes to keys the block never names.
         let block = help.split("Controls:").nth(1).unwrap_or("");
         let names = |name: &str| {
             block.lines().any(|line| {
@@ -1616,9 +1123,7 @@ mod tests {
             // question below stops being asked: a shot opens out of black, so
             // the frame at the press and the frame a step later differ by the
             // fade alone whatever key was pressed — and at the very first step
-            // they can both be black instead. Taken off the flag rather than
-            // written out, so moving the default cannot make this vacuous
-            // again.
+            // they can both be black instead.
             while flight.time < args.fade as f64 {
                 flight.advance(1.0 / 60.0);
             }
@@ -1630,8 +1135,6 @@ mod tests {
                 "the help names {named} and pressing it changed nothing"
             );
         }
-        // And the two that end a flight, which cannot be driven the same way
-        // because what they change is that there is no next frame.
         for named in ["ESC", "Ctrl-C"] {
             assert!(names(named), "the help does not name {named}");
         }
@@ -1707,9 +1210,8 @@ mod tests {
                         "{key} moved the stick the wrong way: {}",
                         rates[axis]
                     );
-                    // One key, one axis: the stick must not cross-couple,
-                    // and W and S must no longer touch the throttle they
-                    // used to be.
+                    // One key, one axis: the stick must not cross-couple, and W
+                    // and S must no longer touch the throttle they used to be.
                     for other in (0..3).filter(|o| *o != axis) {
                         assert_eq!(rates[other], 0.0, "{key} also moved axis {other}");
                     }
@@ -1775,8 +1277,6 @@ mod tests {
             flight.ship.roll
         );
 
-        // And the flight is still flyable afterwards — nothing has gone NaN and
-        // the sky has not emptied.
         flight.draw(60.0, false, true);
         assert!(flight.ship.roll.is_finite() && !flight.sky.is_empty());
     }
@@ -1809,8 +1309,6 @@ mod tests {
             "two presses should come round"
         );
 
-        // And the key that quits still quits, which is the thing a new binding
-        // on `c` could most easily break.
         assert!(matches!(
             handle_key(
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -1827,10 +1325,7 @@ mod tests {
         // Every claim here is an equality rather than a tolerance, because what
         // rests on them is a bitwise one: the shutter multiplies the linear
         // light on its way to eight bits, and `v * 1.0` is the identity — so a
-        // settled frame is byte for byte the frame the fade is not there for. A
-        // gain a single ulp under one would repaint the whole sky for the rest
-        // of a flight instead, and no reference hash would say which change did
-        // it.
+        // settled frame is byte for byte the frame the fade is not there for.
         let fade = cli::DEFAULT_FADE;
         let out = fade * FADE_OUT_SHARE;
         assert_eq!(fade_gain(0.0, fade, 1.0), 1.0, "a cut steps at the press");
@@ -1850,8 +1345,6 @@ mod tests {
             "a cut came back after a week"
         );
 
-        // And no fade at all is the renderer this arrived on, at every instant
-        // and from wherever a fall happened to have got to.
         for elapsed in [0.0, 0.001, 1.0, 1e9] {
             for from in [0.0, 0.5, 1.0] {
                 assert_eq!(fade_gain(elapsed, 0.0, from), 1.0, "`--fade 0` faded");
@@ -1879,11 +1372,7 @@ mod tests {
 
     #[test]
     fn the_camera_changes_hands_at_the_press_and_the_picture_in_the_dark() {
-        // The whole of the design in one test. `C` hands the stick, the wheel
-        // and the hint tiers over at once, so nothing in `handle_key` has to
-        // know about a switch that has not landed; what waits is the picture,
-        // and it changes over at the bottom of the dip, where there is nothing
-        // on screen to change over.
+        // The whole of the design in one test.
         let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
@@ -1935,9 +1424,7 @@ mod tests {
         let lit = light(&flight);
         assert!(lit > 0, "nothing was lit, so there was nothing to dip");
 
-        // A cut does not step. The frame at the press is the frame before it,
-        // bit for bit — which is what makes a fall a fall rather than a jump
-        // followed by one.
+        // A cut does not step.
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         flight.draw(60.0, false, false);
         assert_eq!(
@@ -1964,14 +1451,7 @@ mod tests {
     #[test]
     fn a_second_cut_fades_out_what_is_actually_on_screen() {
         // Two claims, and each masks the other if it is the only one made, so
-        // both are here. Auto-repeat means a second cut landing inside the
-        // first one's fall is the ordinary case rather than the awkward one.
-        //
-        // Measured to fail on each of the two things it guards: `previous`
-        // taken from `view` rather than from `shown` hard-cuts the picture to a
-        // camera nothing has drawn, and `from` dropped slams the shutter back
-        // open and drops it again — a flash in the one feature whose whole job
-        // is to look right.
+        // both are here.
         let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
@@ -2019,8 +1499,7 @@ mod tests {
         // `P` stops the only thing that moves `time`, and the dip is a function
         // of it — so without landing the cut it never gets anywhere: it sits at
         // zero elapsed, where the shutter is fully open and the picture is
-        // still the outgoing camera. `C` would look like a key that does
-        // nothing whatever.
+        // still the outgoing camera.
         let args = args_for(&["--seed", "11", "--magnitude", "4.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         let mut paused = false;
@@ -2051,8 +1530,6 @@ mod tests {
             "the frame a paused cut landed on came out black"
         );
 
-        // And it owes nothing on the way out, unlike the camera bug `P` used to
-        // have: letting the flight go does not replay the dip.
         handle_key(press(KeyCode::Char('p')), &mut flight, &args, &mut paused);
         for _ in 0..30 {
             flight.advance(1.0 / 60.0);
@@ -2068,8 +1545,7 @@ mod tests {
     fn the_shot_opens_at_the_bottom_of_a_cut_it_was_never_on_the_other_side_of() {
         // Both views, because `--view side` used to reach its camera through a
         // `set_view` call made after construction — which would now arm a whole
-        // dip out of a cockpit nobody asked to see. And at two frame rates,
-        // because a fade is a length of flight rather than a number of frames.
+        // dip out of a cockpit nobody asked to see.
         for view in ["cockpit", "side"] {
             for step in [1.0 / 60.0, 1.0 / 10.0] {
                 let args = args_for(&[
@@ -2097,7 +1573,7 @@ mod tests {
                 );
 
                 // A shot opens on the trough, so what is left of the cut is its
-                // rise. Nothing on the way up may overshoot.
+                // rise.
                 let rise = args.fade * (1.0 - FADE_OUT_SHARE);
                 while flight.time < rise as f64 {
                     flight.advance(step);
@@ -2121,9 +1597,7 @@ mod tests {
     fn the_instruments_are_not_in_the_exposure() {
         // The fade is an exposure and the panel is on the glass rather than in
         // it: stamped into cells after `compose`, which is the same line the
-        // snapshot PNG already draws between the scene and the chrome. So a
-        // shot opens on instruments over a dark sky, and the one place the keys
-        // are written down to somebody flying is never on a clock.
+        // snapshot PNG already draws between the scene and the chrome.
         let args = args_for(&["--seed", "3", "--magnitude", "4.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         flight.draw(60.0, false, true);
@@ -2181,13 +1655,7 @@ mod tests {
     fn the_stick_flies_the_camera_outside_and_the_ship_inside() {
         // Out there the camera rides with the ship, so a turn of the *hull*
         // moves nothing an eye can see: the stars stream on as they were and
-        // the hull leans a few degrees. The six keys that fly the ship in here
-        // fly the camera out there instead, which is the thing that can
-        // usefully move in a view whose whole subject is the ship.
-        //
-        // The ship is what this checks, because the ship is what would go
-        // wrong: a camera control that also nudged the flight model would fly
-        // the ship from a seat that is not in it.
+        // the hull leans a few degrees.
         let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
@@ -2220,8 +1688,6 @@ mod tests {
             assert_eq!(flight.ship.pitch_rate, 0.0, "{code:?} still pitched");
             assert_eq!(flight.ship.yaw_rate, 0.0, "{code:?} still yawed");
             assert_eq!(flight.ship.roll_rate, 0.0, "{code:?} still rolled the ship");
-            // And it did something: a key that swallows the input and gives
-            // nothing back is the thing this view used to have.
             assert!(
                 !flight.orbit_target().is_level(),
                 "{code:?} moved neither the ship nor the camera"
@@ -2243,7 +1709,6 @@ mod tests {
                 assert_eq!(moved[other], 0.0, "{code:?} moved axis {other} as well");
             }
         }
-        // And the opposite of each goes the other way.
         for (code, axis) in [
             (KeyCode::Char('a'), 0),
             (KeyCode::Char('s'), 1),
@@ -2264,7 +1729,6 @@ mod tests {
         handle_key(press(KeyCode::Up), &mut flight, &args, &mut paused);
         assert!(flight.ship.throttle > before, "the throttle went quiet too");
 
-        // And coming back inside gives the stick back, to the ship this time.
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         assert_eq!(flight.view(), ViewMode::Cockpit);
         for (code, check) in [
@@ -2295,26 +1759,7 @@ mod tests {
     fn pitching_about_inside_does_not_leave_the_ship_crooked_outside() {
         // Regression, and the path the bug was found on: fly the nose around
         // with `W`, press `C`, and the hull sat permanently nose-high while the
-        // band of sky streamed past it dead level. The profile was posed from
-        // `ship.pitch` — the accumulated attitude the panel reads out — and out
-        // there nothing is measured against it, because the ship flies where
-        // its nose points and the sky streams along that track.
-        //
-        // Stated as the property that was broken: once the stick has been let
-        // go and the rates have decayed, a flight that pitched about draws the
-        // same *hull* as one that never touched it. Compared on the pixels
-        // rather than the cells, because the panel is meant to differ — the
-        // compass has genuinely moved, and it should say so.
-        //
-        // Flown under an empty sky, and that is the change this needed rather
-        // than a loosened bound. It used to compare whole frames, which worked
-        // while the outside sky took no steering at all: the band streamed
-        // along a track a turn of the hull could not move. The sky is in the
-        // world now and the camera rides the hull, so a ship that really has
-        // turned really does see it swing past — that is the honest picture and
-        // not a regression. What the bug was about is the hull, so the hull is
-        // what is left in the frame, which makes this a sharper test than the
-        // one it replaces: a difference can no longer hide among the stars.
+        // band of sky streamed past it dead level.
         let args = args_for(&["--seed", "6", "--magnitude", "-2", "--size", "80x24"]);
         let frames = |pitched: bool| {
             let mut flight = Flight::new(&args, 80, 24);
@@ -2341,11 +1786,7 @@ mod tests {
 
             handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
             assert_eq!(flight.view(), ViewMode::Side);
-            // The cut `c` armed, landed. Without this the first frames here
-            // are the cockpit dipping rather than the hull, under a sky that
-            // is deliberately empty — so a third of what follows would be two
-            // black buffers agreeing, which is exactly what a comparison like
-            // the one below must never be allowed to become.
+            // The cut `c` armed, landed.
             flight.land_cut();
             let mut pixels = Vec::new();
             for _ in 0..30 {
@@ -2377,8 +1818,7 @@ mod tests {
         // What replaced three tests about two skies: one that the outside pool
         // was built lazily, one that building it did not disturb the cockpit's
         // generator, and one that whichever sky was not being flown stayed put
-        // while nobody was in it. All three were bookkeeping for a design where
-        // `C` genuinely showed two different universes.
+        // while nobody was in it.
         let args = args_for(&["--seed", "4", "--magnitude", "5.5", "--size", "60x20"]);
         let mut flight = Flight::new(&args, 60, 20);
         flight.ship.throttle = 1.0;
@@ -2397,9 +1837,7 @@ mod tests {
 
         assert_eq!(inside.len(), after.len(), "the sky changed size out there");
         // Not equality: the flight went on, so stars that crossed their own
-        // limit came back somewhere else. What must hold is that going outside
-        // and coming back is the same flight as staying put — which it is
-        // trivially now, because there is one pool and one `advance`.
+        // limit came back somewhere else.
         let moved = inside.iter().zip(&after).filter(|(a, b)| a != b).count();
         assert!(
             moved < inside.len() / 4,
@@ -2413,29 +1851,6 @@ mod tests {
         // The ship carries the attitude and both cameras are projected through
         // it, so a turn has to reach the exposure from the seat *and* from
         // outside — where the camera rides with the hull and swings with it.
-        // Asked of the frames rather than of the sky, because what is under
-        // test is a picture: fly the same seed twice, once with a hand on the
-        // stick and once without, and the two must differ in both views.
-        //
-        // Of the *starlight*, and that is the whole of what this test is worth.
-        // It compared whole frames for a while and could not tell what it was
-        // claiming to: in the side view the hull's own lean and the drive's
-        // plume carry the difference on their own, so re-run at
-        // `cli::MIN_MAGNITUDE` — where `Universe::new` holds exactly zero stars
-        // — the frames still differed over three quarters of the canvas and
-        // cleared the threshold with nothing in the sky to turn. A regression
-        // that stopped the exposure swinging altogether would have left it
-        // green, and this is the only test in the tree that reaches the curved
-        // exposure through the warp bubble, so it was the ceiling on that
-        // module's coverage as well as its own.
-        //
-        // Subtracting an empty-sky frame from a lit one is how `render::bands`
-        // isolates starlight, and flying at an empty magnitude so a difference
-        // cannot hide among the stars is what
-        // `pitching_about_inside_does_not_leave_the_ship_crooked_outside` does.
-        // This is the two together: the ship's flight does not depend on the
-        // sky, so the hull, the plume and the glare are identical between the
-        // two magnitudes and fall out of the subtraction.
         let empty = crate::cli::MIN_MAGNITUDE.to_string();
         for view in [0, 1] {
             let frame = |steer: bool, magnitude: &str| {
@@ -2477,8 +1892,6 @@ mod tests {
                 straight.len()
             );
 
-            // And the empty sky is really empty, so the subtraction above is
-            // removing everything that is not a star rather than most of it.
             assert_eq!(
                 Universe::new(crate::cli::MIN_MAGNITUDE, 3).len(),
                 0,
@@ -2490,10 +1903,7 @@ mod tests {
 
     #[test]
     fn a_turn_leans_the_hull_even_with_nothing_in_the_sky() {
-        // The other half of the claim above, stated on its own feet. That test
-        // used to make both at once and one of them quietly stood in for the
-        // other; now that it looks only at starlight, nothing was left saying
-        // the hull answers the stick at all from outside.
+        // The other half of the claim above, stated on its own feet.
         let empty = crate::cli::MIN_MAGNITUDE.to_string();
         let frame = |steer: bool| {
             let args = args_for(&["--seed", "3", "--magnitude", &empty, "--size", "80x24"]);
@@ -2522,12 +1932,7 @@ mod tests {
 
     #[test]
     fn a_camera_swing_moves_no_star() {
-        // The sharp statement of what the rebuild is for. The band this
-        // replaced was laid out in the side camera's own space and re-laid
-        // whenever the orbit differed from the one it was last laid against, so
-        // swinging the camera rotated the whole pool — and the fold, the rim
-        // and the entering-surface sampler existed to patch the seams that
-        // tore. A world-space sky has nothing to re-lay, so this is bitwise.
+        // The sharp statement of what the rebuild is for.
         let args = args_for(&["--seed", "9", "--magnitude", "5.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         flight.cycle_view();
@@ -2543,9 +1948,6 @@ mod tests {
             flight.nudge_orbit(view::ORBIT_STEP, view::ORBIT_STEP, view::ORBIT_STEP);
             flight.draw(60.0, true, true);
         }
-        // And then flown on, because `advance` is what eases the orbit toward
-        // where the keys put it — and what would step the sky, if a swing were
-        // still something the sky had to be told about.
         for _ in 0..120 {
             flight.advance(1.0 / 60.0);
             flight.draw(60.0, false, true);
@@ -2635,7 +2037,6 @@ mod tests {
         assert!(!flight.menu_open());
         assert_eq!(flown(&flight), previewed, "Enter did not keep the choice");
 
-        // And backing out leaves the ship alone.
         handle_key(press(KeyCode::Char('m')), &mut flight, &args, &mut paused);
         handle_key(press(KeyCode::Down), &mut flight, &args, &mut paused);
         handle_key(press(KeyCode::Esc), &mut flight, &args, &mut paused);
@@ -2674,9 +2075,8 @@ mod tests {
 
     #[test]
     fn the_magnitude_keys_reach_the_sky_from_either_view() {
-        // It used to matter *which* sky the keys grew — there were two, and
-        // the answer was whichever one was being looked at. There is one now,
-        // so what is left to say is that both cameras reach it.
+        // It used to matter *which* sky the keys grew — there were two, and the
+        // answer was whichever one was being looked at.
         let args = args_for(&["--magnitude", "5.0", "--size", "80x24"]);
         let mut paused = false;
         for outside in [false, true] {
@@ -2754,8 +2154,7 @@ mod tests {
 
     #[test]
     fn q_flies_the_ship_rather_than_ending_the_flight() {
-        // Regression in waiting: `q` quit before it was a control. Now it rolls
-        // to port, and a pilot reaching for it must not lose the terminal.
+        // Regression in waiting: `q` quit before it was a control.
         let args = args_for(&["--magnitude", "3", "--size", "20x8"]);
         let mut flight = Flight::new(&args, 20, 8);
         let mut paused = false;
@@ -2789,9 +2188,7 @@ mod tests {
         // Three buffers have to agree: the canvas is two subpixel rows per
         // terminal row, the screen is one cell per terminal cell, and the
         // resolved pixel buffer has to match the canvas exactly or `compose`
-        // reads off the end of it. Walk a deliberately awful sequence —
-        // degenerate, lopsided, and either side of the panel's breakpoints —
-        // drawing and presenting at every step.
+        // reads off the end of it.
         let args = args_for(&["--seed", "9"]);
         let mut flight = Flight::new(&args, 80, 24);
 
@@ -2805,11 +2202,6 @@ mod tests {
             (46, 12), // and just over: the full panel comes back
             (37, 13),
             (1, 1),
-            // And a terminal claiming to be the largest thing a resize event
-            // can express. `--size` refuses this at the command line; the
-            // ioctl door had nothing on it, and 4.3e9 cells is an allocation
-            // that aborts rather than fails — taking the terminal down with
-            // it, since an abort runs no `Drop`.
             (u16::MAX as usize, u16::MAX as usize),
             (120, 40),
         ] {
@@ -2850,15 +2242,7 @@ mod tests {
     fn a_preposterous_resize_is_clamped_rather_than_believed() {
         // The sibling of `a_preposterous_terminal_is_clamped_rather_than_
         // believed` in `cli.rs`, and it exists because that one only ever
-        // watched the *first* answer. `resolved_size` runs the opening ioctl
-        // through `clamp_size`; every later answer arrives as `Event::Resize`
-        // and went straight into the canvas, so a `stty cols 30000 rows 30000`
-        // against a running flight asked for nine hundred million cells. A
-        // failed allocation aborts — no unwind, no `Drop`, no panic hook — so
-        // the terminal is never handed back.
-        //
-        // Asserted as the ratio rather than as an absolute pair, because both
-        // axes scale by the same factor and what has to survive is the shape.
+        // watched the *first* answer.
         let args = args_for(&["--magnitude", "3.5"]);
         let mut flight = Flight::new(&args, 80, 24);
         assert!(flight.resize(&args, 30_000, 30_000));
@@ -2873,7 +2257,6 @@ mod tests {
             "a square terminal came back {cols}x{rows}"
         );
 
-        // And a sane one is still left exactly alone.
         assert!(flight.resize(&args, 100, 30));
         assert_eq!(flight.renderer.screen().dims(), (100, 30));
     }
@@ -2904,21 +2287,6 @@ mod tests {
 
     #[test]
     fn a_resize_moves_the_canvas_and_leaves_the_pool_alone() {
-        // The inversion of what this used to hold. A resize re-derived the count
-        // from the new canvas whenever `--stars` was 0, so dragging a window
-        // edge respawned the sky a few hundred stars at a time and the count
-        // the panel showed at the time walked about while nothing had asked it
-        // to. A count a window can overrule is not one. The panel reads out the
-        // magnitude now and lets the count follow, so there is nothing left up
-        // there to walk — but the fault was in the pool rather than in the
-        // readout, which is why this still asks the pool.
-        //
-        // It is now true for a stronger reason than the flag being literal: the
-        // sky is laid out in the world rather than in front of the camera, so a
-        // resize has nothing to say to it at all and the two `retarget` calls
-        // that used to stand in `resize` — each dropping every trail in a field
-        // to hide the seam — are gone. The pool must not move by so much as a
-        // star, from either view.
         for extra in [vec![], vec!["--magnitude", "5.5"]] {
             let args = args_for(&extra);
             let mut flight = Flight::new(&args, 40, 12);
@@ -2939,10 +2307,7 @@ mod tests {
 
     #[test]
     fn the_brackets_and_the_wheel_ask_for_the_same_zoom() {
-        // Two ways into one control. They are wired separately — one through
-        // `handle_key`, one through `handle_mouse` — so nothing but a test says
-        // they agree, and a wheel that zoomed the opposite way to the key it
-        // shares a job with would be a very tiresome bug to live with.
+        // Two ways into one control.
         let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         for (code, kind) in [
             (KeyCode::Char(']'), MouseEventKind::ScrollUp),
@@ -2961,8 +2326,6 @@ mod tests {
             );
         }
 
-        // And they run the way round they read: `]` and a wheel pushed away
-        // bring the ship closer.
         let mut flight = outside(&args);
         let mut paused = false;
         handle_key(press(KeyCode::Char(']')), &mut flight, &args, &mut paused);
@@ -3057,12 +2420,6 @@ mod tests {
         // simplification and it silently makes the answer depend on the step
         // size, so a terminal keeping up would zoom at a different rate to one
         // that is not.
-        //
-        // A fifth of a second, delivered as twelve frames and as three. Both
-        // come to the same twenty-four simulation steps, so the two answers are
-        // not merely close but identical — which is what stepping the ease
-        // inside the fixed-step loop buys, and what moving it outside to run on
-        // the frame's own `dt` would throw away.
         let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let settled = |dt: f32, steps: usize| {
             let mut flight = outside(&args);
@@ -3082,7 +2439,6 @@ mod tests {
             "a fifth of a second came out {fine} in small steps and {coarse} in large"
         );
         assert!(fine > view::ZOOM_DEFAULT, "it never left: {fine}");
-        // And it does arrive, rather than easing forever toward it.
         let arrived = settled(1.0 / 60.0, 300);
         let mut asked = outside(&args);
         let mut paused = false;
@@ -3095,16 +2451,6 @@ mod tests {
     #[test]
     fn the_zoom_moves_the_ship_and_leaves_the_sky_alone() {
         // Why this is a dolly and not a change of lens, stated as a property.
-        // It was once a mechanism — the star band was laid out against the
-        // camera's focal length, so a zoom that touched it re-folded the whole
-        // field every notch — and it is a choice now: the sky is in the world
-        // and would survive a focal change, and a lens change is a different
-        // shot rather than a closer one. The property is the same either way,
-        // and it fails the moment anything makes `exterior_camera` read the
-        // zoom. Flown at sublight, where
-        // the lens is off and an exactly identical sky is the whole claim:
-        // every subpixel that differs between two zooms has to be one the ship
-        // and its bubble could have reached.
         let args = args_for(&["--seed", "5", "--magnitude", "5", "--size", "80x24"]);
         let frame = |zoom: f32| {
             let mut flight = outside(&args);
@@ -3120,16 +2466,14 @@ mod tests {
         let (w, h) = (80usize, 48usize);
         assert_eq!(near.len(), w * h);
         // The sweep below is a claim about *where* the two differ, which says
-        // nothing at all if they do not differ anywhere. `outside` lands the
-        // opening cut so these are lit frames rather than dim ones, and this
-        // is what says so.
+        // nothing at all if they do not differ anywhere.
         assert!(
             near.iter().zip(&far).any(|(a, b)| a != b),
             "the two zooms drew the same frame, so nothing below was measured"
         );
 
-        // Generous: the hull at the widest zoom, and the bubble that would
-        // hold it. Nothing outside that has any business having changed.
+        // Generous: the hull at the widest zoom, and the bubble that would hold
+        // it.
         let reach = view::ship_half_on_screen(h as f32, view::ZOOM_MAX) * 3.0;
         let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
         for y in 0..h {
@@ -3152,15 +2496,7 @@ mod tests {
         // The README's front page is two images stacked, and they line up only
         // because neither recipe passes `--size`: both fall back to
         // `SNAPSHOT_SIZE`, a cell is two subpixels tall, and at `--scale 2`
-        // both come out 480x272. The hero used to ask for `--size 220x60`,
-        // came out 440x240, and put a forty-pixel step down the side of the
-        // page that no commit message explained.
-        //
-        // Nothing pins the bytes of those files — `frames.sha256` is the text
-        // frames and knows nothing about the PNGs — so this pins the one
-        // property that makes the pair a pair. Asked of the real canvas rather
-        // than of `SNAPSHOT_SIZE` doubled by hand, so it goes through the
-        // arithmetic a snapshot actually uses.
+        // both come out 480x272.
         let common = [
             "--engage",
             "--throttle",
@@ -3206,17 +2542,7 @@ mod tests {
     fn the_shot_still_opens_exactly_where_it_always_did() {
         // The acceptance test for the whole change, asked of pixels rather than
         // of a hash so that it fails on the machine that broke it rather than
-        // in CI. A flight that never touches the camera has to draw what it
-        // drew before any of this existed — the star band's fast paths, the
-        // bubble's unforeshortened outline and the hull's quarter turn are all
-        // written to be exact at `Orbit::LEVEL` rather than very nearly so, and
-        // this is what says they are.
-        //
-        // Flown twice with the camera swung out and put back in between, which
-        // is the harder half: the ease is asymptotic, so `R` snapping both the
-        // angle and its target is the only thing that gets back to an exact
-        // zero, and a camera that settled to `1e-9` instead would take every
-        // slow path for the rest of the flight.
+        // in CI.
         let args = args_for(&["--seed", "9", "--magnitude", "5", "--size", "80x24"]);
         let mut paused = false;
 
@@ -3252,8 +2578,7 @@ mod tests {
         // Both flights press `c` at the same instant and take the same forty
         // steps, so the cut and the shutter it opens through cancel — but a
         // pair of black frames would cancel too, and this is the acceptance
-        // test for the whole camera. Forty steps is two thirds of a second,
-        // which clears the default fade, and this is what says it did.
+        // test for the whole camera.
         assert!(
             want.iter().any(|p| p.iter().any(|v| *v > 0)),
             "the shot came out black, so nothing below was compared"
@@ -3268,10 +2593,11 @@ mod tests {
     #[test]
     fn the_camera_is_not_connected_in_the_cockpit() {
         // The mirror of `the_zoom_is_not_connected_in_the_cockpit`, and the
-        // other half of `the_stick_flies_the_camera_outside_and_the_ship_inside`
-        // — in here the six keys fly the ship, so none of them may move the
-        // camera, and the camera survives a round trip through `C` because it
-        // is state rather than a mode.
+        // other half of
+        // `the_stick_flies_the_camera_outside_and_the_ship_inside` — in here
+        // the six keys fly the ship, so none of them may move the camera, and
+        // the camera survives a round trip through `C` because it is state
+        // rather than a mode.
         let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;
@@ -3285,7 +2611,6 @@ mod tests {
             flight.orbit_target()
         );
 
-        // And out there, put somewhere, it stays there across a trip inside.
         handle_key(press(KeyCode::Char('c')), &mut flight, &args, &mut paused);
         for _ in 0..4 {
             handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
@@ -3305,21 +2630,7 @@ mod tests {
     fn a_flight_that_flies_itself_shows_no_instruments() {
         // The panel is chrome a pilot reads, and `--demo` and `--screensaver`
         // have no pilot: what somebody watching either of those wants is the
-        // sky, not a throttle bar and a list of keys. Asked through the gate
-        // the loops actually use rather than of `hud::draw` directly, because
-        // what went wrong before was narrower than the panel — `hints` was
-        // switched off for a screensaver and the other four rows went on being
-        // drawn over it.
-        //
-        // Both views, because the panel carries a `SHIP` row from outside that
-        // the cockpit does not, and both cameras go through the same gate.
-        // Drawn and presented by hand rather than through `frame_of`, which
-        // asks for a panel of its own — the gate is the subject here, so it has
-        // to be this call that sets it. And the colour codes come out first,
-        // because the sky shows through the panel: a star behind a word puts an
-        // escape sequence in the middle of it, which would break the word for a
-        // `contains` in *either* direction. That, and a seed, are why this used
-        // to fail about half the time it was run.
+        // sky, not a throttle bar and a list of keys.
         let glyphs = |flight: &mut Flight, panel: bool| {
             flight.draw(60.0, false, panel);
             let mut out = Vec::new();
@@ -3343,8 +2654,6 @@ mod tests {
                     assert!(!frame.contains(word), "{argv:?} put {word} on the frame");
                 }
             }
-            // And the control, which is the half that says the gate is a gate
-            // rather than a panel that stopped working.
             let args = args_for(&[
                 "--engage", "--view", view, "--size", "120x36", "--seed", "1",
             ]);
@@ -3364,9 +2673,7 @@ mod tests {
     #[test]
     fn an_unattended_flight_swings_the_camera_and_a_flown_one_does_not() {
         // The gap the autopilot's camera closes, and the line it must not
-        // cross. A flight nobody is at flies its own camera; a flight somebody
-        // is at is left exactly where `--orbit` parked it, to the bit, however
-        // long it runs.
+        // cross.
         let args = args_for(&["--view", "side", "--magnitude", "2.5", "--size", "60x20"]);
         let mut flown = Flight::new(&args, 60, 20);
         for frame in 0..600 {
@@ -3398,15 +2705,10 @@ mod tests {
     fn a_flight_can_say_which_sky_it_is_flying() {
         // `run_snapshot` reports the frame it wrote and the velocity it wrote
         // it at, and used to leave out the only thing about the shot that
-        // cannot be read back off the picture. `--seed` is optional and falls
-        // back to the clock, so a frame worth keeping was a frame nobody could
-        // take again — and the seed was held nowhere a caller could reach.
+        // cannot be read back off the picture.
         let args = args_for(&["--seed", "4321", "--size", "40x12"]);
         assert_eq!(Flight::new(&args, 40, 12).seed(), 4321);
 
-        // And without the flag it is whatever the clock gave, which is the
-        // case worth reporting: two flights a moment apart are two skies, and
-        // the number is the only way back to either.
         let args = args_for(&["--size", "40x12"]);
         let (first, second) = (
             Flight::new(&args, 40, 12).seed(),
@@ -3418,35 +2720,7 @@ mod tests {
     #[test]
     fn a_paused_demo_freezes_the_schedule_it_is_flying_to() {
         // `P` gates `advance` and not the autopilot, which is deliberate and
-        // documented — a paused demo goes on flying itself and repainting. That
-        // took two corrections, and only one of them is still load-bearing.
-        //
-        // The first: `advance` is where the steering damper lives, so an
-        // autopilot that went on working the stick through a pause was pushing
-        // against nothing, and eleven seconds of `P` walked the yaw all the way
-        // to `MAX_YAW_RATE` at any frame rate. Zeroing the step fixed it and
-        // the autopilot has since stopped touching the stick altogether, so
-        // that fault is unreachable rather than guarded — the rate assertion
-        // below is a control now, and what it watches for is something *else*
-        // moving the stick behind a pause.
-        //
-        // The second is the one holding this up. The clock stayed on the wall
-        // on the argument that the
-        // throttle and the camera are closed forms of it and so are unaffected
-        // — true of the throttle, and false of the camera, because the closed
-        // form gives the orbit *target* and a frame is built from
-        // `Flight::orbit`, which eases toward it in `advance`. The pause stops
-        // the ease and not the target, so the gap opened at
-        // `autopilot::CAMERA_TURN` — a turn every 43 seconds — and closed at
-        // 7.2% per sim step on resume, whipping the camera round the hull.
-        //
-        // So the clock a paused flight hands its autopilot is `Flight::time`,
-        // which `advance` is the only thing that moves. What that costs is the
-        // sentence "a paused demo goes on flying itself": it does not any more,
-        // and the two things it does go on doing — repainting, and exiting at
-        // its deadline — are the two that were ever worth having. A pause that
-        // stops the world and not the schedule it is flying to is a pause that
-        // owes the flight a jump on the way out.
+        // documented — a paused demo goes on flying itself and repainting.
         let args = args_for(&[
             "--demo",
             "--view",
@@ -3464,11 +2738,7 @@ mod tests {
             let _ = frame;
         }
         // Exactly what the loop does while `paused` is set: no step, and no
-        // clock either, because `advance` is not called. Snapshotted after the
-        // first such frame rather than before it: the clock the loop hands over
-        // is the one `advance` left behind, so the first paused frame catches
-        // up by the step the last flying one took and every frame after it is
-        // handed the same number.
+        // clock either, because `advance` is not called.
         flight.fly_itself(&args, flight.time);
         let underway = (
             flight.ship.throttle,
@@ -3486,8 +2756,7 @@ mod tests {
         // Held rather than zero, and the distinction is kept deliberately even
         // though the value is now an exact zero: the damper is in `advance` and
         // a pause stops it, so whatever rate the ship is carrying it goes on
-        // carrying. What must not happen is the rate *growing*, which is what
-        // an impulse pushing against a stopped damper does.
+        // carrying.
         assert_eq!(
             (flight.ship.yaw_rate, flight.ship.pitch_rate),
             held,
@@ -3502,8 +2771,6 @@ mod tests {
             underway,
             "thirty seconds of pause moved the flight the autopilot was flying"
         );
-        // And the camera the *frame* is built from has not been left behind by
-        // the one the autopilot is asking for, which is the whole of the snap.
         let gap = [
             wrap_signed(flight.orbit_target.azimuth - flight.orbit.azimuth),
             wrap_signed(flight.orbit_target.elevation - flight.orbit.elevation),
@@ -3514,7 +2781,6 @@ mod tests {
             "the pause opened a {gap:?} gap between the camera and where it is being asked to go"
         );
 
-        // And it picks the schedule back up rather than jumping into it.
         flight.fly_itself(&args, flight.time);
         flight.advance(1.0 / 60.0);
         assert!(
@@ -3597,17 +2863,11 @@ mod tests {
         // beside a `time` that has to be `f64`: a key leaned on for a week
         // accumulates nothing, because every step is folded back onto a single
         // turn.
-        //
-        // And none of them parks. `W` used to stop dead at the quarter turn,
-        // which is what a clamp does and is not what a hand holding the key is
-        // asking for; over the top and round is.
         let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let mut flight = outside(&args);
         let mut paused = false;
 
-        // A full loop of the elevation on its own, watched the whole way. The
-        // camera has to pass the top rather than arrive at it: `> 0` for a
-        // while, then `< 0` once it is over, then home.
+        // A full loop of the elevation on its own, watched the whole way.
         let mut over_the_top = false;
         let mut been_under = false;
         for _ in 0..40 {
@@ -3635,7 +2895,6 @@ mod tests {
             flight.orbit()
         );
 
-        // And the other two, leaned on together for a long time.
         for _ in 0..4000 {
             handle_key(press(KeyCode::Char('d')), &mut flight, &args, &mut paused);
             handle_key(press(KeyCode::Char('q')), &mut flight, &args, &mut paused);
@@ -3655,9 +2914,7 @@ mod tests {
     fn the_camera_settles_the_same_way_however_the_frames_fall() {
         // The ease is `1 - exp(-k·dt)` inside a fixed sim step, exactly as the
         // zoom's and the flight model's are, so where the camera ends up does
-        // not depend on how the frames happened to land. Rewriting one of these
-        // as `k * dt` is the classic simplification and it makes the answer a
-        // function of the frame rate.
+        // not depend on how the frames happened to land.
         let args = args_for(&["--magnitude", "3.5", "--size", "60x20"]);
         let settle = |frames: usize, dt: f32| {
             let mut paused = false;
@@ -3701,8 +2958,7 @@ mod tests {
     #[test]
     fn the_picker_takes_the_wheel_as_well_as_the_keyboard() {
         // It is modal, and the wheel is no exception: while a list is up,
-        // scrolling is how a list is read. The brackets go nowhere at all,
-        // like every other flight key.
+        // scrolling is how a list is read.
         let args = args_for(&["--magnitude", "3.5", "--size", "80x24"]);
         let mut flight = Flight::new(&args, 80, 24);
         let mut paused = false;

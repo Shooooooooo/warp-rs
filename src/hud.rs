@@ -1,11 +1,4 @@
 //! The instrument panel.
-//!
-//! Drawn last, over the composed frame, so it reads as glass in front of the
-//! stars rather than something painted into the sky. Nothing but the ink is
-//! written: the frame behind a readout is left exactly as it was drawn, so the
-//! field runs on under the panel instead of stopping in a box around every
-//! word. Every element checks the terminal it has been given: on a small
-//! window the panel sheds detail instead of overflowing.
 
 use crate::ship::Ship;
 use crate::term::{truncate, ColorMode, Screen};
@@ -44,32 +37,6 @@ const ASCII_HINTS: [&str; 3] = [
 
 /// And the same again for the view from outside, where those same six keys fly
 /// the camera instead of the ship.
-///
-/// Pointing the nose is a thing you do from behind it: out there the camera
-/// rides with the ship, so a turn moves nothing an eye can see. What can
-/// usefully move in a view whose whole subject is the ship is the eye looking
-/// at it, so `WASD` swings the camera round the hull and over it and `QE` rolls
-/// it. The hints are the only place the controls are written down to somebody
-/// who is flying — and drawn only when somebody is, since a flight on autopilot
-/// gets no panel at all. A stick
-/// that means one thing in here and another out there has to say so in both
-/// places or it reads as a bug in the flight model.
-///
-/// `WASDQE cam` rather than anything longer, and the three columns it costs
-/// over `QE roll` are the entire budget. The narrowest tier had seven spare
-/// against `MIN_COLS` and now has four; spelling it `WASDQE camera` would take
-/// nine of the seven and burst the panel's own minimum. The ASCII middle tier
-/// is the other wall — at 56 it fits a sixty-column window with two columns to
-/// spare, and `tests/flight.rs` flies at exactly sixty, so a longer word there
-/// would shed the tier and lose the *throttle* to gain the camera.
-///
-/// The zoom appears on the widest tier and no further, which is where `M
-/// ships`, `P pause` and `R reset` already stop. `C view` is the exception on
-/// this face and is on all three, which is deliberate rather than an oversight:
-/// out here it is the way *back*, and a control that takes you somewhere ought
-/// not to be the one a narrow window sheds. The zoom runs the other way from
-/// the rest — the one control that does nothing from the pilot's seat, since
-/// there is no ship in there to be looking at.
 const SIDE_HINTS: [&str; 3] = [
     "SPACE warp  \u{2191}\u{2193} throttle  WASDQE cam  [] zoom  C view  M ships  P pause  R reset  ESC quit",
     "SPACE warp  \u{2191}\u{2193} throttle  WASDQE cam  C view  ESC quit",
@@ -83,11 +50,6 @@ const ASCII_SIDE_HINTS: [&str; 3] = [
 ];
 
 /// The characters the panel is drawn from.
-///
-/// [`ColorMode::Ascii`] exists for a terminal that cannot be sent colour, and
-/// such a terminal is generally not one to send U+2588 to either — so it gets
-/// a set that stays inside ASCII. Every substitute is one character wide, so
-/// the two faces lay out identically and only the ink differs.
 struct Glyphs {
     /// The nav panel's frame: the corner it opens on, the corner it closes on,
     /// and the rule down its left-hand side.
@@ -99,8 +61,8 @@ struct Glyphs {
     /// Wraps the status banner.
     open: char,
     close: char,
-    /// Inside the warp banner, and — three of it — the placeholder a cold
-    /// drive leaves in the one-line panel a narrow window gets.
+    /// Inside the warp banner, and — three of it — the placeholder a cold drive
+    /// leaves in the one-line panel a narrow window gets.
     dash: char,
     /// Wraps the paused banner.
     stop: char,
@@ -132,14 +94,6 @@ impl Glyphs {
     /// alphabet: in this mode the panel has no colour to set it apart from the
     /// starfield, so a glyph the ramp also draws — `#`, `.`, `+`, `*` — reads
     /// as a bright star rather than as an instrument.
-    ///
-    /// That rule binds the *shapes* and not the words, and only the shapes:
-    /// the bar, the rules and the reticle keep out of the ramp entirely, and
-    /// `the_ascii_shapes_stay_clear_of_the_brightness_ramp` is what holds them
-    /// there. The frame corners and the degree sign are `+` and `*`, both of
-    /// which are in it — a corner is read from the box it closes and a degree
-    /// sign from the number in front of it, so neither is mistakable for a
-    /// star the way a bar of `#` against a sky of `#` would be.
     const ASCII: Glyphs = Glyphs {
         frame_top: '+',
         frame_bottom: '+',
@@ -151,8 +105,7 @@ impl Glyphs {
         stop: '|',
         bar_full: '|',
         bar_empty: '_',
-        // Nothing in ASCII means "degrees". `*` is the usual stand-in and, at
-        // one column, it keeps the readout inside its column.
+        // Nothing in ASCII means "degrees".
         degree: '*',
         hints: &ASCII_HINTS,
         side_hints: &ASCII_SIDE_HINTS,
@@ -165,8 +118,8 @@ impl Glyphs {
         }
     }
 
-    /// The hints for the view being flown: they name different keys, because
-    /// in the two views different keys do anything.
+    /// The hints for the view being flown: they name different keys, because in
+    /// the two views different keys do anything.
     fn hints_for(&self, view: ViewMode) -> &'static [&'static str; 3] {
         match view {
             ViewMode::Cockpit => self.hints,
@@ -199,20 +152,6 @@ pub struct Readout<'a> {
     pub magnitude: f32,
     pub paused: bool,
     /// Whether to put any glass in front of the frame at all.
-    ///
-    /// Off exactly when the flight is flying itself — `--demo` and
-    /// `--screensaver` — because instruments are readings for somebody at the
-    /// controls and there is nobody there. What a viewer of those two wants is
-    /// the sky.
-    ///
-    /// This used to be `hints`, and gated the one hint line. That was right as
-    /// far as it went and it did not go far enough: the reason written down for
-    /// it was that a screensaver quits on any key, so listing which keys do
-    /// what would be a lie — which is an argument about one line of a panel
-    /// that had no business being drawn at all. The two flags are not kept side
-    /// by side because the narrower one would separate nothing: no frame draws
-    /// a panel with the hints off, so `draw_hints` is unconditional now and
-    /// this is the only question asked.
     pub panel: bool,
     /// Which camera the frame under the glass was drawn with. The panel is the
     /// same either way except where the view itself has moved something: the
@@ -259,26 +198,8 @@ fn draw_compact(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, g: &
 }
 
 /// How many rows the NAV panel has, and where its closing rule therefore lands.
-///
-/// Two callers need this and only one of them draws the panel, which is why it
-/// is a function rather than a `rows.len()` read off at the point of use. The
-/// reticle goes down *before* the panel — it lightens what is behind it where
-/// the panel covers, so the order is not free to change — and so it has to be
-/// told where the panel is going to be rather than able to look.
-///
-/// Keeping it derived matters more than the four lines it saves: CLAUDE.md's
-/// note on adding a NAV readout is about how tight the row budget already is,
-/// and a row that moved the closing rule without moving the reticle would put
-/// the fault below straight back. Taking the warp row out is that coupling run
-/// the other way, and is what says it works: the panel closed a row higher and
-/// the reticle's refusal came down two terminal rows with it, neither having
-/// been told about the other.
 fn nav_rows(view: ViewMode) -> usize {
-    // VELOCITY, DISTANCE, HEADING and ROLL, and SHIP only from outside. The
-    // warp factor was the second of these until the row was found to be the
-    // same number the status banner already quotes across the bottom of the
-    // frame — one reading said twice, several rows apart, in the quieter of
-    // the two places.
+    // VELOCITY, DISTANCE, HEADING and ROLL, and SHIP only from outside.
     4 + usize::from(view == ViewMode::Side)
 }
 
@@ -295,19 +216,6 @@ fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs, nav_b
     }
     // And it clears the instrument panel, which is the same kind of refusal as
     // the one above and was missing for as long as there has been a reticle.
-    // The panel is drawn afterwards and `overlay` skips its own spaces, so a
-    // bracket landing on a NAV row is not covered by it — it shows through the
-    // gaps between the label and the value, in the very box characters the
-    // panel's own frame is drawn in. Below about twenty rows the top pair
-    // lands inside the panel at every width — twenty-two while the panel
-    // carried a warp row, since `cy` is half the height and so each NAV row
-    // shed lets the brackets down two terminal rows sooner.
-    //
-    // Refused outright rather than drawn smaller, for the reason the edge case
-    // above is: at `MIN_ROWS` the panel is more than half the window and there
-    // is no `dy` that clears it, so a reticle that shrank to fit would have to
-    // vanish at the bottom of the range anyway — and would change size with the
-    // terminal on the way there, which is not what a sight does.
     if cy - dy <= nav_bottom {
         return;
     }
@@ -318,9 +226,7 @@ fn draw_reticle(screen: &mut Screen, cols: usize, rows: usize, g: &Glyphs, nav_b
         (cx + dx, cy + dy, g.reticle[3]),
     ] {
         // A mark, not a readout: it sits in the scene, so it lightens what is
-        // behind it instead of casting the panel's shadow. These brackets land
-        // inside the tunnel glare, where a shadow would read as four dark
-        // notches punched into the brightest part of the frame.
+        // behind it instead of casting the panel's shadow.
         screen.overlay_mark(x, y, &ch.to_string(), RULE);
     }
 }
@@ -347,8 +253,7 @@ fn draw_nav_panel(screen: &mut Screen, r: &Readout, g: &Glyphs) {
     }
 
     // The one place the row list and `nav_rows` could drift apart, so it is
-    // also the place they are held together. The reticle stands off the panel
-    // by asking `nav_rows` rather than by counting these.
+    // also the place they are held together.
     debug_assert_eq!(
         rows.len(),
         nav_rows(r.view),
@@ -395,11 +300,8 @@ fn draw_status_line(screen: &mut Screen, r: &Readout, cols: usize, rows: usize, 
     let col = cols.saturating_sub(text.chars().count()) / 2;
     screen.overlay(col, status_row(rows), &text, color);
 
-    // Right-hand corner: what was asked of the sky, and how hard the machine
-    // is working for it. The count that magnitude comes to sat between the two
-    // and has gone, being the one number here nobody could ask for — a sky is
-    // described by how faint a star you can pick out of it, the count follows,
-    // and `--help` already says each magnitude is about four times the last.
+    // Right-hand corner: what was asked of the sky, and how hard the machine is
+    // working for it.
     let stats = format!("MAG {:>4.1}  {:>3.0} FPS", r.magnitude, r.fps);
     let col = cols.saturating_sub(stats.chars().count() + 2);
     screen.overlay(col, 1, &stats, DIM);
@@ -525,12 +427,8 @@ mod tests {
         ] {
             let mut screen = blank(cols, rows);
             draw(&mut screen, &readout(&ship));
-            // This used to assert `screen.dims() == (cols, rows)`, which is the
-            // pair handed to `blank` one line up: `draw` takes a `&mut Screen`
-            // and never resizes, so the only failure it could report was a
-            // panic. What the name is about is that the panel *degrades* —
-            // every row it wrote has to be the width it was given, and none of
-            // it may have run off the end.
+            // `draw` never resizes, so the row widths below are the real check:
+            // the panel has to degrade, not run off the end of a line.
             assert_eq!(screen.dims(), (cols, rows));
             for row in 0..rows {
                 assert_eq!(
@@ -544,10 +442,6 @@ mod tests {
 
     #[test]
     fn the_panel_renders_at_every_point_in_the_flight_envelope() {
-        // This used to assert nothing at all, so the only failure it could
-        // report was a panic — which is worth having, since the panel indexes
-        // a grid, but it is not what the name promises. A panel that quietly
-        // drew nothing at some speed would have passed.
         let mut ship = Ship::new();
         let mut screen = blank(100, 30);
         let drawn = |screen: &Screen| {
@@ -660,9 +554,7 @@ mod tests {
     #[test]
     fn the_hints_name_the_keys_that_exist() {
         // The hints are the only place the controls are written down, so a key
-        // that has moved must move here too — and `q` no longer quits. Each
-        // face of the panel carries its own copy, and so does each view, so all
-        // four are checked.
+        // that has moved must move here too — and `q` no longer quits.
         for set in [&HINTS, &ASCII_HINTS, &SIDE_HINTS, &ASCII_SIDE_HINTS] {
             for hint in set {
                 assert!(hint.contains("QE"), "{hint:?} does not name the roll");
@@ -680,10 +572,7 @@ mod tests {
                 widths.last().is_some_and(|w| w + 2 <= MIN_COLS),
                 "the shortest hint does not fit the narrowest panel: {widths:?}"
             );
-            // The camera is on the widest tier only. Putting the whole lot on
-            // every tier would take the shortest one past the panel's own
-            // minimum width, and that line has to keep fitting the terminals it
-            // exists for.
+            // The camera is on the widest tier only.
             assert!(
                 set[0].contains("C view") && set[0].contains("M ships"),
                 "the widest hint does not name the camera: {:?}",
@@ -691,12 +580,6 @@ mod tests {
             );
         }
 
-        // And the two views differ in exactly the way the controls do: the
-        // cockpit stick flies the ship, the outside one flies the camera, and a
-        // hint that names the wrong one is worse than no hint. Both are
-        // asserted on every tier rather than on the widest: the whole point of
-        // the shorter ones is that they shed the *rare* controls, and the stick
-        // is not one of them.
         for set in [&HINTS, &ASCII_HINTS] {
             assert!(set.iter().all(|h| h.contains("WASD steer")), "{set:?}");
         }
@@ -709,8 +592,6 @@ mod tests {
                 set.iter().all(|h| !h.contains("steer")),
                 "the outside view offers a stick that does not fly the ship: {set:?}"
             );
-            // And the zoom, which runs the other way: it does nothing at all
-            // from the pilot's seat, so it is named out here and nowhere else.
             assert!(
                 set[0].contains("[] zoom"),
                 "the outside view does not name the zoom: {:?}",
@@ -771,8 +652,8 @@ mod tests {
     fn the_ascii_panel_is_actually_ascii() {
         // Regression: `--color ascii` is for a terminal that cannot be sent
         // colour, but the panel went on drawing box rules, block bars, angle
-        // brackets, em dashes, degree signs and arrow keys at it — every one
-        // of them multi-byte. Only the starfield ramp was ever ASCII.
+        // brackets, em dashes, degree signs and arrow keys at it — every one of
+        // them multi-byte.
         let mut ship = Ship::new();
         ship.throttle = 0.5;
         ship.toggle_warp();
@@ -782,14 +663,6 @@ mod tests {
 
         // Wide enough for the full panel, and narrow enough for the compact
         // one, and paused as well as under way: every branch that writes text.
-        // Both views, because they carry their own hints and CI's grep sees a
-        // cockpit frame only. It matters more than it did: `ascii.txt` is a
-        // `--demo` flight and a flight nobody is flying draws no panel, so that
-        // file is the starfield's brightness ramp and nothing else. The
-        // `headless` job pipes a second `--engage --color ascii` frame through
-        // the same grep to keep a panel under it at all, and even that one is a
-        // cockpit — so a stray multi-byte glyph in the outside view's hints
-        // still gets past everything but this, which is the only thing looking.
         for (cols, rows) in [(120, 34), (80, 24), (46, 12), (20, 6), (2, 2)] {
             for paused in [false, true] {
                 for view in ViewMode::ALL {
@@ -823,8 +696,7 @@ mod tests {
     fn the_ascii_shapes_stay_clear_of_the_brightness_ramp() {
         // In this mode the panel has no colour to distinguish it from the sky,
         // so the marks that are read as shapes rather than words must not be
-        // characters the starfield also draws. The words may overlap the ramp:
-        // `NAV` is legible next to a star, a bar of `#` against `#` is not.
+        // characters the starfield also draws.
         let ramp: Vec<char> = crate::term::ASCII_RAMP.iter().map(|b| *b as char).collect();
         let g = &Glyphs::ASCII;
         let mut shapes = vec![g.bar_full, g.bar_empty, g.vrule];
@@ -843,19 +715,13 @@ mod tests {
 
     #[test]
     fn the_two_faces_of_the_panel_lay_out_identically() {
-        // The ASCII substitutes are all one column wide, which is what lets
-        // the same layout code serve both: a wider stand-in would push the
-        // readouts out of their columns on exactly the terminals least able
-        // to spare the room.
+        // The ASCII substitutes are all one column wide, which is what lets the
+        // same layout code serve both: a wider stand-in would push the readouts
+        // out of their columns on exactly the terminals least able to spare the
+        // room.
         let ship = Ship::new();
         // The hints are excluded from the sweep rather than switched off, and
-        // the distinction is the whole of this test's soundness. "UP/DN" is
-        // genuinely wider than "\u{2191}\u{2193}", so that one line is expected
-        // to differ, and it is right-aligned on a row of its own precisely so
-        // it can. There used to be a flag that left it out — `hints`, which is
-        // now `panel` and switches off the whole thing, so setting it false
-        // here would compare two empty footprints and pass on a panel that was
-        // never drawn.
+        // the distinction is the whole of this test's soundness.
         let quiet = Readout {
             ship: &ship,
             fps: 60.0,
@@ -865,17 +731,12 @@ mod tests {
             view: ViewMode::Cockpit,
             model: "normandy",
         };
-        // Which cells the panel stamped over the composed frame. The two modes
-        // compose different backdrops — half blocks against a brightness ramp —
-        // so the glyphs cannot be compared directly, but the footprint can.
+        // Which cells the panel stamped over the composed frame.
         let footprint = |mode, cols: usize, rows: usize| -> Vec<Vec<bool>> {
             let bare = blank_in(cols, rows, mode);
             let mut drawn = blank_in(cols, rows, mode);
             draw(&mut drawn, &quiet);
-            // The hint row is masked out at the sizes that draw one. Below the
-            // panel's minimum the compact layout puts the throttle there
-            // instead, in the same characters either way, so that row is
-            // compared like the rest.
+            // The hint row is masked out at the sizes that draw one.
             let masked = (cols >= MIN_COLS && rows >= MIN_ROWS).then(|| hint_row(rows));
             (0..rows)
                 .map(|row| {
@@ -894,8 +755,7 @@ mod tests {
         for (cols, rows) in [(120, 34), (80, 24), (46, 12), (20, 6)] {
             let truecolor = footprint(ColorMode::Truecolor, cols, rows);
             // Two empty footprints agree beautifully, and this test spent a
-            // while able to produce a pair of them. Non-vacuity first, then the
-            // comparison.
+            // while able to produce a pair of them.
             assert!(
                 truecolor.iter().flatten().any(|stamped| *stamped),
                 "the panel stamped nothing at all at {cols}x{rows}"
@@ -913,8 +773,7 @@ mod tests {
         // Regression: the reticle went through the panel's text path, so it
         // shadowed its own cells — and it sits inside the tunnel glare, so at
         // warp it punched four dark notches into the brightest part of the
-        // view. Over a uniformly lit frame no reticle cell may come out
-        // dimmer than what was composed.
+        // view.
         let (cols, rows) = (120usize, 34usize);
         let lit = [200u8, 210, 230];
         let mut screen = Screen::new(cols, rows, ColorMode::Truecolor);
@@ -935,12 +794,10 @@ mod tests {
             (cx - 9, cy + 3),
             (cx + 9, cy + 3),
         ] {
-            // Said before the colours are looked at, because `Backdrop::Lighten`
-            // leaves `bg` alone and takes the brighter of the two foregrounds —
-            // so a cell the reticle never reached carries the backdrop in both
-            // and satisfies everything below. The whole of this test passed on a
-            // `draw_reticle` that returned immediately, which mattered the
-            // moment its refusal was the thing being edited.
+            // Said before the colours are looked at, because
+            // `Backdrop::Lighten` leaves `bg` alone and takes the brighter of
+            // the two foregrounds — so a cell the reticle never reached carries
+            // the backdrop in both and satisfies everything below.
             assert!(
                 uni()
                     .reticle
@@ -967,10 +824,7 @@ mod tests {
     fn the_hints_never_eat_the_throttle_readout() {
         // Regression: the hints were right-aligned onto the throttle's own row
         // and only checked that they fit the terminal, not that they cleared
-        // the bar. At every width from 63 to 89 — the default 80 among them —
-        // they overwrote the end of the bar and the whole percentage:
-        //
-        //   THR ███░░░░░░░░░░SPACE warp  ↑↓ throttle  ←→IK steer  P pause ...
+        // the bar.
         let mut ship = Ship::new();
         ship.throttle = 0.5;
         let rows = 24;
@@ -1003,25 +857,7 @@ mod tests {
     fn the_reticle_never_lands_in_the_instrument_panel() {
         // Regression, and the sibling of `the_hints_never_eat_the_throttle_
         // readout` above: that one sweeps every *width* because the hints once
-        // overwrote the throttle bar across a band of them. Nothing swept the
-        // heights, and the same shape of fault was sitting in the gap.
-        //
-        // `draw_reticle` puts its brackets at `(cols/2 ± 9, rows/2 ± 3)` and
-        // the panel closes at row `2 + rows.len()`, so below about 20 rows the
-        // top pair lands inside the NAV panel. The panel is drawn *after* the
-        // reticle and `overlay` skips its own spaces, so the panel's gaps let
-        // the brackets straight through:
-        //
-        //   │ HEADING   ┌  0.0° /  +0.0°  ┐
-        //
-        // which reads as a broken frame, because in the Unicode face the
-        // reticle is drawn in the same box characters the frame is. Measured
-        // at heights 12 through 19 at every width from `MIN_COLS` to 200, in
-        // both faces. It was 21 while the panel carried a warp row: `cy` is
-        // half the height, so each NAV row shed lets the brackets down two
-        // terminal rows sooner. No reference frame can see any of it: all ten
-        // fly at 120x36, where the reticle rows are 15 and 21 and the panel
-        // closes at 6.
+        // overwrote the throttle bar across a band of them.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
 
@@ -1032,17 +868,8 @@ mod tests {
                     let mut screen = blank_in(cols, rows, mode);
                     draw(&mut screen, &readout(&ship));
 
-                    // Where the panel ends, asked of the picture rather than
-                    // of the row count, so another NAV row moves this with it.
-                    //
-                    // Searched from row 2 rather than from row 1, and that is
-                    // not tidiness: the ASCII face spells `frame_top` and
-                    // `frame_bottom` both `'+'`, so the header stamped at
-                    // column 2 of row 1 answered this and the sweep below ran
-                    // over exactly one row. Half of what the comment above
-                    // promises — the half in the face where the panel has no
-                    // colour to tell it from the sky — was checking nothing at
-                    // all.
+                    // Where the panel ends, asked of the picture rather than of
+                    // the row count, so another NAV row moves this with it.
                     let Some(bottom) = (2..rows)
                         .find(|row| screen.row_text(*row).chars().nth(2) == Some(g.frame_bottom))
                     else {
@@ -1053,7 +880,7 @@ mod tests {
                         let text = screen.row_text(row);
                         // From column 4: the frame itself lives at column 2 and
                         // is drawn in `┌` and `└`, which are two of the four
-                        // glyphs being looked for. Labels start at 4.
+                        // glyphs being looked for.
                         for (col, ch) in text.chars().enumerate().skip(4) {
                             assert!(
                                 !g.reticle.contains(&ch),
@@ -1072,8 +899,6 @@ mod tests {
     fn the_reticle_is_still_drawn_where_there_is_room_for_it() {
         // The other half, and the reason the test above cannot stand alone: a
         // `draw_reticle` that returned immediately would satisfy it completely.
-        // At a terminal with the room the brackets have to be there, and they
-        // have to be all four.
         let ship = Ship::new();
         let g = uni();
         let (cols, rows) = (120, 36);
@@ -1099,17 +924,7 @@ mod tests {
     #[test]
     fn the_reticle_comes_back_as_soon_as_the_panel_leaves_it_room() {
         // The threshold, pinned at the two heights either side of it rather
-        // than left to fall out of the panel's own arithmetic. `draw_reticle`
-        // refuses while `cy - 3 <= nav_bottom` and `cy` is `rows / 2`, so the
-        // brackets appear at 20 rows and are refused at 19 — two rows lower
-        // than they used to be, because the NAV panel is a row shorter and each
-        // row shed is worth two of terminal height.
-        //
-        // Written down because nothing else would have noticed it move: the
-        // sweep above only asks that no bracket lands *inside* the panel, which
-        // a reticle that refused everywhere satisfies perfectly, and the sweep
-        // below it looks at one hard-coded 120x36. Both went on passing while
-        // the reticle quietly switched itself on across a band of terminals.
+        // than left to fall out of the panel's own arithmetic.
         let ship = Ship::new();
         let g = uni();
         let brackets = |rows: usize| -> usize {
@@ -1137,11 +952,8 @@ mod tests {
     #[test]
     fn the_hints_shed_detail_rather_than_vanishing() {
         // Each tier needs its own width plus the two columns that keep it off
-        // the right-hand edge, so the widest fits only a wide terminal and
-        // most of this range gets a shorter one. Whichever is chosen still has
-        // to name the keys that matter, down to the panel's own minimum. Said
-        // as the rule rather than as a column count, which is what it was and
-        // had outlived the hints it was counting by nearly thirty columns.
+        // the right-hand edge, so the widest fits only a wide terminal and most
+        // of this range gets a shorter one.
         let ship = Ship::new();
         let rows = 24;
         for cols in MIN_COLS..=120 {
@@ -1165,15 +977,7 @@ mod tests {
     fn the_panel_can_be_suppressed_outright() {
         // A flight nobody is flying gets no glass in front of it: `--demo` and
         // `--screensaver` want the sky, and instruments are readings for
-        // somebody at the controls. This used to switch off the hint line
-        // alone, on the narrower argument that a screensaver quits on any key
-        // so naming keys would be a lie — true, and an argument about one row
-        // of a panel that had no business being there at all.
-        //
-        // Asked as "nothing was stamped" rather than as three `!contains`,
-        // because what has to hold is that the frame under the panel comes
-        // through untouched — a reticle brightening four cells, or a nav rule
-        // dimming one, would satisfy any number of absent words.
+        // somebody at the controls.
         let render = |panel: bool| {
             let mut screen = blank(120, 34);
             let ship = Ship::new();
@@ -1204,8 +1008,6 @@ mod tests {
             untouched,
             "a suppressed panel still put something on the frame"
         );
-        // And the comparison is not two blank frames agreeing, which is the
-        // thing it would otherwise be very good at.
         let drawn = render(true);
         assert_ne!(drawn, untouched, "the panel drew nothing with `panel` set");
         for word in ["VELOCITY", "THR", "pause"] {
@@ -1220,10 +1022,6 @@ mod tests {
         // sweep, neither of which reads a word of it, so the ten reference
         // frames were the whole of its coverage — and a hash says a frame
         // changed without saying what about it was meant to.
-        //
-        // The count the magnitude comes to used to sit between the two numbers
-        // below. It is asserted absent rather than merely unmentioned, because
-        // a readout is removed by nobody drawing it and put back by anybody.
         let ship = Ship::new();
         let mut screen = blank(120, 34);
         draw(
@@ -1241,9 +1039,7 @@ mod tests {
         // Read with the backdrop taken out rather than word by word, because
         // what is being pinned is that the row holds these two fields and
         // nothing else — a `contains` apiece would go on passing with a third
-        // number put back between them. `overlay` skips its own spaces, so
-        // every gap in the panel keeps the half block `compose` drew and the
-        // ink is all that is left once those are dropped.
+        // number put back between them.
         let ink: String = screen
             .row_text(1)
             .chars()
@@ -1262,11 +1058,6 @@ mod tests {
         // bottom of the same frame: one number, twice, several rows apart, and
         // the quieter of the two was the one taking a row out of a budget
         // CLAUDE.md describes as tight.
-        //
-        // Counted over the whole grid rather than asserted of a row, so it
-        // fails whichever of the two comes back and does not care where the
-        // banner is centred. Both views, because only one of them was ever
-        // going to be looked at again.
         let mut ship = Ship::new();
         ship.throttle = 1.0;
         ship.toggle_warp();
