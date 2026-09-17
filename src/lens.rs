@@ -236,27 +236,6 @@ impl Lens {
         points.iter().any(|p| self.offset_sq((p.0, p.1)) <= reach)
     }
 
-    /// Whether the straight line between two points passes inside the ring.
-    /// Point-to-segment distance, worked on the offsets rather than the points,
-    /// and no trigonometry: this is asked once per sample of every streak the
-    /// lens reaches. Straight lines survive the scaling, so the nearest point
-    /// of the scaled segment is the nearest point of the real one.
-    fn crosses_the_ring(&self, from: (f32, f32), to: (f32, f32)) -> bool {
-        let (ax, ay) = self.offsets(from);
-        let (bx, by) = self.offsets(to);
-        let (dx, dy) = (bx - ax, by - ay);
-        let len_sq = dx * dx + dy * dy;
-        // Where along the segment the nearest point to the centre falls, held
-        // to the segment itself rather than the whole line it lies on.
-        let t = if len_sq > f32::MIN_POSITIVE {
-            (-(ax * dx + ay * dy) / len_sq).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let (nx, ny) = (ax + dx * t, ay + dy * t);
-        nx * nx + ny * ny < 1.0
-    }
-
     /// How sharply the lens is bending things at `p`, as a 0..=1 ramp.
     pub fn curvature(&self, p: (f32, f32)) -> f32 {
         if !self.is_on() {
@@ -329,31 +308,74 @@ const MAX_ARC_STEP: f32 = 0.25;
 /// Ceiling on that filling-in, so a source sweeping right past the axis cannot
 /// ask for an unbounded number of points.
 const MAX_ARC_FILL: usize = 24;
+/// Its tangent, so [`Lens::arc_to`] can ask whether the image sweeps that far
+/// without working out by how much — two `atan2`s it would then throw away on
+/// the great majority of pairs. Spelled out because `tan` is not `const`;
+/// `the_arc_step_and_its_tangent_agree` is what holds the two together.
+const TAN_ARC_STEP: f32 = 0.2553419;
+
+/// How far out the image of a source `m` Einstein radii off the axis sits, in
+/// the same units — the radial half of [`Lens::map`], asked for on its own so
+/// the sweep can answer it at a bearing the caller never sampled.
+fn image_radius(m: f32, image: Image) -> f32 {
+    // Held to the range `magnification` is worked over and for the same two
+    // reasons: on the axis a source images as the ring itself, and a star a
+    // hair past the near plane lands billions of subpixels off the canvas.
+    let m = if m.is_nan() {
+        U_FLOOR
+    } else {
+        m.clamp(U_FLOOR, U_CEILING)
+    };
+    let root = (m * m + 4.0).sqrt();
+    match image {
+        Image::Primary => (m + root) * 0.5,
+        // `(√(m² + 4) − m)/2` is two nearly equal numbers subtracted once `m`
+        // is large, so it is spelled the way `map` spells it.
+        Image::Secondary => 2.0 / (m + root),
+    }
+}
 
 impl Lens {
     /// Append the arc from `from` to `to`, as seen about the lens, to `out`.
-    /// `from` is assumed to be there already; `to` always ends up there.
+    /// Both are images, of the same source and the same kind; `from` is assumed
+    /// to be there already and `to` always ends up there.
+    ///
+    /// The radius along the sweep is read off the straight leg the star flew,
+    /// which the two ends are carried back through the lens to recover.
+    /// Interpolating between the two ends' radii instead answers with a radius
+    /// the star was never at: for two samples out on either side of the bubble
+    /// — which is what an exposure that has run off the frame arrives as — that
+    /// is a loop right round it several rings across, where the light went past
+    /// at one.
     pub fn arc_to(
         &self,
         from: crate::canvas::Trace,
         to: crate::canvas::Trace,
+        image: Image,
         out: &mut Vec<crate::canvas::Trace>,
     ) {
-        // The expensive part of this is two `atan2`s and a `sin_cos` per point,
-        // and the great majority of pairs do not need it: two samples of a
-        // streak that is merely passing by are a fraction of a radian apart and
-        // a straight line between them is the arc to well under a subpixel.
-        if !self.crosses_the_ring((from.0, from.1), (to.0, to.1)) {
+        let (fx, fy) = self.offsets((from.0, from.1));
+        let (tx, ty) = self.offsets((to.0, to.1));
+        // Whether the image sweeps far enough for a chord to cut the corner,
+        // which is exactly the question — and it is the sine against the
+        // tangent of the cosine, so it costs a cross product and a dot rather
+        // than the two `atan2`s below. Anything past a quarter turn is past
+        // the step outright, and a NaN answers no, as the ring test it
+        // replaced did.
+        let (cross, dot) = (fx * ty - fy * tx, fx * tx + fy * ty);
+        let sweeps = dot <= 0.0 || cross.abs() > TAN_ARC_STEP * dot;
+        if !sweeps {
             out.push(to);
             return;
         }
+        // Below the gate, so a pair that needs no filling in does not pay for
+        // the two roots and the two `atan2`s nothing reads.
         let (a, b) = self.semi_axes();
-        let polar = |p: (f32, f32)| {
-            let (ex, ey) = self.offsets(p);
-            (crate::canvas::length_of(ex, ey), ey.atan2(ex))
-        };
-        let (r0, th0) = polar((from.0, from.1));
-        let (r1, th1) = polar((to.0, to.1));
+        let (r0, r1) = (
+            crate::canvas::length_of(fx, fy),
+            crate::canvas::length_of(tx, ty),
+        );
+        let (th0, th1) = (fy.atan2(fx), ty.atan2(tx));
         // The short way round: the image sweeps, it does not jump.
         let mut sweep = th1 - th0;
         while sweep > std::f32::consts::PI {
@@ -368,10 +390,29 @@ impl Lens {
         } else {
             1
         };
+        // Both ends carried back to the sources that made them: an image `r`
+        // rings out is the source `r − 1/r`, so scaling by `1 − 1/r²` does it
+        // without a bearing — and that factor goes negative inside the ring,
+        // which is how the counter-image lands back on the side it came from.
+        let (sf, st) = (1.0 - 1.0 / (r0 * r0), 1.0 - 1.0 / (r1 * r1));
+        let (sx, sy) = (fx * sf, fy * sf);
+        let (dx, dy) = (tx * st - sx, ty * st - sy);
+        let run = crate::canvas::length_of(dx, dy);
+        if !run.is_finite() || run <= 0.0 {
+            out.push(to);
+            return;
+        }
+        // The leg as its own normal and how far off the centre it passes, so
+        // how far out it sits at a bearing is one division. A leg pointed
+        // straight at the centre passes at nothing and images as the ring
+        // itself, which is what a source crossing the axis does.
+        let (nx, ny) = (-dy / run, dx / run);
+        let off_centre = nx * sx + ny * sy;
         for i in 1..steps {
             let s = i as f32 / steps as f32;
-            let (r, th) = (r0 + (r1 - r0) * s, th0 + sweep * s);
-            let (along, across) = (a * r * th.cos(), b * r * th.sin());
+            let (sin, cos) = (th0 + sweep * s).sin_cos();
+            let r = image_radius((off_centre / (nx * cos + ny * sin)).abs(), image);
+            let (along, across) = (a * r * cos, b * r * sin);
             // The pace is carried across the points the sweep fills in: a bend
             // moves where a star's light lands, never how fast it got there.
             out.push((
@@ -730,16 +771,25 @@ mod tests {
         // A source passing behind the mass has its image sweep right round the
         // ring.
         let lens = lens();
-        let (from, to) = (at(&lens, (1.0, 0.0), 1.0), at(&lens, (-1.0, 0.0), 1.0));
+        let source = |dir| {
+            let p = at(&lens, dir, 1.0);
+            let bent = lens.map(p, Image::Primary).at;
+            (bent.0, bent.1)
+        };
+        let (from, to) = (source((1.0, 0.0)), source((-1.0, 0.0)));
         let (from, to) = ((from.0, from.1, 0.0), (to.0, to.1, 1.0));
         let mut path = vec![from];
-        lens.arc_to(from, to, &mut path);
+        lens.arc_to(from, to, Image::Primary, &mut path);
         assert!(
             path.len() > 4,
             "half a turn came out as {} points",
             path.len()
         );
-        for p in &path {
+        // The source ran dead through the centre, so everything the sweep fills
+        // in is a source on the axis and images as the ring itself. The two
+        // ends are the images of a source a ring out and sit further out than
+        // that, which is where the arc comes in from and leaves by.
+        for p in &path[1..path.len() - 1] {
             let m = lens.offset((p.0, p.1));
             assert!(
                 (m - 1.0).abs() < 1e-3,
@@ -759,8 +809,112 @@ mod tests {
         let outside = at(&lens, (1.0, 0.0), 1.05);
         let outside = (outside.0, outside.1, 0.0);
         let mut path = vec![outside];
-        lens.arc_to(outside, (outside.0 + 0.2, outside.1 + 0.1, 1.0), &mut path);
+        lens.arc_to(
+            outside,
+            (outside.0 + 0.2, outside.1 + 0.1, 1.0),
+            Image::Primary,
+            &mut path,
+        );
         assert_eq!(path.len(), 2, "a straight run should not be subdivided");
+    }
+
+    #[test]
+    fn the_arc_step_and_its_tangent_agree() {
+        // The gate asks the sine against the tangent of the cosine rather than
+        // the angle, so the constant it asks with has to be the other one's
+        // tangent — and `tan` is not `const`, so nothing but this says so.
+        assert!(
+            (TAN_ARC_STEP - MAX_ARC_STEP.tan()).abs() < 1e-6,
+            "{TAN_ARC_STEP} is not the tangent of {MAX_ARC_STEP}, which is {}",
+            MAX_ARC_STEP.tan()
+        );
+    }
+
+    /// A point `along` and `across` the ring's own axes, in rings — the inverse
+    /// of [`Lens::offsets`], so a fixture can name where a leg passes the
+    /// bubble rather than guess at it.
+    fn from_offsets(lens: &Lens, along: f32, across: f32) -> (f32, f32) {
+        let (a, b) = lens.semi_axes();
+        let (cos, sin) = lens.turn();
+        let (along, across) = (along * a, across * b);
+        (
+            lens.center.0 + along * cos - across * sin,
+            lens.center.1 + across * cos + along * sin,
+        )
+    }
+
+    /// How far a point sits from a segment, in rings.
+    fn off_the_leg(lens: &Lens, p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+        let (ax, ay) = lens.offsets(a);
+        let (bx, by) = lens.offsets(b);
+        let (px, py) = lens.offsets(p);
+        let (dx, dy) = (bx - ax, by - ay);
+        let len_sq = dx * dx + dy * dy;
+        let t = (((px - ax) * dx + (py - ay) * dy) / len_sq).clamp(0.0, 1.0);
+        crate::canvas::length_of(ax + dx * t - px, ay + dy * t - py)
+    }
+
+    #[test]
+    fn a_sweep_the_sampling_stepped_over_still_lands_on_the_lens() {
+        // The bug this module shipped: a star whose exposure has run off the
+        // frame arrives as one long leg with both ends many rings out, and the
+        // sweep between two such samples was drawn by interpolating the two
+        // ends' radii — a loop right round the bubble, several rings across,
+        // where the light went past it at one. The radius is read off the leg
+        // now, so the arc lands where the star actually was however coarse the
+        // sampling that reached it. Measured against the interpolation it
+        // replaced, which strays 0.55 rings at the closest of these fixtures
+        // and 9.4 at the furthest out.
+        let lens = lens();
+        for rings in [1.5f32, 5.0, 9.5] {
+            for passes_at in [0.0f32, 0.2, 0.6, 0.95] {
+                let reach = (rings * rings - passes_at * passes_at).sqrt();
+                let leg = (
+                    from_offsets(&lens, reach, passes_at),
+                    from_offsets(&lens, -reach, passes_at),
+                );
+                let ends = (
+                    lens.map(leg.0, Image::Primary).at,
+                    lens.map(leg.1, Image::Primary).at,
+                );
+                let mut path = Vec::new();
+                lens.arc_to(
+                    (ends.0 .0, ends.0 .1, 0.0),
+                    (ends.1 .0, ends.1 .1, 0.0),
+                    Image::Primary,
+                    &mut path,
+                );
+                assert!(
+                    path.len() > 4,
+                    "{rings} rings out, passing at {passes_at}, came out as {} \
+                     points, so the sweep was never filled in",
+                    path.len()
+                );
+                // Every filled point is the image of a source on the leg, so
+                // carrying it back has to land on the leg: a primary image `r`
+                // rings out is the source `r − 1/r` rings out. What is left is
+                // exact to a part in a million everywhere but straight through
+                // the centre, where `U_FLOOR` is the whole of it.
+                for p in &path[..path.len() - 1] {
+                    let r = lens.offset((p.0, p.1));
+                    assert!(
+                        r >= 1.0 - 1e-3,
+                        "the arc dipped to {r} rings, inside the ring a primary \
+                         image cannot enter"
+                    );
+                    let back = (
+                        lens.center.0 + (p.0 - lens.center.0) * (r - 1.0 / r) / r,
+                        lens.center.1 + (p.1 - lens.center.1) * (r - 1.0 / r) / r,
+                    );
+                    let strayed = off_the_leg(&lens, back, leg.0, leg.1);
+                    assert!(
+                        strayed < 2.0 * U_FLOOR,
+                        "the arc reached {strayed} rings off the leg it was \
+                         bending, at {rings} rings out passing at {passes_at}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

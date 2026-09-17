@@ -316,6 +316,27 @@
 #                 move, because its exposures are cut at the near plane and
 #                 project far off-canvas rather than landing on the edge of it.
 #
+#   Sweep.        Four of the ten moved when the arc a bent image sweeps round
+#                 the bubble stopped being drawn at a radius interpolated
+#                 between its two ends and started being read off the straight
+#                 leg the star flew — `side.txt`, `orbit.txt`, `astern.txt` and
+#                 `drift.txt`. The five cockpit flights are byte for byte, which
+#                 is the useful half of the split: nothing in the cockpit goes
+#                 near `lens`, so a change there that moved one would have
+#                 leaked out of the view it was aimed at.
+#
+#                 `ahead.txt` is the exterior flight that does *not* move, and
+#                 that was measured rather than assumed. The fill is gated on
+#                 the image sweeping more than `MAX_ARC_STEP` of bearing about
+#                 the bubble, and over that flight's 690 376 sample pairs not
+#                 one does. At `--orbit 90,0,0` the camera looks straight back
+#                 down the track, so the bubble sits on the point the whole sky
+#                 expands from and every star's image runs radially out of it,
+#                 sweeping no bearing at all. A change to the sweep has nothing
+#                 there to move, and the four that watch it are the others —
+#                 which is the same lesson `ahead.txt` was added to teach, that
+#                 an angle is only half of a camera case.
+#
 #   Compass.      Two of the ten moved when `heading` and `pitch` stopped being
 #                 integrals of the steering rates and started being read off the
 #                 attitude the ship is actually holding — `steer.txt` and
@@ -356,9 +377,9 @@
 526139cb505f192138b66d875d39c25f2dcabe89da06455286fbfdcae6b3f8f8  ascii.txt
 dcd692fb91b2ae704a7259fa6e1e50c99d7c319df58d6e4d52d951b3669929ba  ansi256.txt
 470ffd08a623c38620d8665f86cd400590fd8260a1bdef40ac65d1540064c37d  warp.txt
-1e62d6ceb3c93fcd0d70f3e26357b6e3e38968c9145cd5858f4f2333a01f6c4b  side.txt
-b806d3307fbc046bf3add76ac1f5cb28fb5dd2eb7237b0e2053ed2b6b12121f9  orbit.txt
-8f81aa1b9fcbdc342dec961ab5474b055e35e900d9b1e2738015c1f8ce00f7f2  astern.txt
+480a4028003eec9168b7e8378f88140432b8bf464ca5ccc2cba4b91621e55fa3  side.txt
+04a5f936b939620e096e57f0941e4e63d60b177bee1623899c625b2b1c6b489f  orbit.txt
+cb62d1b275ca22b2c4958e957b85733d1392b4fb8838e5d42fa4f2a779b6c752  astern.txt
 b9ac8d0fa880008eeb6ab560fbdf6874f449c134e2905ddd66a0dc3782b61246  steer.txt
-a622a1277d343df667a3043a42aa454ae0e9ebd90607a6068a164dbafdeb8159  drift.txt
+6d1dc37b41f9ab032253638a981fadbd0af1432b4a2c48d8a0ec0e5945dfd74c  drift.txt
 1f1846efb1028c0940176813fbd8fb73b5bc2a79b30a3aedf35ab1c7eba1eb2e  ahead.txt
