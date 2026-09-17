@@ -67,7 +67,7 @@ impl Bend {
                     match self.bent.last() {
                         // Follow the sweep around the ring rather than cutting
                         // the chord across it.
-                        Some(previous) => lens.arc_to(*previous, at, &mut self.bent),
+                        Some(previous) => lens.arc_to(*previous, at, image, &mut self.bent),
                         None => self.bent.push(at),
                     }
                 }
@@ -391,6 +391,144 @@ mod tests {
              exposures, so the sheaf was never drawn and the emptiness above \
              proves nothing"
         );
+    }
+
+    /// The bubble the renderer builds for a flight this size, so the fixtures
+    /// below are bent by the one a star really flew through rather than by one
+    /// invented for the occasion.
+    fn as_flown(cols: usize, rows: usize) -> (Lens, Canvas) {
+        let (w, h) = (cols, rows * 2);
+        let lens = Lens::for_warp(
+            (w as f32 * 0.5, h as f32 * 0.5),
+            1.0,
+            crate::view::ship_half_on_screen(h as f32, crate::view::ZOOM_DEFAULT),
+            abeam(),
+        );
+        (lens, Canvas::new(w, h))
+    }
+
+    /// A drawn point carried back through the bubble to the source that would
+    /// land there: on the same bearing, `|r − 1/r|` rings out. Which image it
+    /// is settles itself — the primary never comes inside the ring and the
+    /// counter-image never leaves it — and the sign of `1 − 1/r²` puts the
+    /// counter-image back on the side it came from.
+    fn back_through(lens: &Lens, p: (f32, f32)) -> (f32, f32) {
+        let r = lens.offset(p);
+        if !r.is_finite() || r <= 0.0 {
+            return p;
+        }
+        let scale = 1.0 - 1.0 / (r * r);
+        (
+            lens.center.0 + (p.0 - lens.center.0) * scale,
+            lens.center.1 + (p.1 - lens.center.1) * scale,
+        )
+    }
+
+    /// How far a point sits from a track, in rings.
+    fn off_the_track(lens: &Lens, p: (f32, f32), track: &[Trace]) -> f32 {
+        let (a, b) = lens.semi_axes();
+        let mut best = f32::INFINITY;
+        for pair in track.windows(2) {
+            let (dx, dy) = (pair[1].0 - pair[0].0, pair[1].1 - pair[0].1);
+            let len_sq = dx * dx + dy * dy;
+            let t = if len_sq > f32::MIN_POSITIVE {
+                (((p.0 - pair[0].0) * dx + (p.1 - pair[0].1) * dy) / len_sq).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (ex, ey) = (pair[0].0 + dx * t - p.0, pair[0].1 + dy * t - p.1);
+            best = best.min(crate::canvas::length_of(ex / a, ey / b));
+        }
+        best
+    }
+
+    #[test]
+    fn a_streak_that_has_run_off_the_frame_bends_where_the_light_went() {
+        // The bug this was written for, and the first fixture is a star taken
+        // off a real flight: once its exposure has run off both edges of the
+        // frame, both ends of it are nine rings out and the leg between them
+        // passes dead through the bubble. The sweep was drawn by interpolating
+        // the two ends' radii, which put a loop right round the bubble several
+        // rings across, where the light went past it at one — most of a frame
+        // of bright arc that no star was ever at. Measured against the
+        // arithmetic it replaced, these five come back 0.36 to 2.58 rings off;
+        // they sit at 0.13 to 0.18 now, which is the rasteriser's own subpixel
+        // carried back through the lens rather than the lens disagreeing with
+        // itself.
+        let (lens, mut canvas) = as_flown(120, 36);
+        let (w, h) = canvas.dims();
+        let straight = |from: (f32, f32), to: (f32, f32)| -> Vec<Trace> {
+            let pace = crate::canvas::length_of(to.0 - from.0, to.1 - from.1);
+            vec![(from.0, from.1, pace), (to.0, to.1, pace)]
+        };
+        let tracks = [
+            straight((315.89, 37.26), (-193.68, 37.26)),
+            straight((315.89, 33.0), (-193.68, 41.0)),
+            straight((200.0, 36.0), (-80.0, 36.0)),
+            straight((90.0, 10.0), (30.0, 62.0)),
+            // A star off a flight with the stick buried, where the exposure is
+            // the walk through the poses the ship held rather than one straight
+            // leg. Twenty of them share `MAX_ARCS` between nineteen legs, so
+            // each is a bare chord and the sweep is the whole of what gets the
+            // bend right.
+            [
+                (579.57, 203.02),
+                (471.61, 164.45),
+                (353.17, 122.44),
+                (285.52, 98.70),
+                (241.27, 83.40),
+                (209.62, 72.66),
+                (185.56, 64.71),
+                (166.36, 58.56),
+                (150.42, 53.66),
+                (136.75, 49.67),
+                (124.64, 46.38),
+                (113.61, 43.64),
+                (103.23, 41.37),
+                (93.14, 39.52),
+                (82.93, 38.08),
+                (72.11, 37.12),
+                (59.88, 36.77),
+                (44.76, 37.35),
+                (23.36, 39.68),
+                (-14.64, 46.39),
+            ]
+            .iter()
+            .map(|p| (p.0, p.1, 0.0))
+            .collect(),
+        ];
+
+        let mut checked = 0usize;
+        for track in &tracks {
+            assert!(lens.bends(track), "the fixture {track:?} misses the bubble");
+            canvas.clear();
+            Bend::default().draw_one(&mut canvas, &lens, track, [1.0; 3], 40.0);
+            let mut lit = 0usize;
+            for y in 0..h {
+                for x in 0..w {
+                    if canvas.light_at(x, y) <= 0.0 {
+                        continue;
+                    }
+                    lit += 1;
+                    let p = (x as f32, y as f32);
+                    let strayed = off_the_track(&lens, back_through(&lens, p), track);
+                    assert!(
+                        strayed < 0.25,
+                        "light at ({x}, {y}) carries back to {strayed} rings \
+                         off the track {track:?} that earned it"
+                    );
+                }
+            }
+            // A `draw_one` that drew nothing at all would satisfy the sweep
+            // above beautifully.
+            assert!(
+                lit > 40,
+                "the fixture {track:?} lit {lit} subpixels, so the sweep above \
+                 says nothing"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, tracks.len(), "a fixture went unchecked");
     }
 
     #[test]

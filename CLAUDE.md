@@ -81,8 +81,8 @@ it.
 
 ```sh
 cargo build --locked                    # default features; what people install
-cargo test                              # 344 unit + 17 elsewhere, about 25s
-cargo test --locked --all-features      # 348 unit — adds the snapshot-gated ones
+cargo test                              # 347 unit + 17 elsewhere, about 25s
+cargo test --locked --all-features      # 351 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -296,6 +296,20 @@ the tunnel is streaks and two glows. So the useful half of that shape is
 `warp.txt` staying byte-identical, which is what says a change to how a span is
 measured stayed inside the view it was aimed at. Taking `hypot` off the
 bent-streak path is the worked example.
+
+**That shape says *the side-view flights* and it means four of the five**, which
+is worth knowing before the fifth is read as a leak the other way. Reading a
+bent image's sweep off the leg the star flew moved `side.txt`, `orbit.txt`,
+`astern.txt` and `drift.txt`, held all five cockpit flights, and left
+`ahead.txt` byte for byte — and that last was measured rather than assumed. The
+sweep is filled in only when the image swings more than `MAX_ARC_STEP` of
+bearing about the bubble, and over `ahead.txt`'s 690 376 sample pairs **not one
+does**. At `--orbit 90,0,0` the camera looks straight back down the track, so
+the bubble sits on the point the whole sky expands from and every star's image
+runs radially out of it, sweeping no bearing at all. That is the same lesson
+the flight was added for, arriving from the other side: an angle is only half of
+a camera case, and what the flight is *doing* at it is the half that decides
+whether a change has anything there to move.
 
 **By camera angle.** `side.txt` is abeam, where `Eye::to_camera` is an exact
 swizzle and the hull's axis lies flat in the image plane, so anything that only
@@ -578,7 +592,7 @@ place:
 | dropping the `palette_256` → `palette_rgb` round trip in `quantize_256` | nothing; the constant divisors are already folded. |
 | taking `splat_inside`'s four taps through one `&mut self.buf[base..=base + right + below]`, to pay one bounds check instead of four | **worse** — the turning frame went up 1.3% and the outside view 2.4%, and callgrind says why: the four checks came out at 424M instructions and the inclusive-range slice put 614M back, for a net 191M *added*. Binding the buffer as a plain slice is the half of that idea that works and it is in the tree; slicing it down to the window is the half that does not. |
 | threading a bent sample's offsets through `bend`'s walk, so `shadowed`, `crosses_the_ring` and the next leg's chord test share one transform instead of taking three | **worse** — 5.211G instructions against 5.130G on the outside view at warp with the stick buried, a 1.6% *rise*, deterministic. The duplication is not real: `Lens::offsets` is a pure function of the lens and the point, nothing writes between the two calls, and LLVM had already common-subexpressioned them. What the change actually added was an `Option` carried across the loop and the register pressure to hold it. This is the `sin_cos` lesson again on a different function — read the profile, not the source. |
-| taking the divide out of `Lens::crosses_the_ring` when the dot product says the nearest point clamps to the near end | **worse** — the straight outside view went up 2.0% on both the minimum and the median of eleven runs. The shortcut is exact (only the squares of the nearest point are read, so the negative zero it hands back is unobservable) and it still does not pay: a bent image is pushed outward about half the time, so the branch is a coin flip, and a mispredict costs more than the `divss` it skips. A branch is only worth putting in front of a divide where it is *predictable*. |
+| taking the divide out of `Lens::crosses_the_ring` when the dot product says the nearest point clamps to the near end | **worse** — the straight outside view went up 2.0% on both the minimum and the median of eleven runs. The shortcut is exact (only the squares of the nearest point are read, so the negative zero it hands back is unobservable) and it still does not pay: a bent image is pushed outward about half the time, so the branch is a coin flip, and a mispredict costs more than the `divss` it skips. A branch is only worth putting in front of a divide where it is *predictable*. The function itself is gone — see **The sweep** below — and the lesson is the part that was worth keeping. |
 | `#[inline]` on `Sink::move_to`, `set_color` and `glyph`, on the reading that the enum's `Commands` arm keeps the ANSI path out of line | nothing at all — 0.400 ms of write column either side, to the millisecond's third decimal. The hint is advisory and fat LTO had already made its decision. Splitting the enum into two types is a different proposal and is untested; it would have to be measured against `Screen::flush` rather than this bench, which times `present_plain`. |
 
 Cachegrind is the other thing to know before reaching for a layout change, and
@@ -1942,18 +1956,74 @@ component-wise, it is set in all three constructors beside the `axes` it comes
 from, and **nothing may set one without the other.** It is there because
 `offsets` used to end on a divide per axis and is the floor every gate in the
 module stands on — `bends` and `shadowed` run it over the whole pool, `map` and
-`crosses_the_ring` over every sample of every bent streak — so two numbers fixed
-for the entire frame were being divided by a dozen times per sample. Worth 1.8%
+`arc_to`'s sweep gate over every sample of every bent streak — so two numbers
+fixed for the entire frame were being divided by a dozen times per sample. Worth 1.8%
 of drawing an exterior frame at twenty thousand stars, and it moves the last
 bit, so it arrived with the reference frames regenerated.
 
 Being an *ellipse* rather than an angle-dependent radius is why this got
-cheaper. Membership of an ellipse is a closed form, so `bends`, `shadowed`,
-`crosses_the_ring` and `curvature` have no square root in them at all; a ring
-whose radius varied with the angle would have needed one in each, on the two
-hottest gates in the program. If you reshape this again, reshape it by changing
+cheaper. Membership of an ellipse is a closed form, so `bends`, `shadowed` and
+`curvature` have no square root in them at all; a ring whose radius varied with
+the angle would have needed one in each, on the two hottest gates in the
+program. If you reshape this again, reshape it by changing
 what `offset_sq` scales by — which now means `axes` and `inv_axes` together,
 since the second is the one the arithmetic actually reads.
+
+**The sweep is read off the leg the star flew, and interpolating between the two
+images instead was a shipped bug.** When a source passes close to the axis its
+image swings round the ring, so `Lens::arc_to` fills the bearing in between two
+samples rather than cutting the chord. It used to take the radius along that
+sweep by interpolating the two ends' radii — right when the two are adjacent,
+and wrong by everything when they are not. A star whose exposure has run off
+both edges of the frame arrives as one long leg with both ends nine or ten rings
+out and the middle of it passing dead through the bubble, and the sweep between
+two such samples came out as a loop right round the bubble several rings across,
+where the light went past it at one: most of a frame of bright arc that no star
+was ever at. One taken off a seeded flight at 120x36 ran from `(315.9, 37.3)` to
+`(−193.7, 37.3)` with the bubble at `(54.7, 36.0)`.
+
+The radius at a bearing is a question about the *leg*, and the leg is a straight
+line, so it is one division: `p / (n · e)`, with `n` the line's own normal and
+`p` how far off the centre it passes. `arc_to` is handed two images rather than
+two sources, so it carries them back first — an image `r` rings out is the
+source `r − 1/r` on the same bearing, which is a scale by `1 − 1/r²` with no
+trigonometry at all, and that factor goes negative inside the ring, which is
+exactly how the counter-image lands back on the side it came from. One
+expression covers both images. A leg pointed straight at the centre passes at
+nothing, so `p` is zero and every bearing between the two ends images at the
+ring itself — which is what a source crossing the axis does, arrived at rather
+than special-cased.
+
+**What that cost was the *gate*, not the arithmetic, and the two were measured
+apart.** The fill used to be gated on `Lens::crosses_the_ring` — whether the
+chord between the two *images* dips inside the ring — which is a proxy with a
+blind spot on precisely the geometry above: two samples far out on near-opposite
+bearings whose chord stays outside the ring, where the true locus dips to one
+and the chord does not. Bounded at the gate's own boundary it reaches 0.618 of a
+ring, and it is not theoretical — a straight flight at 120x36 leaves hundreds of
+trails a frame up to 0.9 rings off the track that earned them. Gating on the
+source leg instead closes it and costs **11%** of drawing the outside view at
+warp, because `splat_inside` retires 6.5% more instructions: it fills arcs on a
+large set of legs where the chord was already right.
+
+The gate in the tree asks the question itself — does the image sweep more than
+`MAX_ARC_STEP` of bearing, which is exactly when the fill would add a point at
+all — and it asks it as the sine against the tangent of the cosine, so it is a
+cross product and a dot rather than two `atan2`s thrown away. No blind spot, no
+false fires, and no divide where `crosses_the_ring` had one. It leaves nothing
+above 0.3 rings anywhere over straight and turning flights at four camera
+angles, against 0.9 for the ring gate, and it costs **5 to 7%** of drawing the
+outside view at warp — 11.15 ms to 11.93 and 11.20 to 11.88 at 72 363 stars on
+200x60, 1.59 to 1.67 at the default sky, minimum of five sweeps and run twice.
+Every cockpit row is inside this box's noise either way, which is the shape: the
+lens is not in that path. That is the whole of the price and it was paid
+deliberately — half of what the honest gate would have cost, for the same
+picture.
+
+`crosses_the_ring` went with it, having no caller left. `TAN_ARC_STEP` is the
+one constant here that cannot be derived in a `const` — `tan` is not one — so
+`the_arc_step_and_its_tangent_agree` is what holds it to `MAX_ARC_STEP`, the way
+`RING_MINOR` is held to `RING_MAJOR` by being spelled as its reciprocal.
 
 The wake is the *centre*, not the outline. `for_warp` seats the bubble
 `WAKE_SHIFT` of a semi-major axis astern of the ship it is handed, and the
