@@ -20,8 +20,10 @@ use warp_rs::snapshot::Animation;
 /// Frames a second, which is also the flight's timestep.
 const FPS: u16 = 30;
 /// The canvas, in terminal cells, and how many pixels a subpixel is drawn as.
+/// Four makes it 960 across, wider than the column GitHub gives a README, so
+/// the page shrinks it to fit rather than stretching it soft.
 const SIZE: (usize, usize) = (240, 68);
-const SCALE: usize = 2;
+const SCALE: usize = 4;
 /// When the drive lights, when the camera goes outside, and when it comes back
 /// in, in seconds from the first frame.
 const ENGAGE: f64 = 1.2;

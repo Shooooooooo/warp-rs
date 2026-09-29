@@ -163,14 +163,28 @@ the brightest pixel, which is one dip rather than a join. It asserts that the
 dip came up again, so a `--fade` of zero is a sentence rather than a loop that
 never ends.
 
-**What it costs is 4.06 MB, and nearly all of that is warp.** A frame at impulse
-is about a kilobyte; one at warp is fifteen to twenty from either camera, since
-a streak is moving everywhere at once. That budget set the timings — a second at
-impulse, under three in the cockpit at warp, four outside — and the camera walk
-is a tenth of it: the same shot with the camera parked came to 3.70 MB, because
-a swing moves every streak of the bent sky at once. It is kept to a few
-megabytes because everyone who opens the page on GitHub, crates.io or docs.rs
-fetches it, and because a reshoot adds the whole file to the history again.
+**What it costs is 4.98 MB, and nearly all of that is warp.** A frame at impulse
+is about a kilobyte; one at warp is fifteen to twenty from either camera at
+scale 2, since a streak is moving everywhere at once. That budget set the
+timings — a second at impulse, under three in the cockpit at warp, four outside
+— and the camera walk is a tenth of it: at scale 2 the same shot came to 3.70 MB
+with the camera parked against 4.06 walking, because a swing moves every streak
+of the bent sky at once. It is kept to a few megabytes because everyone who
+opens the page on GitHub, crates.io or docs.rs fetches it, and because a reshoot
+adds the whole file to the history again.
+
+**It is 960 pixels across so that it fills the README without being stretched.**
+GitHub never draws an image wider than it is, so at scale 2 the front page
+showed a 480-pixel picture in a column about 830 wide. The README asks for
+`width="100%"` in an `<img>`, which is the only way to fill a column from
+Markdown GitHub will render, and that alone would have stretched those 480
+pixels to fit: side by side in Chromium at 830, the stretched frame came out
+visibly soft and a 960-pixel one shrunk to the same width kept every star
+sharp. So the canvas is drawn at scale 4, wider than the repository page's
+column, and is only ever shrunk there — and stretched by at most a quarter in
+the file view, which is wider. Scale 4 is four times the pixels for 23% more
+file, 4.06 MB to 4.98, because a duplicated pixel costs deflate almost nothing;
+scale 3 came to 4.65 and would still be stretched on the repository page.
 
 How it is encoded, and what was measured on the way there — twelve seconds at
 240x68 and scale 2, 30 fps, as a yardstick rather than the shot:
