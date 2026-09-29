@@ -221,6 +221,12 @@ impl Flight {
         self.ship.nudge_roll(roll);
     }
 
+    /// Light the drive or shut it down, the way `SPACE` does, for a caller that
+    /// has no keyboard. Returns whether it is lit.
+    pub fn toggle_warp(&mut self) -> bool {
+        self.ship.toggle_warp()
+    }
+
     /// Swing the camera round the ship, over it, or about its own view axis, a
     /// step at a time.
     pub fn nudge_orbit(&mut self, azimuth: f32, elevation: f32, roll: f32) {
@@ -422,6 +428,18 @@ impl Flight {
         if let Some(menu) = &self.menu {
             menu::draw(self.renderer.screen(), menu);
         }
+    }
+
+    /// The last frame drawn, as eight-bit RGB, row-major and
+    /// [`Self::canvas_dims`] across. The panel is not in it: that is written
+    /// into cells, after this.
+    pub fn pixels(&self) -> &[[u8; 3]] {
+        self.renderer.pixels()
+    }
+
+    /// The canvas in subpixels, across and down.
+    pub fn canvas_dims(&self) -> (usize, usize) {
+        self.renderer.canvas_dims()
     }
 
     /// How many stars are in flight — over the whole sphere, not on screen.
@@ -2488,54 +2506,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[cfg(feature = "snapshot")]
-    #[test]
-    fn the_two_documented_snapshots_come_out_the_same_size() {
-        // The README's front page is two images stacked, and they line up only
-        // because neither recipe passes `--size`: both fall back to
-        // `SNAPSHOT_SIZE`, a cell is two subpixels tall, and at `--scale 2`
-        // both come out 480x272.
-        let common = [
-            "--engage",
-            "--throttle",
-            "1.0",
-            "--warmup",
-            "600",
-            "--scale",
-            "2",
-        ];
-        let recipe = |extra: &[&str]| {
-            let mut argv = vec!["--snapshot", "docs/shot.png"];
-            argv.extend_from_slice(&common);
-            argv.extend_from_slice(extra);
-            args_for(&argv)
-        };
-        let hero = recipe(&["--seed", "6"]);
-        let astern = recipe(&["--view", "side", "--orbit", "245,30,0", "--seed", "8"]);
-
-        let image = |args: &Args| {
-            assert!(
-                args.size.is_none(),
-                "a docs recipe that passes --size is what put the step back"
-            );
-            let (cols, rows) = SNAPSHOT_SIZE;
-            let flight = Flight::new(args, cols as usize, rows as usize);
-            let (w, h) = flight.renderer.canvas_dims();
-            (w * args.scale, h * args.scale)
-        };
-
-        assert_eq!(
-            image(&hero),
-            image(&astern),
-            "the two images on the README's front page no longer stack"
-        );
-        assert_eq!(
-            image(&hero),
-            (480, 272),
-            "the documented recipe stopped producing the size CLAUDE.md quotes"
-        );
     }
 
     #[test]

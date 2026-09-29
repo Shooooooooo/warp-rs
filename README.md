@@ -3,16 +3,15 @@
 Fly a starship through the universe at warp, in your terminal.
 
 <!--
-The images are linked absolutely rather than as `docs/warp.png`, and want to
+The animation is linked absolutely rather than as `docs/demo.png`, and wants to
 stay that way. `Cargo.toml` excludes `docs/` from the published crate, and
 docs.rs renders this file out of that package — so a relative path resolves to
-nothing there and every screenshot comes out a broken icon, the one at the top
-of the page included. The repository is public, so these load for everyone.
+nothing there and the top of the page comes out a broken icon. The repository is
+public, so it loads for everyone. It is an animated PNG, shot by
+`examples/demo.rs`.
 -->
 
-![The view at warp factor 9.8](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/warp.png)
-
-![Chasing the ship at warp, from astern and above](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/astern.png)
+![Lighting the warp drive from the cockpit, then chasing the ship from outside](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/demo.png)
 
 ## Running it
 

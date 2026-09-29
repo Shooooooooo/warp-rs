@@ -14,12 +14,12 @@ categories = ["command-line-utilities", "visualization"]
 # against exactly it, so this is a tested guarantee rather than a claim about
 # them, and moving the floor means editing it here on purpose.
 rust-version = "1.85"
-# Screenshots, CI config and the contributor notes are for the repository, not
-# for the published crate. The README links its images by absolute URL because
-# of this line: docs.rs renders that file out of the package, where a relative
-# `docs/` path points at nothing. `CLAUDE.md` is here on the same principle:
-# a hundred-odd kilobytes of notes addressed to whoever is editing the tree,
-# which is nobody who has the crate as a dependency.
+# The README's animation, CI config and the contributor notes are for the
+# repository, not for the published crate. The README links its image by
+# absolute URL because of this line: docs.rs renders that file out of the
+# package, where a relative `docs/` path points at nothing. `CLAUDE.md` is here
+# on the same principle: a hundred-odd kilobytes of notes addressed to whoever
+# is editing the tree, which is nobody who has the crate as a dependency.
 exclude = ["docs/", ".github/", "CLAUDE.md"]
 
 # docs.rs builds with default features, and `snapshot` is not one of them — so
@@ -33,6 +33,12 @@ all-features = true
 [[bin]]
 name = "warp"
 path = "src/main.rs"
+
+# The README's animation, shot. It writes a PNG, so it needs the feature that
+# carries the encoder; without it the example is skipped rather than broken.
+[[example]]
+name = "demo"
+required-features = ["snapshot"]
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }

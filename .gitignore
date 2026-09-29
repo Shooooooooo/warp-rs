@@ -1,5 +1,6 @@
 /target
-# Snapshots land in the working directory; the ones in docs/ are tracked.
+# Snapshots land in the working directory; the README's animation in docs/ is
+# tracked.
 /*.png
 # Frames dumped when checking against tests/golden/frames.sha256. All ten of
 # them: the recipe in that file writes one per pinned flight, and this list has

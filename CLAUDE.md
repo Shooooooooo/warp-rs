@@ -82,7 +82,7 @@ it.
 ```sh
 cargo build --locked                    # default features; what people install
 cargo test                              # 347 unit + 17 elsewhere, about 25s
-cargo test --locked --all-features      # 351 unit — adds the snapshot-gated ones
+cargo test --locked --all-features      # 354 unit — adds the snapshot-gated ones
 cargo fmt --all --check                 # CI runs this first
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked --list           # CI runs this too; `exclude` is by hand
@@ -124,36 +124,78 @@ cargo run --release --features snapshot -- \
 The PNG is the **starfield only**. The instrument panel and the ship picker
 live in the character grid, not in the pixel buffer, so they are not in it.
 
-The two images on the README's front page are that command with a seed on it,
-and they are written down here because they were not: both recipes lived only
-in the commit messages that shot them, which is how the hero came to advertise
-twice the sky a default run draws for the whole life of the renderer before
-anyone thought to check it. Reshoot them whenever the sky changes: they are the
-first thing anybody sees of this program and there is no test that will tell you
-they have gone stale.
+The README's front page is an animated PNG, `docs/demo.png`, and an example
+shoots it rather than that command:
 
 ```sh
-common="--engage --throttle 1.0 --warmup 600 --scale 2"
-warp --snapshot docs/warp.png   $common --seed 6
-warp --snapshot docs/astern.png $common --view side --orbit 245,30,0 --seed 8
+cargo run --release --features snapshot --example demo -- docs/demo.png
 ```
 
-**Neither passes `--size`**, and that is the whole of what keeps the pair tidy.
-`run_snapshot` falls back to 240x68 and a cell is two subpixels tall, so both
-come out 480x272 and stack with their edges in line. The hero used to ask for
-`--size 220x60` and came out 440x240, which put a forty-pixel step down the
-right of the page for no reason anyone had written down. A reshoot that reaches
-for `--size` puts it back.
+It was two stills until it became this, and what the stills could not show is
+most of what the program does: the sky holding still at impulse, the drive
+lighting, the tunnel filling in over the exposure's three seconds, the cut
+through black, and the lens bending the sky round the ship while the camera
+walks. `examples/demo.rs` flies all of that through the library because the
+command line cannot say it — there is no flag for "light the drive a second in,
+then go outside", and there should not be one for the sake of a picture. The
+seed, the timings, where the camera starts and how fast it walks are constants
+at the top of that file, so the recipe cannot drift away from the shot the way
+the stills' recipes did while they lived only in the commit messages that shot
+them. That is how the hero came to advertise twice the sky a default run draws
+for the whole life of the renderer before anyone thought to check it, which is
+also why the demo passes no `--magnitude`: it is the default sky.
 
-The `headless` CI job hashes these two now, so a reshoot that changed the sky
-turns it red rather than going unnoticed — which is what happened for the whole
-life of the renderer before anybody compared. That is a check on staleness and
-not on taste: a moved hash is a reshoot to be looked at and committed, and
-whether the picture is *good* is still a judgement nothing can make for you.
-What the flags guarantee is only that the drive is lit and fully spooled: 600
-warmup
-frames at the default `--fps 60` is ten simulated seconds, and `run_snapshot`
-prints the velocity it finished at, which at `--throttle 1.0` is 2000 c.
+Reshoot it whenever the sky changes. The `headless` CI job hashes it, so a
+change that moved the sky turns that job red rather than going unnoticed. That
+is a check on staleness and not on taste: a moved hash is a reshoot to be looked
+at and committed, and whether the picture is *good* is still a judgement nothing
+can make for you. Look at it playing, in a browser, and not only as frames.
+
+**Where the loop joins is the one thing about its timing that is not taste.** A
+run opens out of black, at the bottom of a cut it was never on the other side
+of, so the demo ends by cutting back inside and stops at the bottom of that dip.
+Each frame is drawn *before* the flight is stepped, which makes the first one
+the flight at `t = 0` — exactly the bottom, and black to the bit; drawn after
+the step, it already showed a star at level 21. At 30 fps no frame lands on the
+bottom of the closing dip, whose fall is 0.18 s or 5.4 frames, so the example
+stops on the darkest frame it does land on. The seam reads 12, 5, 0, 21, 64 at
+the brightest pixel, which is one dip rather than a join. It asserts that the
+dip came up again, so a `--fade` of zero is a sentence rather than a loop that
+never ends.
+
+**What it costs is 4.06 MB, and nearly all of that is warp.** A frame at impulse
+is about a kilobyte; one at warp is fifteen to twenty from either camera, since
+a streak is moving everywhere at once. That budget set the timings — a second at
+impulse, under three in the cockpit at warp, four outside — and the camera walk
+is a tenth of it: the same shot with the camera parked came to 3.70 MB, because
+a swing moves every streak of the bent sky at once. It is kept to a few
+megabytes because everyone who opens the page on GitHub, crates.io or docs.rs
+fetches it, and because a reshoot adds the whole file to the history again.
+
+How it is encoded, and what was measured on the way there — twelve seconds at
+240x68 and scale 2, 30 fps, as a yardstick rather than the shot:
+
+| tried | measured |
+| --- | --- |
+| RGB frames, whole | 19.9 MB. |
+| RGBA with only the changed pixels opaque, cropped to their rectangle | 21.6 MB, **worse**: at warp 54% of the pixels move by a level or so every frame, and a fourth channel costs more than the transparency saves. |
+| a 255-colour palette cut from the whole flight, then that delta on palette indices | 4.8 MB on 5-bit histogram bins, with a ring in the tunnel glare; 5.3 MB on 6-bit bins, the ring faint; about the same on exact colours. This is what is in the tree, on exact colours. |
+| adaptive row filters on the indices | 17% larger than none: an index is not a sample, so there is nothing to predict. |
+| 25 fps | 10% smaller than 30, which is not worth the judder. |
+| a smaller canvas, 160x45 at scale 3 or 200x56 at 2 | 28% and 11% smaller, not the 56% and 31% the pixel counts suggest, since the stars on screen follow the field of view rather than the canvas. A smaller terminal is the same sky drawn coarser. |
+| a tolerance: leave a pixel showing while it is within a few levels of its new colour | 38% smaller at three levels plus an eighth of the brightness, taken from the darker of the two so nothing is left lit where the sky has gone dark. **Rejected by eye**: a slowly brightening glow crosses the threshold a pixel at a time, and the tunnel glare came out grainy. Two levels plus a sixteenth was still grainy and saved 17%; plus a thirty-second saved 7%. |
+
+So the only lever left is the length, and the length is what was spent.
+
+Two things in `snapshot::Animation` are load-bearing and neither is obvious.
+**Black is not in the cut**: it is most of every frame, so it has an entry of
+its own and comes back exact, where a black a level off would tint the whole
+picture. And **the first image in the file is one the animation does not
+play** — APNG's separate default image — so anything that cannot animate shows
+the ship from astern and above, the last frame of the walk, rather than the
+black first frame of a shot that opens out of black. It keeps every frame in
+memory until `write`, because the palette is cut from all of them at once: 247
+frames of 240 by 136 is 24 MB, which is nothing for a tool run by hand.
 
 ## The golden frames — read this before touching the renderer
 
@@ -718,7 +760,7 @@ src/hud.rs        the instrument panel
 src/term.rs       Screen (double-buffered cells), ColorMode, RawGuard
 src/track.rs      where the ship has been: the flown track an exposure is
                   drawn along, and how far back it is straight
-src/snapshot.rs   PNG writer, behind `--features snapshot`
+src/snapshot.rs   PNG writer, still and animated, behind `--features snapshot`
 
 tests/flight.rs   a whole flight through the public surface, and nothing else
 tests/golden.rs   the reference frames, reproduced in process; its own SHA-256
@@ -726,7 +768,8 @@ tests/golden/     frames.sha256 — the pinned bytes, and how to remake them
 tests/terminal.rs a real terminal, from `script`: that a flight hands it back,
                   on the deadline and on a signal, and says so when there is none
 examples/bench.rs where a frame's 16.7 ms goes
-docs/             the README's screenshots; excluded from the published crate
+examples/demo.rs  the README's animation, shot; needs `--features snapshot`
+docs/             the README's animation; excluded from the published crate
 ```
 
 Everything is `pub` so a flight can be driven from a test, a benchmark, or
@@ -1754,8 +1797,9 @@ the cut's own length, and the frames at the trough are identically black, where
 the diff emits nothing at all. And `--snapshot --warmup 0` now shoots the
 trough, which is a black PNG — that is what `--fade 0` is for, and the flag's
 help says so. Everything in the tree clears the fade by a wide margin: `--warmup`
-defaults to 300 frames, CI's snapshot step uses 120, and both `docs/` recipes
-use 600.
+defaults to 300 frames and CI's snapshot step uses 120. The README's animation
+is the exception on purpose: it opens on the trough, because that is where its
+loop joins.
 
 **`q` flies something, it does not quit.** It rolls the ship inside and the
 camera outside, and it has never been the way out since it went on the stick.
@@ -2593,11 +2637,13 @@ than as static is a judgement, and `cli::DEFAULT_MAGNITUDE` was settled by
 shooting 5.5, 6.0 and 6.5 and comparing. Re-derive `universe::ZERO_POINT` if the
 count law or the default limit moves, and carry its fifth of a magnitude of
 offset forward when you do — see above, where what that offset is for is written
-down. And reshoot `docs/` — the README's two images are the first thing anybody
-sees of this program and nothing will tell you they have gone stale.
+down. And reshoot `docs/demo.png` — the README's animation is the first thing
+anybody sees of this program, and the `headless` job will say it has gone stale
+but not whether the new one is any good.
 
 Measure the shot rather than squinting at it, because an eye is a poor
-photometer over a whole frame and was wrong here: `docs/astern.png` plainly
+photometer over a whole frame and was wrong here: the still from astern that the
+front page used to carry plainly
 looked dimmer after the shift went in and its mean pixel had moved from 24.57 to
 24.52. What had actually changed was the *distribution* — 2% fewer lit subpixels
 and a middle ninth up from 45.5 to 49.0. Decode the PNG and take a mean, a lit
@@ -2683,8 +2729,8 @@ half and is not done.
   different ones, the bytes match `tests/golden/frames.sha256`, `--color ascii`
   is really ASCII, a closed pipe is not an error, a flight without a terminal
   says which flag was wanted, the three documented benchmark recipes still run,
-  a snapshot can still be written, and the two images on the README's front page
-  are still the sky the renderer draws.
+  a snapshot can still be written, and the README's animation is still the
+  flight the renderer draws.
   The pipe check is here rather than in a unit test because what is
   under test is the process's own exit status against a pipe a shell built, and
   there is no honest way to ask that from inside the library: Rust ignores
@@ -2696,12 +2742,12 @@ half and is not done.
   argument became a limiting magnitude when the sky did, and every recipe went
   on passing a star count and aborting.
 
-  **The screenshot check is the one that closes a hole this file used to
-  describe as unclosable.** It said of `docs/warp.png` and `docs/astern.png`
-  that nothing pins these bytes, so a reshoot is checked by looking at it —
-  which is how the hero came to advertise twice the sky a default run draws for
-  the whole life of the renderer. They are exactly reproducible from the recipes
-  written down here, on the same Linux-only caveat as the text frames and with
-  the same `--locked` pinning the encoder, so they are simply hashed. A moved
-  hash means the sky has changed and the front page has not: that is a reshoot
-  to be looked at and committed, not a build to be fixed.
+  **The demo check is the one that closes a hole this file used to describe as
+  unclosable.** It said of the two stills the front page carried then that
+  nothing pins these bytes, so a reshoot is checked by looking at it — which is
+  how the hero came to advertise twice the sky a default run draws for the whole
+  life of the renderer. The animation that replaced them is exactly
+  reproducible from `examples/demo.rs`, on the same Linux-only caveat as the
+  text frames and with the same `--locked` pinning the encoder, so it is simply
+  hashed. A moved hash means the sky has changed and the front page has not:
+  that is a reshoot to be looked at and committed, not a build to be fixed.
