@@ -8,10 +8,11 @@ stay that way. `Cargo.toml` excludes `docs/` from the published crate, and
 docs.rs renders this file out of that package — so a relative path resolves to
 nothing there and the top of the page comes out a broken icon. The repository is
 public, so it loads for everyone. It is an animated PNG, shot by
-`examples/demo.rs`.
+`examples/demo.rs`, and HTML rather than Markdown for the `width`: GitHub never
+draws an image wider than it is, and this one is meant to fill the column.
 -->
 
-![Lighting the warp drive from the cockpit, then chasing the ship from outside](https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/demo.png)
+<img src="https://raw.githubusercontent.com/Shooooooooo/warp-rs/main/docs/demo.png" width="100%" alt="Lighting the warp drive from the cockpit, then chasing the ship from outside">
 
 ## Running it
 
