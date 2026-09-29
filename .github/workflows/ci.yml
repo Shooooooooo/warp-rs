@@ -328,33 +328,28 @@ jobs:
             --warmup 120 --scale 1 --seed 1 --size 120x36
           test -s frame.png
 
-      # The README's front page, checked the way the reference frames are. Those
-      # two images are the first thing anybody sees of this program and nothing
-      # pinned them: CLAUDE.md's own note said a reshoot is checked by looking
-      # at it, which is how the hero came to advertise twice the sky a default
-      # run draws for the whole life of the renderer before anyone thought to
-      # compare. The bytes turn out to be exactly reproducible from the recipes
-      # written down beside them — same Linux-only caveat as the text frames,
-      # and the same `--locked` pinning the PNG encoder — so they can simply be
-      # hashed.
+      # The README's front page, checked the way the reference frames are. It
+      # was two stills until it became an animation, and nothing pinned the
+      # stills either until this step did: CLAUDE.md's own note said a reshoot
+      # is checked by looking at it, which is how the hero came to advertise
+      # twice the sky a default run draws for the whole life of the renderer
+      # before anyone thought to compare. The bytes are exactly reproducible
+      # from the example that shoots them — same Linux-only caveat as the text
+      # frames, and the same `--locked` pinning the PNG encoder — so they can
+      # simply be hashed.
       #
       # A moved hash here means the sky has changed and the front page has not.
       # That is a reshoot to be looked at and committed, not a build to be
-      # fixed: run the two commands in CLAUDE.md and put the new files in
+      # fixed: run the example the way CLAUDE.md says and put the new file in
       # `docs/`.
-      - name: the screenshots are the sky the renderer draws
+      - name: the demo is the flight the renderer draws
         run: |
-          common="--engage --throttle 1.0 --warmup 600 --scale 2"
-          ./target/release/warp --snapshot shot-warp.png   $common --seed 6
-          ./target/release/warp --snapshot shot-astern.png $common --view side --orbit 245,30,0 --seed 8
-          for pair in "shot-warp.png docs/warp.png" "shot-astern.png docs/astern.png"; do
-            set -- $pair
-            fresh=$(sha256sum "$1" | cut -d' ' -f1)
-            shipped=$(sha256sum "$2" | cut -d' ' -f1)
-            if [ "$fresh" != "$shipped" ]; then
-              echo "::error::$2 is not what the renderer draws any more; reshoot it with the recipe in CLAUDE.md"
-              echo "  shipped $shipped"
-              echo "  fresh   $fresh"
-              exit 1
-            fi
-          done
+          cargo run --release --locked --all-features --example demo -- shot-demo.png
+          fresh=$(sha256sum shot-demo.png | cut -d' ' -f1)
+          shipped=$(sha256sum docs/demo.png | cut -d' ' -f1)
+          if [ "$fresh" != "$shipped" ]; then
+            echo "::error::docs/demo.png is not what the renderer draws any more; reshoot it with the recipe in CLAUDE.md"
+            echo "  shipped $shipped"
+            echo "  fresh   $fresh"
+            exit 1
+          fi
